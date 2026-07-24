@@ -26,7 +26,7 @@ namespace DisplayConfig {
 
 // ─── Buttons ──────────────────────────────────────────────
 namespace Buttons {
-    inline constexpr int     PIN_CONFIRM   = 0;   // GPIO0 (BOOT button as confirm)
+    inline constexpr int     PIN_CONFIRM   = 20;  // GPIO20 (Physical confirm button)
     inline constexpr int     PIN_BACK      = -1;  // -1 = unused (single-button mode; long-press acts as BACK)
     inline constexpr uint32_t DEBOUNCE_MS  = 50;
     inline constexpr uint32_t LONG_PRESS_MS = 1000;
@@ -34,15 +34,15 @@ namespace Buttons {
 
 // ─── FreeRTOS Task Configuration ─────────────────────────
 namespace Tasks {
-    // Stack sizes in words (x4 bytes)
+    // Stack sizes in bytes (ESP-IDF xTaskCreate takes bytes)
     inline constexpr uint32_t DISPLAY_STACK     = 4096;
     inline constexpr uint32_t BUTTON_STACK      = 2048;
     inline constexpr uint32_t WIFI_STACK        = 8192;
-    inline constexpr uint32_t WALLET_STACK      = 6144;
+    inline constexpr uint32_t WALLET_STACK      = 8192;
     inline constexpr uint32_t AI_STACK          = 8192;
-    inline constexpr uint32_t WEATHER_STACK     = 4096;
-    inline constexpr uint32_t PRICE_STACK       = 4096;
-    inline constexpr uint32_t UI_STACK          = 4096;
+    inline constexpr uint32_t WEATHER_STACK     = 8192;
+    inline constexpr uint32_t PRICE_STACK       = 8192;
+    inline constexpr uint32_t UI_STACK          = 8192;
 
     // Priorities (higher number = higher priority)
     inline constexpr int WALLET_PRIORITY        = 10;  // Highest — security critical
@@ -98,6 +98,7 @@ namespace NVS {
     inline constexpr const char* KEY_WEATHER_CITY  = "weather_city";
     inline constexpr const char* KEY_WEATHER_LAT   = "weather_lat";
     inline constexpr const char* KEY_WEATHER_LON   = "weather_lon";
+    inline constexpr const char* KEY_NETWORK       = "network";
 }
 
 // ─── API Endpoints ────────────────────────────────────────
@@ -115,6 +116,17 @@ namespace API {
     inline constexpr const char* LLM_DEFAULT_ENDPOINT =
         "https://api.openai.com/v1/chat/completions";
     inline constexpr const char* LLM_DEFAULT_MODEL = "gpt-4o-mini";
+
+    // Solana Network Endpoints & Token Mints
+    inline constexpr const char* SOLANA_MAINNET_RPC =
+        "https://api.mainnet-beta.solana.com";
+    inline constexpr const char* SOLANA_DEVNET_RPC =
+        "https://api.devnet.solana.com";
+
+    inline constexpr const char* USDC_MAINNET_MINT =
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    inline constexpr const char* USDC_DEVNET_MINT =
+        "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"; // Devnet USDC SPL mint
 }
 
 // ─── Crypto Constants ─────────────────────────────────────

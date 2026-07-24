@@ -186,7 +186,7 @@ void UIManager::render_clock() {
     } else {
         snprintf(buf, sizeof(buf), "--:--");
     }
-    m_display.draw_text_centered(22, buf, Display::FontSize::LARGE);
+    m_display.draw_text_centered(22, buf, Display::FontSize::MEDIUM);
 
     char date_buf[20];
     if (now > 100000) {

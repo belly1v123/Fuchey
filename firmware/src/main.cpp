@@ -69,6 +69,17 @@ static Fuchey::AIManager      s_ai_manager(s_wifi_manager);
 static Fuchey::WeatherService s_weather_service(s_wifi_manager);
 static Fuchey::PriceService   s_price_service(s_wifi_manager);
 
+// ─── Network State ─────────────────────────────────────────
+static bool s_is_devnet = true; // Default to devnet for prototyping
+
+static const char* get_rpc_url() {
+    return s_is_devnet ? Fuchey::API::SOLANA_DEVNET_RPC : Fuchey::API::SOLANA_MAINNET_RPC;
+}
+
+static const char* get_usdc_mint() {
+    return s_is_devnet ? Fuchey::API::USDC_DEVNET_MINT : Fuchey::API::USDC_MAINNET_MINT;
+}
+
 // ─── Helpers ──────────────────────────────────────────────
 
 // Check if string is exactly 64 hex characters (raw private key)
@@ -104,6 +115,18 @@ extern "C" void app_main(void) {
     // 2. Initialize System Layer (NVS, Storage, Drivers)
     ESP_ERROR_CHECK(Fuchey::Storage::init());
     ESP_LOGI(TAG, "[OK] Storage (NVS) initialized");
+
+    // Load network setting from NVS (default devnet)
+    {
+        Fuchey::Storage::Handle cfg(Fuchey::NVS::CONFIG_NS, NVS_READONLY);
+        if (cfg.is_open()) {
+            auto net = cfg.get_str(Fuchey::NVS::KEY_NETWORK);
+            if (net && *net == "mainnet") {
+                s_is_devnet = false;
+            }
+        }
+    }
+    ESP_LOGI(TAG, "[OK] Network configured: %s", s_is_devnet ? "Solana Devnet" : "Solana Mainnet-Beta");
 
     if (!s_display.init()) {
         ESP_LOGE(TAG, "[!!] Display initialization failed — continuing without OLED");
@@ -269,6 +292,153 @@ extern "C" void app_main(void) {
                         ESP_LOGW(CTAG, "  No wallet configured yet.");
                     }
 
+                // ── balance ───────────────────────────────────
+                } else if (strcmp(cmd, "balance") == 0) {
+                    auto addr = s_wallet_core.get_address();
+                    if (!addr) {
+                        ESP_LOGW(CTAG, "No wallet configured yet.");
+                    } else if (!s_wifi_manager.has_ip()) {
+                        ESP_LOGW(CTAG, "WiFi not connected — cannot fetch balance.");
+                    } else {
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[Balance] Querying %s (%s) for %s...",
+                                 s_is_devnet ? "Devnet" : "Mainnet-Beta",
+                                 get_rpc_url(),
+                                 addr->c_str());
+
+                        // JSON-RPC getBalance payload for SOL
+                        char sol_req[256];
+                        snprintf(sol_req, sizeof(sol_req),
+                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
+                                 addr->c_str());
+
+                        auto resp = s_wifi_manager.post_json(get_rpc_url(), sol_req);
+                        if (resp.success) {
+                            cJSON* root = cJSON_Parse(resp.body.c_str());
+                            if (root) {
+                                cJSON* res = cJSON_GetObjectItem(root, "result");
+                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                if (val && cJSON_IsNumber(val)) {
+                                    double lamports = val->valuedouble;
+                                    double sol_bal = lamports / 1000000000.0;
+                                    ESP_LOGI(CTAG, "  SOL Balance:  %.6f SOL (%.0f lamports)", sol_bal, lamports);
+                                }
+                                cJSON_Delete(root);
+                            }
+                        } else {
+                            ESP_LOGE(CTAG, "Failed to query SOL balance from RPC");
+                        }
+
+                        // JSON-RPC getTokenAccountsByOwner payload for USDC
+                        char usdc_req[512];
+                        snprintf(usdc_req, sizeof(usdc_req),
+                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
+                                 "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
+                                 addr->c_str(), get_usdc_mint());
+
+                        auto u_resp = s_wifi_manager.post_json(get_rpc_url(), usdc_req);
+                        if (u_resp.success) {
+                            cJSON* root = cJSON_Parse(u_resp.body.c_str());
+                            double usdc_bal = 0.0;
+                            if (root) {
+                                cJSON* res = cJSON_GetObjectItem(root, "result");
+                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {
+                                    cJSON* item0 = cJSON_GetArrayItem(val, 0);
+                                    cJSON* account = cJSON_GetObjectItem(item0, "account");
+                                    cJSON* data = account ? cJSON_GetObjectItem(account, "data") : nullptr;
+                                    cJSON* parsed = data ? cJSON_GetObjectItem(data, "parsed") : nullptr;
+                                    cJSON* info = parsed ? cJSON_GetObjectItem(parsed, "info") : nullptr;
+                                    cJSON* t_amt = info ? cJSON_GetObjectItem(info, "tokenAmount") : nullptr;
+                                    cJSON* ui_amt = t_amt ? cJSON_GetObjectItem(t_amt, "uiAmount") : nullptr;
+                                    if (ui_amt && cJSON_IsNumber(ui_amt)) {
+                                        usdc_bal = ui_amt->valuedouble;
+                                    }
+                                }
+                                cJSON_Delete(root);
+                            }
+                            ESP_LOGI(CTAG, "  USDC Balance: $%.2f USDC", usdc_bal);
+                        } else {
+                            ESP_LOGE(CTAG, "Failed to query USDC balance from RPC");
+                        }
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    }
+
+                // ── network ───────────────────────────────────
+                } else if (strcmp(cmd, "network") == 0) {
+                    ESP_LOGI(CTAG, "=================================================");
+                    ESP_LOGI(CTAG, "  Solana Network: %s", s_is_devnet ? "DEVNET" : "MAINNET-BETA");
+                    ESP_LOGI(CTAG, "  RPC Endpoint:   %s", get_rpc_url());
+                    ESP_LOGI(CTAG, "  USDC Mint:      %s", get_usdc_mint());
+                    ESP_LOGI(CTAG, "  Commands:");
+                    ESP_LOGI(CTAG, "    network devnet   - Switch to Solana Devnet");
+                    ESP_LOGI(CTAG, "    network mainnet  - Switch to Solana Mainnet");
+                    ESP_LOGI(CTAG, "=================================================");
+
+                } else if (strcmp(cmd, "network devnet") == 0) {
+                    s_is_devnet = true;
+                    Fuchey::Storage::Handle cfg(Fuchey::NVS::CONFIG_NS, NVS_READWRITE);
+                    if (cfg.is_open()) {
+                        cfg.set_str(Fuchey::NVS::KEY_NETWORK, "devnet");
+                        cfg.commit();
+                    }
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
+                    ESP_LOGI(CTAG, "[Network] Switched to Solana DEVNET");
+                    ESP_LOGI(CTAG, "  RPC: %s", get_rpc_url());
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                } else if (strcmp(cmd, "network mainnet") == 0) {
+                    s_is_devnet = false;
+                    Fuchey::Storage::Handle cfg(Fuchey::NVS::CONFIG_NS, NVS_READWRITE);
+                    if (cfg.is_open()) {
+                        cfg.set_str(Fuchey::NVS::KEY_NETWORK, "mainnet");
+                        cfg.commit();
+                    }
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
+                    ESP_LOGI(CTAG, "[Network] Switched to Solana MAINNET-BETA");
+                    ESP_LOGI(CTAG, "  RPC: %s", get_rpc_url());
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                // ── Devnet Airdrop ────────────────────────────
+                } else if (strncmp(cmd, "airdrop", 7) == 0) {
+                    auto addr = s_wallet_core.get_address();
+                    if (!addr) {
+                        ESP_LOGW(CTAG, "No wallet configured yet.");
+                    } else if (!s_is_devnet) {
+                        ESP_LOGW(CTAG, "Airdrop is only available on Devnet! Type 'network devnet' first.");
+                    } else if (!s_wifi_manager.has_ip()) {
+                        ESP_LOGW(CTAG, "WiFi not connected.");
+                    } else {
+                        float sol_amt = 1.0f;
+                        sscanf(cmd + 7, "%f", &sol_amt);
+                        if (sol_amt <= 0.0f) sol_amt = 1.0f;
+
+                        uint64_t lamports = static_cast<uint64_t>(sol_amt * 1000000000.0f);
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[Airdrop] Requesting %.1f Devnet SOL for %s...", sol_amt, addr->c_str());
+
+                        char req[384];
+                        snprintf(req, sizeof(req),
+                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"%s\",%llu]}",
+                                 addr->c_str(), lamports);
+
+                        auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+                        if (resp.success) {
+                            cJSON* root = cJSON_Parse(resp.body.c_str());
+                            cJSON* res = root ? cJSON_GetObjectItem(root, "result") : nullptr;
+                            if (res && cJSON_IsString(res)) {
+                                ESP_LOGI(CTAG, "  Airdrop SUCCESS! Tx Signature:");
+                                ESP_LOGI(CTAG, "  %s", res->valuestring);
+                            } else {
+                                ESP_LOGW(CTAG, "  Airdrop requested (response received)");
+                            }
+                            if (root) cJSON_Delete(root);
+                        } else {
+                            ESP_LOGE(CTAG, "Airdrop request failed");
+                        }
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    }
+
                 // ── wallet_create ─────────────────────────────
                 } else if (strcmp(cmd, "wallet_create") == 0) {
                     ESP_LOGI(CTAG, "-------------------------------------------------");
@@ -345,6 +515,86 @@ extern "C" void app_main(void) {
                     memset(cmd + 14, 0, len - 14);
                     ESP_LOGI(CTAG, "-------------------------------------------------");
 
+                // ── AI chat message ────────────────────────────
+                } else if (strncmp(cmd, "ai ", 3) == 0 && len > 3) {
+                    const char* msg = cmd + 3;
+                    ESP_LOGI(CTAG, "[AI] Sending message to AI Assistant: '%s'", msg);
+                    Fuchey::Events::Event evt{};
+                    evt.type = Fuchey::Events::EventType::AI_MESSAGE_RECV;
+                    std::strncpy(evt.data.chat.text, msg, sizeof(evt.data.chat.text) - 1);
+                    Fuchey::Events::post(Fuchey::Events::g_ai_queue, evt);
+
+                // ── AI API key ─────────────────────────────────
+                } else if (strncmp(cmd, "ai_key ", 7) == 0 && len > 7) {
+                    const char* key = cmd + 7;
+                    if (s_ai_manager.set_api_key(key)) {
+                        ESP_LOGI(CTAG, "[AI] API Key saved to NVS successfully");
+                    } else {
+                        ESP_LOGE(CTAG, "[AI] Failed to save API Key to NVS");
+                    }
+
+                // ── Send SOL ──────────────────────────────────
+                } else if (strncmp(cmd, "send sol ", 9) == 0 && len > 9) {
+                    float amount = 0.0f;
+                    char recipient[64] = {0};
+                    if (sscanf(cmd + 9, "%f %63s", &amount, recipient) == 2) {
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[SEND SOL] Initiating transfer:");
+                        ESP_LOGI(CTAG, "  Asset:     SOL");
+                        ESP_LOGI(CTAG, "  Amount:    %.4f SOL", amount);
+                        ESP_LOGI(CTAG, "  Recipient: %s", recipient);
+
+                        // Convert SOL amount to estimated USD cents for spending policy check ($150/SOL default estimate if unfetched)
+                        uint64_t cents = static_cast<uint64_t>(amount * 150.0f * 100.0f);
+                        Fuchey::Events::Event evt{};
+                        evt.type = Fuchey::Events::EventType::TX_REQUEST;
+                        evt.data.tx.amount_cents = cents;
+                        evt.data.tx.tx_len = 0;
+                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    } else {
+                        ESP_LOGW(CTAG, "Usage: send sol <amount> <recipient_address>");
+                    }
+
+                // ── Send USDC ─────────────────────────────────
+                } else if (strncmp(cmd, "send usdc ", 10) == 0 && len > 10) {
+                    float amount = 0.0f;
+                    char recipient[64] = {0};
+                    if (sscanf(cmd + 10, "%f %63s", &amount, recipient) == 2) {
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[SEND USDC] Initiating SPL transfer:");
+                        ESP_LOGI(CTAG, "  Asset:     USDC (SPL Token)");
+                        ESP_LOGI(CTAG, "  Amount:    $%.2f USDC", amount);
+                        ESP_LOGI(CTAG, "  Recipient: %s", recipient);
+
+                        // 1 USDC = $1.00 = 100 cents
+                        uint64_t cents = static_cast<uint64_t>(amount * 100.0f);
+                        Fuchey::Events::Event evt{};
+                        evt.type = Fuchey::Events::EventType::TX_REQUEST;
+                        evt.data.tx.amount_cents = cents;
+                        evt.data.tx.tx_len = 0;
+                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    } else {
+                        ESP_LOGW(CTAG, "Usage: send usdc <amount> <recipient_address>");
+                    }
+
+                // ── Interactive Send prompt ───────────────────
+                } else if (strcmp(cmd, "send") == 0) {
+                    ESP_LOGI(CTAG, "=================================================");
+                    ESP_LOGI(CTAG, "  SEND TOKEN SELECTION:");
+                    ESP_LOGI(CTAG, "    send sol  <amount> <recipient>");
+                    ESP_LOGI(CTAG, "    send usdc <amount> <recipient>");
+                    ESP_LOGI(CTAG, "  Example:");
+                    ESP_LOGI(CTAG, "    send sol 0.25 7xKX...3b9Z");
+                    ESP_LOGI(CTAG, "    send usdc 5.00 7xKX...3b9Z");
+                    ESP_LOGI(CTAG, "=================================================");
+
+                // ── Manual Weather update ──────────────────────
+                } else if (strcmp(cmd, "weather") == 0) {
+                    ESP_LOGI(CTAG, "[Weather] Fetching geolocation & weather...");
+                    s_weather_service.update_now();
+
                 // ── Help ──────────────────────────────────────
                 } else if ((cmd[0] == 'h' || cmd[0] == '?') && len == 1) {
                     ESP_LOGI(CTAG, "  w <ssid> <pass>          WiFi connect & save");
@@ -352,6 +602,15 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  wallet_import <12 words> Import BIP39 mnemonic");
                     ESP_LOGI(CTAG, "  wallet_import <64hex>    Import raw private key");
                     ESP_LOGI(CTAG, "  wallet_info              Show current address");
+                    ESP_LOGI(CTAG, "  balance                  Fetch live SOL & USDC balance");
+                    ESP_LOGI(CTAG, "  ai <message>             Send prompt to AI Assistant");
+                    ESP_LOGI(CTAG, "  ai_key <key>             Set OpenAI API key");
+                    ESP_LOGI(CTAG, "  send                     Token transfer menu (SOL / USDC)");
+                    ESP_LOGI(CTAG, "  send sol <amt> <to>      Transfer SOL");
+                    ESP_LOGI(CTAG, "  send usdc <amt> <to>     Transfer USDC");
+                    ESP_LOGI(CTAG, "  network                  Show / switch network (devnet/mainnet)");
+                    ESP_LOGI(CTAG, "  airdrop [amount]         Request Devnet SOL airdrop");
+                    ESP_LOGI(CTAG, "  weather                  Fetch weather & geolocation");
                     ESP_LOGI(CTAG, "  p                        Fetch SOL price");
                     ESP_LOGI(CTAG, "  c / 1                    CONFIRM button");
                     ESP_LOGI(CTAG, "  b / 2                    BACK button");
