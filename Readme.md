@@ -17,5 +17,5 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 - 🛡️ Security-first modular architecture
 - 🌍 Fully open source
 
-## Designed by Pranjal KhareL 
+## Designed by Pranjal Kharel
 ## https://pranjalkharel.com.np
