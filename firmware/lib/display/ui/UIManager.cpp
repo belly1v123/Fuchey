@@ -8,10 +8,14 @@
 #include "../../buttons/ButtonDriver.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "../../wallet/WalletCore.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <time.h>
+extern "C" {
+#include "qrcodegen.h"
+}
 
 namespace Fuchey {
 
@@ -166,6 +170,7 @@ void UIManager::render() {
         case UIScreen::IDLE_MESSAGE: render_message();     break;
         case UIScreen::MENU_MAIN:    render_menu();        break;
         case UIScreen::WALLET_INFO:  render_wallet_info(); break;
+        case UIScreen::WALLET_QR:    render_wallet_qr();   break;
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::CHAT_VIEW:    render_chat();        break;
     }
@@ -239,30 +244,116 @@ void UIManager::render_message() {
 void UIManager::render_menu() {
     m_display.draw_text_centered(2, "MAIN MENU", Display::FontSize::SMALL);
     m_display.draw_hline(0, 12, 128);
-    m_display.draw_text(8, 18, "> Wallet Info", Display::FontSize::SMALL);
-    m_display.draw_text(8, 32, "  AI Assistant", Display::FontSize::SMALL);
-    m_display.draw_text(8, 46, "  SOL Price", Display::FontSize::SMALL);
-    m_display.draw_text(2, 56, "[C]=Select [B]=Back", Display::FontSize::SMALL);
+
+    m_display.draw_text(8, 16, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
+    m_display.draw_text(8, 28, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
+    m_display.draw_text(8, 40, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
+
+    m_display.draw_text(2, 54, "1x:Select 2x:Next", Display::FontSize::SMALL);
 }
 
 void UIManager::render_wallet_info() {
-    m_display.draw_text_centered(2, "WALLET", Display::FontSize::SMALL);
+    m_display.draw_text_centered(2, "WALLET INFO", Display::FontSize::SMALL);
     m_display.draw_hline(0, 12, 128);
-    m_display.draw_text_centered(18, "Solana Address:", Display::FontSize::SMALL);
 
-    // Display truncated address: first 8 + ... + last 4 chars
-    if (!m_wallet_address.empty() && m_wallet_address.size() > 12) {
-        char addr_buf[24];
-        snprintf(addr_buf, sizeof(addr_buf), "%.8s...%s",
-                 m_wallet_address.c_str(),
-                 m_wallet_address.c_str() + m_wallet_address.size() - 4);
-        m_display.draw_text_centered(32, addr_buf, Display::FontSize::SMALL);
-    } else if (!m_wallet_address.empty()) {
-        m_display.draw_text_centered(32, m_wallet_address.c_str(), Display::FontSize::SMALL);
-    } else {
-        m_display.draw_text_centered(32, "No wallet", Display::FontSize::SMALL);
+    // Auto-fetch cached address via global pointer set in app_main()
+    if (m_wallet_address.empty()) {
+        extern Fuchey::WalletCore* g_wallet_core_ptr;
+        if (g_wallet_core_ptr) {
+            auto addr = g_wallet_core_ptr->get_address();
+            if (addr) m_wallet_address = *addr;
+        }
     }
-    m_display.draw_text_centered(50, "[B] Back", Display::FontSize::SMALL);
+
+    if (!m_wallet_address.empty()) {
+        // Split the full address across up to 3 lines of 15 chars each
+        // SMALL font ~6px/char on 128px → ~21 chars fit; use 15 for safe centering
+        static constexpr size_t CHUNK = 15;
+        const char* p   = m_wallet_address.c_str();
+        size_t      len = m_wallet_address.size();
+
+        char line1[CHUNK + 1] = {};
+        char line2[CHUNK + 1] = {};
+        char line3[CHUNK + 1] = {};
+
+        size_t l1 = (len >= CHUNK)        ? CHUNK : len;
+        size_t l2 = (len >= CHUNK * 2)    ? CHUNK : (len > CHUNK ? len - CHUNK : 0);
+        size_t l3 = (len >  CHUNK * 2)    ? len - CHUNK * 2 : 0;
+        if (l3 > CHUNK) l3 = CHUNK;
+
+        strncpy(line1, p,              l1); line1[l1] = '\0';
+        strncpy(line2, p + CHUNK,      l2); line2[l2] = '\0';
+        strncpy(line3, p + CHUNK * 2,  l3); line3[l3] = '\0';
+
+        m_display.draw_text_centered(16, line1, Display::FontSize::SMALL);
+        if (l2) m_display.draw_text_centered(27, line2, Display::FontSize::SMALL);
+        if (l3) m_display.draw_text_centered(38, line3, Display::FontSize::SMALL);
+        m_display.draw_text_centered(52, "b: Back", Display::FontSize::SMALL);
+    } else {
+        m_display.draw_text_centered(30, "No wallet setup", Display::FontSize::SMALL);
+        m_display.draw_text_centered(52, "b: Back", Display::FontSize::SMALL);
+    }
+}
+
+void UIManager::render_wallet_qr() {
+    // Ensure we have the wallet address cached
+    if (m_wallet_address.empty()) {
+        extern Fuchey::WalletCore* g_wallet_core_ptr;
+        if (g_wallet_core_ptr) {
+            auto addr = g_wallet_core_ptr->get_address();
+            if (addr) m_wallet_address = *addr;
+        }
+    }
+
+    if (m_wallet_address.empty()) {
+        m_display.draw_text_centered(28, "No wallet", Display::FontSize::SMALL);
+        m_display.draw_text_centered(42, "b: Back",   Display::FontSize::SMALL);
+        return;
+    }
+
+    // qrcodegen buffers (stack-allocated, no heap needed)
+    // Version 10 max → (4*10+17)^2 = 57^2 = 3249 bits → 407 bytes per buffer
+    static constexpr int MAX_VERSION = 10;
+    static constexpr int BUF_LEN = qrcodegen_BUFFER_LEN_FOR_VERSION(MAX_VERSION);
+    uint8_t qr_code[BUF_LEN];
+    uint8_t tmp_buf[BUF_LEN];
+
+    bool ok = qrcodegen_encodeText(
+        m_wallet_address.c_str(),
+        tmp_buf,
+        qr_code,
+        qrcodegen_Ecc_LOW,
+        qrcodegen_VERSION_MIN,
+        MAX_VERSION,
+        qrcodegen_Mask_AUTO,
+        true
+    );
+
+    if (!ok) {
+        m_display.draw_text_centered(28, "QR gen failed", Display::FontSize::SMALL);
+        m_display.draw_text_centered(42, "b: Back",       Display::FontSize::SMALL);
+        return;
+    }
+
+    int qr_size = qrcodegen_getSize(qr_code);   // number of modules (e.g. 29 for V3)
+    int px      = 2;                              // pixels per module
+    int total   = qr_size * px;
+
+    // Center the QR code; leave top-4px for the tiny "QR" label
+    int x_off = (Display::WIDTH  - total) / 2;
+    int y_off = 4 + (Display::HEIGHT - 4 - total) / 2;
+
+    // Draw title
+    m_display.draw_text_centered(0, "WALLET QR", Display::FontSize::SMALL);
+
+    // Draw QR modules
+    for (int row = 0; row < qr_size; row++) {
+        for (int col = 0; col < qr_size; col++) {
+            if (qrcodegen_getModule(qr_code, col, row)) {
+                m_display.fill_rect(x_off + col * px, y_off + row * px, px, px);
+            }
+        }
+    }
 }
 
 void UIManager::render_tx_confirm() {
@@ -384,65 +475,83 @@ void UIManager::run() {
 
             ESP_LOGI(TAG, "[BTN] id=%s event=%s",
                      btn.id == ButtonId::CONFIRM ? "CONFIRM" : "BACK",
-                     btn.event == ButtonEvent::PRESS      ? "PRESS" :
-                     btn.event == ButtonEvent::LONG_PRESS ? "LONG_PRESS" : "RELEASE");
+                     btn.event == ButtonEvent::PRESS        ? "PRESS" :
+                     btn.event == ButtonEvent::DOUBLE_PRESS ? "DOUBLE_PRESS" :
+                     btn.event == ButtonEvent::LONG_PRESS   ? "LONG_PRESS" : "RELEASE");
 
-            if (btn.id == ButtonId::CONFIRM && btn.event == ButtonEvent::PRESS) {
-                switch (m_current_screen) {
-                    // Idle screens → go to menu
-                    case UIScreen::IDLE_CLOCK:
-                    case UIScreen::IDLE_WEATHER:
-                    case UIScreen::IDLE_PRICE:
-                    case UIScreen::IDLE_MESSAGE:
-                        ESP_LOGI(TAG, "Screen: MENU_MAIN");
-                        set_screen(UIScreen::MENU_MAIN);
-                        break;
+            // Reset idle cycle timer on any button activity
+            m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 
-                    // Menu → wallet info
-                    case UIScreen::MENU_MAIN:
-                        ESP_LOGI(TAG, "Screen: WALLET_INFO");
-                        set_screen(UIScreen::WALLET_INFO);
-                        break;
-
-                    // Wallet info → back to idle
-                    case UIScreen::WALLET_INFO:
-                        ESP_LOGI(TAG, "Screen: IDLE_CLOCK");
-                        set_screen(UIScreen::IDLE_CLOCK);
-                        break;
-
-                    // TX confirm → CONFIRM → post TX_APPROVED
-                    case UIScreen::TX_CONFIRM: {
-                        ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
-                                 static_cast<double>(m_tx_amount_cents) / 100.0);
-                        Events::Event tx_evt{};
-                        tx_evt.type = Events::EventType::TX_APPROVED;
-                        tx_evt.data.tx.amount_cents = m_tx_amount_cents;
-                        Events::post(Events::g_wallet_queue, tx_evt);
-                        set_screen(UIScreen::IDLE_CLOCK);
-                        break;
-                    }
-
-                    case UIScreen::CHAT_VIEW:
-                    default:
-                        set_screen(UIScreen::IDLE_CLOCK);
-                        break;
-                }
-
-            } else if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::LONG_PRESS) {
-                // TX confirm BACK → REJECT
-                if (m_current_screen == UIScreen::TX_CONFIRM) {
+            // Handle menu navigation & TX confirmation
+            if (m_current_screen == UIScreen::TX_CONFIRM) {
+                if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
+                    ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
+                             static_cast<double>(m_tx_amount_cents) / 100.0);
+                    Events::Event tx_evt{};
+                    tx_evt.type = Events::EventType::TX_APPROVED;
+                    tx_evt.data.tx.amount_cents = m_tx_amount_cents;
+                    Events::post(Events::g_wallet_queue, tx_evt);
+                    set_screen(UIScreen::IDLE_CLOCK);
+                } else if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.event == ButtonEvent::LONG_PRESS || btn.id == ButtonId::BACK) {
                     ESP_LOGI(TAG, "[TX] User REJECTED transaction");
                     Events::Event tx_evt{};
                     tx_evt.type = Events::EventType::TX_REJECTED;
                     Events::post(Events::g_wallet_queue, tx_evt);
+                    set_screen(UIScreen::IDLE_CLOCK);
                 }
-                ESP_LOGI(TAG, "Screen: IDLE_CLOCK (back)");
-                set_screen(UIScreen::IDLE_CLOCK);
+            } else if (m_current_screen == UIScreen::MENU_MAIN) {
+                // NEXT option (Double Press or BACK button or 'n' serial command)
+                if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.id == ButtonId::BACK) {
+                    m_menu_index = (m_menu_index + 1) % 3;
+                    ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
+                }
+                // SELECT option (CONFIRM button / 'c' / '1' serial command)
+                else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
+                    if (m_menu_index == 0) {
+                        ESP_LOGI(TAG, "Screen: WALLET_INFO");
+                        set_screen(UIScreen::WALLET_INFO);
+                    } else if (m_menu_index == 1) {
+                        ESP_LOGI(TAG, "Screen: CHAT_VIEW");
+                        set_screen(UIScreen::CHAT_VIEW);
+                    } else if (m_menu_index == 2) {
+                        ESP_LOGI(TAG, "Screen: IDLE_PRICE");
+                        set_screen(UIScreen::IDLE_PRICE);
+                    }
+                }
+            } else if (m_current_screen == UIScreen::WALLET_INFO) {
+                if (btn.id == ButtonId::BACK) {
+                    ESP_LOGI(TAG, "Screen: WALLET_INFO -> MENU_MAIN");
+                    set_screen(UIScreen::MENU_MAIN);
+                } else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
+                    // 'q' / select on WALLET_INFO -> toggle to QR view
+                    ESP_LOGI(TAG, "Screen: WALLET_INFO -> WALLET_QR");
+                    set_screen(UIScreen::WALLET_QR);
+                }
+            } else if (m_current_screen == UIScreen::WALLET_QR) {
+                // Any key returns to address text view
+                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
+                    ESP_LOGI(TAG, "Screen: WALLET_QR -> WALLET_INFO");
+                    set_screen(UIScreen::WALLET_INFO);
+                }
+            } else if (m_current_screen == UIScreen::CHAT_VIEW) {
+                if (btn.id == ButtonId::BACK) {
+                    ESP_LOGI(TAG, "Screen: Returning to MENU_MAIN from CHAT_VIEW");
+                    set_screen(UIScreen::MENU_MAIN);
+                }
             }
         }
 
-        // Cycle ambient idle screens (only when not in setup or active wallet screens)
-        if (!m_setup_needed) {
+        // Auto-timeout from Menu/subscreens back to Idle after 15s of inactivity
+        if (m_current_screen == UIScreen::MENU_MAIN ||
+            m_current_screen == UIScreen::WALLET_INFO ||
+            m_current_screen == UIScreen::WALLET_QR) {
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_last_idle_cycle_ms >= 15000) {
+                ESP_LOGI(TAG, "[Menu] Timeout after 15s inactivity -> Returning to Idle Cycle");
+                set_screen(UIScreen::IDLE_CLOCK);
+            }
+        } else if (!m_setup_needed) {
+            // Cycle ambient idle screens (Clock -> Weather -> Price -> Message -> Clock)
             cycle_idle_screen();
         }
 

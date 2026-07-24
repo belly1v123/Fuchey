@@ -205,6 +205,36 @@ HttpResponse WiFiManager::post_json(const char* url, const char* body,
     return do_request(cfg, "POST", body, bearer_token, timeout_ms);
 }
 
+// ─── Body accumulator (used as user_data in HTTP events) ──
+struct BodyBuffer {
+    std::string data;
+    bool        overflow = false;
+};
+
+static esp_err_t http_event_handler(esp_http_client_event_t* evt) {
+    auto* buf = static_cast<BodyBuffer*>(evt->user_data);
+    if (!buf) return ESP_OK;
+
+    switch (evt->event_id) {
+        case HTTP_EVENT_ON_DATA:
+            if (!buf->overflow) {
+                if (buf->data.size() + evt->data_len > WiFiManager::HTTP_BUF_SIZE) {
+                    ESP_LOGW("WiFiManager", "Response body exceeds buffer — truncating");
+                    buf->overflow = true;
+                } else {
+                    buf->data.append(static_cast<const char*>(evt->data), evt->data_len);
+                }
+            }
+            break;
+        case HTTP_EVENT_ON_FINISH:
+        case HTTP_EVENT_DISCONNECTED:
+            break;
+        default:
+            break;
+    }
+    return ESP_OK;
+}
+
 // ─── Internal HTTP request ────────────────────────────────
 HttpResponse WiFiManager::do_request(esp_http_client_config_t& cfg,
                                       const char* method,
@@ -217,6 +247,11 @@ HttpResponse WiFiManager::do_request(esp_http_client_config_t& cfg,
         ESP_LOGW(TAG, "HTTP request attempted without IP — no network");
         return response;
     }
+
+    // Wire up event handler to accumulate body chunks during perform()
+    BodyBuffer buf;
+    cfg.event_handler = http_event_handler;
+    cfg.user_data     = &buf;
 
     auto client = esp_http_client_init(&cfg);
     if (!client) {
@@ -241,14 +276,8 @@ HttpResponse WiFiManager::do_request(esp_http_client_config_t& cfg,
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
         response.status_code = esp_http_client_get_status_code(client);
-        int64_t content_length = esp_http_client_get_content_length(client);
-        if (content_length > 0 && content_length < static_cast<int64_t>(HTTP_BUF_SIZE)) {
-            response.body.resize(static_cast<size_t>(content_length));
-            esp_http_client_read_response(client,
-                                           response.body.data(),
-                                           static_cast<int>(content_length));
-        }
-        response.success = (response.status_code >= 200 && response.status_code < 300);
+        response.body        = std::move(buf.data);   // body already assembled by event handler
+        response.success     = (response.status_code >= 200 && response.status_code < 300);
     } else {
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
     }

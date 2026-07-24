@@ -22,19 +22,23 @@ bool PriceService::parse_price_json(const std::string& json_str, float& out_pric
     cJSON* root = cJSON_Parse(json_str.c_str());
     if (!root) return false;
 
-    cJSON* sol = cJSON_GetObjectItem(root, "solana");
-    if (!sol) {
+    // Binance format: {"symbol":"SOLUSDT","price":"185.43"}
+    // Price is a JSON string, not a number
+    cJSON* price = cJSON_GetObjectItem(root, "price");
+    if (!price) {
         cJSON_Delete(root);
         return false;
     }
 
-    cJSON* usd = cJSON_GetObjectItem(sol, "usd");
-    if (!usd) {
+    if (cJSON_IsString(price) && price->valuestring) {
+        out_price = static_cast<float>(atof(price->valuestring));
+    } else if (cJSON_IsNumber(price)) {
+        out_price = static_cast<float>(price->valuedouble);
+    } else {
         cJSON_Delete(root);
         return false;
     }
 
-    out_price = static_cast<float>(usd->valuedouble);
     cJSON_Delete(root);
     return true;
 }

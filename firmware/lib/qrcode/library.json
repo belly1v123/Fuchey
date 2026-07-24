@@ -1,0 +1,10 @@
+{
+  "name": "qrcode",
+  "version": "1.0.0",
+  "description": "Nayuki QR Code generator library (C)",
+  "build": {
+    "srcFilter": ["+<*.c>"],
+    "flags": ["-Wno-error"],
+    "unflags": ["-fuse-cxa-atexit"]
+  }
+}

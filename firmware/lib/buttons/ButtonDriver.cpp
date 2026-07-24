@@ -116,10 +116,20 @@ void ButtonDriver::debounce_timer_cb(TimerHandle_t timer) {
     // We use the global Events system here.
     if (::g_button_queue_ref == nullptr) return;
 
+    uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    ButtonEvent evt_type = current ? ButtonEvent::PRESS : ButtonEvent::RELEASE;
+
+    if (current) {
+        if (now_ms - btn->last_press_time_ms <= 400) {
+            evt_type = ButtonEvent::DOUBLE_PRESS;
+        }
+        btn->last_press_time_ms = now_ms;
+    }
+
     ButtonState state{
         .id           = btn->id,
-        .event        = current ? ButtonEvent::PRESS : ButtonEvent::RELEASE,
-        .timestamp_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000),
+        .event        = evt_type,
+        .timestamp_ms = now_ms,
     };
 
     xQueueSend(::g_button_queue_ref, &state, 0);

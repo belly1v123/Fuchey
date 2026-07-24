@@ -35,6 +35,8 @@ public:
     bool connect_from_nvs();
     void disconnect();
 
+    static constexpr size_t HTTP_BUF_SIZE = 8192;
+
     // ── Status ───────────────────────────────────────────
     bool is_connected() const { return m_connected; }
     bool has_ip()       const { return m_has_ip; }
@@ -72,7 +74,6 @@ private:
                             const char* bearer_token,
                             uint32_t timeout_ms);
 
-    static constexpr size_t HTTP_BUF_SIZE = 8192;
     static constexpr const char* TAG = "WiFiManager";
 };
 

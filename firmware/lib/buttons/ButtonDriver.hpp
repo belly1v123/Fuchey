@@ -23,9 +23,10 @@ enum class ButtonId : uint8_t {
 
 // ─── Button Event Types ───────────────────────────────────
 enum class ButtonEvent : uint8_t {
-    PRESS       = 0,
-    RELEASE     = 1,
-    LONG_PRESS  = 2,
+    PRESS        = 0,
+    RELEASE      = 1,
+    LONG_PRESS   = 2,
+    DOUBLE_PRESS = 3,
 };
 
 // ─── Button State ─────────────────────────────────────────
@@ -63,6 +64,7 @@ private:
         bool         last_state{false};
         bool         pressed{false};
         uint32_t     press_time_ms{0};
+        uint32_t     last_press_time_ms{0};
         TimerHandle_t debounce_timer{nullptr};
         TimerHandle_t long_press_timer{nullptr};
     };

@@ -20,6 +20,7 @@ enum class UIScreen {
     IDLE_MESSAGE,
     MENU_MAIN,
     WALLET_INFO,
+    WALLET_QR,
     TX_CONFIRM,
     CHAT_VIEW
 };
@@ -73,6 +74,7 @@ private:
     std::string m_wallet_address{};     // Cached after wallet created/imported
     uint32_t    m_connecting_dots_ms{0};
     uint8_t     m_connecting_dots{0};
+    uint8_t     m_menu_index{0};
 
     void render_clock();
     void render_weather();
@@ -80,6 +82,7 @@ private:
     void render_message();
     void render_menu();
     void render_wallet_info();
+    void render_wallet_qr();
     void render_tx_confirm();
     void render_chat();
     void render_setup();

@@ -22,6 +22,7 @@
 #include "../lib/display/ui/UIManager.hpp"
 #include "../lib/buttons/ButtonDriver.hpp"
 #include "../lib/crypto/CryptoEngine.hpp"
+#include "../lib/crypto/Base58.hpp"
 #include "../lib/wallet/WalletCore.hpp"
 #include "../lib/policy/SpendingPolicy.hpp"
 #include "../lib/wallet_manager/WalletManager.hpp"
@@ -59,8 +60,8 @@ static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
                                         Fuchey::Buttons::PIN_BACK,
                                         Fuchey::Buttons::DEBOUNCE_MS,
                                         Fuchey::Buttons::LONG_PRESS_MS);
-
-static Fuchey::WalletCore     s_wallet_core;
+Fuchey::WalletCore            s_wallet_core;
+namespace Fuchey { WalletCore* g_wallet_core_ptr = nullptr; }
 static Fuchey::SpendingPolicy s_spending_policy;
 static Fuchey::WalletManager  s_wallet_manager(s_wallet_core, s_spending_policy);
 
@@ -141,7 +142,7 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "[OK] Button driver initialized (CONFIRM=GPIO%d)", Fuchey::Buttons::PIN_CONFIRM);
     }
 
-    // 3. Initialize Core Security & Wallet Layer
+    Fuchey::g_wallet_core_ptr = &s_wallet_core;
     s_spending_policy.init();
     s_wallet_core.init();
     s_wallet_manager.init();
@@ -196,15 +197,15 @@ extern "C" void app_main(void) {
                             Fuchey::Tasks::AI_STACK, &s_ai_manager,
                             Fuchey::Tasks::AI_PRIORITY, nullptr, Fuchey::Tasks::AI_CORE);
 
-    // Weather Task (Core 0)
+    // Weather Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
     xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
                             Fuchey::Tasks::WEATHER_STACK, &s_weather_service,
-                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::UI_CORE);
+                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::WEATHER_CORE);
 
-    // Price Task (Core 0)
+    // Price Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
     xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
-                            Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::UI_CORE);
+                            Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {
@@ -238,9 +239,9 @@ extern "C" void app_main(void) {
                 len = strlen(cmd);
                 if (len == 0) continue;
 
-                // ── CONFIRM button ────────────────────────────
+                // ── CONFIRM / SELECT button ────────────────────
                 if ((cmd[0] == 'c' || cmd[0] == '1') && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] CONFIRM");
+                    ESP_LOGI(CTAG, "[INPUT] CONFIRM / SELECT");
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::CONFIRM,
                         .event = Fuchey::ButtonEvent::PRESS,
@@ -257,6 +258,21 @@ extern "C" void app_main(void) {
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── NEXT option button ────────────────────────
+                } else if ((cmd[0] == 'n' || strcmp(cmd, "next") == 0)) {
+                    ESP_LOGI(CTAG, "[INPUT] NEXT OPTION");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::BACK,
+                        .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── menu command ──────────────────────────────
+                } else if (strcmp(cmd, "menu") == 0) {
+                    ESP_LOGI(CTAG, "[Console] Opening Main Menu on OLED screen");
+                    s_ui.set_screen(Fuchey::UIScreen::MENU_MAIN);
 
                 // ── WiFi connect ──────────────────────────────
                 } else if (cmd[0] == 'w' && cmd[1] == ' ' && len > 2) {
@@ -292,6 +308,11 @@ extern "C" void app_main(void) {
                         ESP_LOGW(CTAG, "  No wallet configured yet.");
                     }
 
+                // ── qr ────────────────────────────────────────
+                } else if (strcmp(cmd, "qr") == 0) {
+                    ESP_LOGI(CTAG, "[UI] Switching to Wallet QR screen");
+                    s_ui.set_screen(Fuchey::UIScreen::WALLET_QR);
+
                 // ── balance ───────────────────────────────────
                 } else if (strcmp(cmd, "balance") == 0) {
                     auto addr = s_wallet_core.get_address();
@@ -312,11 +333,15 @@ extern "C" void app_main(void) {
                                      get_rpc_url(),
                                      address.c_str());
 
-                            // JSON-RPC getBalance payload for SOL
+                            // ── Fetch SOL balance ──────────────────────────
                             char sol_req[256];
                             snprintf(sol_req, sizeof(sol_req),
                                      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
                                      address.c_str());
+
+                            double sol_bal   = 0.0;
+                            double lamports  = 0.0;
+                            bool   sol_ok    = false;
 
                             auto resp = s_wifi_manager.post_json(get_rpc_url(), sol_req);
                             if (resp.success) {
@@ -325,52 +350,69 @@ extern "C" void app_main(void) {
                                     cJSON* res = cJSON_GetObjectItem(root, "result");
                                     cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
                                     if (val && cJSON_IsNumber(val)) {
-                                        double lamports = val->valuedouble;
-                                        double sol_bal = lamports / 1000000000.0;
-                                        ESP_LOGI(CTAG, "  SOL Balance:  %.6f SOL (%.0f lamports)", sol_bal, lamports);
+                                        lamports = val->valuedouble;
+                                        sol_bal  = lamports / 1000000000.0;
+                                        sol_ok   = true;
                                     } else {
-                                        ESP_LOGW(CTAG, "  SOL Balance:  0.000000 SOL (0 lamports)");
+                                        cJSON* err_item = cJSON_GetObjectItem(root, "error");
+                                        if (err_item) {
+                                            cJSON* msg = cJSON_GetObjectItem(err_item, "message");
+                                            ESP_LOGE(CTAG, "  SOL RPC Error: %s",
+                                                     msg && msg->valuestring ? msg->valuestring : "Unknown error");
+                                        }
                                     }
                                     cJSON_Delete(root);
                                 } else {
-                                    ESP_LOGE(CTAG, "  SOL: JSON parse failed. Body: %.80s", resp.body.c_str());
+                                    ESP_LOGE(CTAG, "  SOL RPC Parse Error. Raw: %.100s", resp.body.c_str());
                                 }
                             } else {
-                                ESP_LOGE(CTAG, "Failed to query SOL balance from RPC");
+                                ESP_LOGE(CTAG, "Failed to query SOL balance (HTTP %d)", resp.status_code);
                             }
 
-                            // JSON-RPC getTokenAccountsByOwner payload for USDC
+                            // Small delay between RPC calls
+                            vTaskDelay(pdMS_TO_TICKS(100));
+
+                            // ── Fetch USDC balance ─────────────────────────
                             char usdc_req[512];
                             snprintf(usdc_req, sizeof(usdc_req),
                                      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
                                      "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
                                      address.c_str(), get_usdc_mint());
 
+                            double usdc_bal = 0.0;
+                            bool   usdc_ok  = false;
+
                             auto u_resp = s_wifi_manager.post_json(get_rpc_url(), usdc_req);
                             if (u_resp.success) {
                                 cJSON* root = cJSON_Parse(u_resp.body.c_str());
-                                double usdc_bal = 0.0;
                                 if (root) {
                                     cJSON* res = cJSON_GetObjectItem(root, "result");
                                     cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
                                     if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {
-                                        cJSON* item0 = cJSON_GetArrayItem(val, 0);
+                                        cJSON* item0   = cJSON_GetArrayItem(val, 0);
                                         cJSON* account = cJSON_GetObjectItem(item0, "account");
-                                        cJSON* data = account ? cJSON_GetObjectItem(account, "data") : nullptr;
-                                        cJSON* parsed = data ? cJSON_GetObjectItem(data, "parsed") : nullptr;
-                                        cJSON* info = parsed ? cJSON_GetObjectItem(parsed, "info") : nullptr;
-                                        cJSON* t_amt = info ? cJSON_GetObjectItem(info, "tokenAmount") : nullptr;
-                                        cJSON* ui_amt = t_amt ? cJSON_GetObjectItem(t_amt, "uiAmount") : nullptr;
+                                        cJSON* data    = account ? cJSON_GetObjectItem(account, "data")   : nullptr;
+                                        cJSON* parsed  = data    ? cJSON_GetObjectItem(data,    "parsed") : nullptr;
+                                        cJSON* info    = parsed  ? cJSON_GetObjectItem(parsed,  "info")   : nullptr;
+                                        cJSON* t_amt   = info    ? cJSON_GetObjectItem(info,    "tokenAmount") : nullptr;
+                                        cJSON* ui_amt  = t_amt   ? cJSON_GetObjectItem(t_amt,   "uiAmount")   : nullptr;
                                         if (ui_amt && cJSON_IsNumber(ui_amt)) {
                                             usdc_bal = ui_amt->valuedouble;
+                                            usdc_ok  = true;
                                         }
+                                    } else {
+                                        usdc_ok = true; // account exists, just 0 balance
                                     }
                                     cJSON_Delete(root);
                                 }
-                                ESP_LOGI(CTAG, "  USDC Balance: $%.2f USDC", usdc_bal);
                             } else {
-                                ESP_LOGE(CTAG, "Failed to query USDC balance from RPC");
+                                ESP_LOGE(CTAG, "Failed to query USDC balance (HTTP %d)", u_resp.status_code);
                             }
+
+                            // ── Print both on one line ──────────────────────
+                            ESP_LOGI(CTAG, "  SOL: %.6f SOL  |  USDC: $%.2f",
+                                     sol_ok ? sol_bal : 0.0,
+                                     usdc_ok ? usdc_bal : 0.0);
                             ESP_LOGI(CTAG, "-------------------------------------------------");
                             vTaskDelete(nullptr);
                         }, "bal_task", 8192, nullptr, 4, nullptr);
@@ -557,25 +599,198 @@ extern "C" void app_main(void) {
                     }
 
                 // ── Send SOL ──────────────────────────────────
+                // ── Send SOL ──────────────────────────────────
                 } else if (strncmp(cmd, "send sol ", 9) == 0 && len > 9) {
-                    float amount = 0.0f;
-                    char recipient[64] = {0};
-                    if (sscanf(cmd + 9, "%f %63s", &amount, recipient) == 2) {
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
-                        ESP_LOGI(CTAG, "[SEND SOL] Initiating transfer:");
-                        ESP_LOGI(CTAG, "  Asset:     SOL");
-                        ESP_LOGI(CTAG, "  Amount:    %.4f SOL", amount);
-                        ESP_LOGI(CTAG, "  Recipient: %s", recipient);
+                    struct SendArgs {
+                        float amount;
+                        char  recipient[64];
+                    };
 
-                        // Convert SOL amount to estimated USD cents for spending policy check ($150/SOL default estimate if unfetched)
-                        uint64_t cents = static_cast<uint64_t>(amount * 150.0f * 100.0f);
-                        Fuchey::Events::Event evt{};
-                        evt.type = Fuchey::Events::EventType::TX_REQUEST;
-                        evt.data.tx.amount_cents = cents;
-                        evt.data.tx.tx_len = 0;
-                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    auto* args = new SendArgs();
+                    args->amount = 0.0f;
+                    memset(args->recipient, 0, sizeof(args->recipient));
+
+                    if (sscanf(cmd + 9, "%f %63s", &args->amount, args->recipient) == 2) {
+                        xTaskCreate([](void* p) {
+                            static constexpr const char* CTAG = "Console";
+                            auto* args = static_cast<SendArgs*>(p);
+                            float amount = args->amount;
+                            std::string recipient_str = args->recipient;
+                            delete args;
+
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            ESP_LOGI(CTAG, "[SEND SOL] Initiating transfer:");
+                            ESP_LOGI(CTAG, "  Asset:     SOL");
+                            ESP_LOGI(CTAG, "  Amount:    %.4f SOL", amount);
+                            ESP_LOGI(CTAG, "  Recipient: %s", recipient_str.c_str());
+
+                            // Check recipient address validity
+                            auto recipient_bytes = Fuchey::Crypto::Base58::decode(recipient_str);
+                            if (recipient_bytes.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Error: Invalid Solana recipient address length (%d bytes, expected 32).",
+                                         recipient_bytes.size());
+                                ESP_LOGI(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            auto pubkey_opt = s_wallet_core.get_pubkey();
+                            if (!pubkey_opt) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Error: Wallet is locked or not setup.");
+                                ESP_LOGI(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+                            auto sender_pubkey = *pubkey_opt;
+
+                            // Flush any old events from g_wallet_queue
+                            Fuchey::Events::Event dummy_evt;
+                            while (xQueueReceive(Fuchey::Events::g_wallet_queue, &dummy_evt, 0) == pdTRUE) {}
+
+                            // Prompt UI for hardware/serial button approval ($150/SOL baseline estimate)
+                            uint64_t cents = static_cast<uint64_t>(amount * 150.0f * 100.0f);
+                            Fuchey::Events::Event evt{};
+                            evt.type = Fuchey::Events::EventType::TX_REQUEST;
+                            evt.data.tx.amount_cents = cents;
+                            evt.data.tx.tx_len = 0;
+                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
+
+                            ESP_LOGI(CTAG, "[SEND SOL] Waiting for hardware button press or serial 'c' approval...");
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                            // Wait up to 30 seconds for user confirmation
+                            Fuchey::Events::Event app_evt{};
+                            bool got_response = (xQueueReceive(Fuchey::Events::g_wallet_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
+
+                            if (!got_response || app_evt.type != Fuchey::Events::EventType::TX_APPROVED) {
+                                ESP_LOGW(CTAG, "-------------------------------------------------");
+                                ESP_LOGW(CTAG, "[SEND SOL] Transfer REJECTED or TIMED OUT by user.");
+                                ESP_LOGW(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            ESP_LOGI(CTAG, "[SEND SOL] Transaction APPROVED! Fetching blockhash from Devnet...");
+
+                            // Fetch latest blockhash
+                            auto bh_resp = s_wifi_manager.post_json(
+                                get_rpc_url(),
+                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
+                            );
+
+                            if (!bh_resp.success) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            std::string blockhash_str;
+                            cJSON* bh_root = cJSON_Parse(bh_resp.body.c_str());
+                            if (bh_root) {
+                                cJSON* res = cJSON_GetObjectItem(bh_root, "result");
+                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                cJSON* bh  = val ? cJSON_GetObjectItem(val, "blockhash") : nullptr;
+                                if (bh && bh->valuestring) {
+                                    blockhash_str = bh->valuestring;
+                                }
+                                cJSON_Delete(bh_root);
+                            }
+
+                            if (blockhash_str.empty()) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Error parsing blockhash: %.100s", bh_resp.body.c_str());
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
+                            if (blockhash_bytes.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Invalid blockhash decode size (%d)", blockhash_bytes.size());
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // Construct Solana Message
+                            uint64_t lamports = static_cast<uint64_t>(amount * 1000000000.0f);
+                            std::vector<uint8_t> msg;
+                            msg.push_back(1); // 1 required signature
+                            msg.push_back(0); // 0 readonly signed
+                            msg.push_back(1); // 1 readonly unsigned (System Program)
+
+                            msg.push_back(3); // 3 account keys
+                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end());
+                            msg.insert(msg.end(), recipient_bytes.begin(), recipient_bytes.end());
+                            for (int i = 0; i < 32; i++) msg.push_back(0); // System Program (32 zero bytes)
+
+                            msg.insert(msg.end(), blockhash_bytes.begin(), blockhash_bytes.end());
+
+                            msg.push_back(1); // 1 instruction
+                            msg.push_back(2); // program_id_index = 2
+                            msg.push_back(2); // 2 account indices
+                            msg.push_back(0); // accounts[0] = sender
+                            msg.push_back(1); // accounts[1] = recipient
+                            msg.push_back(12); // data length = 12 bytes
+
+                            // System Instruction Index 2 (Transfer) + 8-byte uint64 LE lamports
+                            msg.push_back(2); msg.push_back(0); msg.push_back(0); msg.push_back(0);
+                            for (int i = 0; i < 8; i++) {
+                                msg.push_back(static_cast<uint8_t>((lamports >> (i * 8)) & 0xFF));
+                            }
+
+                            // Sign message
+                            Fuchey::Crypto::Signature sig{};
+                            auto sign_res = s_wallet_core.sign(msg, sig);
+                            if (sign_res != Fuchey::WalletResult::OK) {
+                                ESP_LOGE(CTAG, "[SEND SOL] Signing failed (err=%d)", static_cast<int>(sign_res));
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // Build wire transaction
+                            std::vector<uint8_t> wire_tx;
+                            wire_tx.push_back(1); // 1 signature
+                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end());
+                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end());
+
+                            std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
+
+                            char req_buf[2048];
+                            snprintf(req_buf, sizeof(req_buf),
+                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"%s\",{\"encoding\":\"base58\"}]}",
+                                     base58_tx.c_str());
+
+                            ESP_LOGI(CTAG, "[SEND SOL] Broadcasting signed transaction to Solana Devnet...");
+                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
+
+                            if (tx_resp.success) {
+                                cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
+                                if (tx_root) {
+                                    cJSON* tx_res = cJSON_GetObjectItem(tx_root, "result");
+                                    cJSON* tx_err = cJSON_GetObjectItem(tx_root, "error");
+                                    if (tx_res && tx_res->valuestring) {
+                                        ESP_LOGI(CTAG, "=================================================");
+                                        ESP_LOGI(CTAG, "  [SUCCESS] SOL Transfer Broadcast Complete!");
+                                        ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
+                                        ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
+                                        ESP_LOGI(CTAG, "=================================================");
+                                    } else if (tx_err) {
+                                        cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
+                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s",
+                                                 msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown error");
+                                    } else {
+                                        ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
+                                    }
+                                    cJSON_Delete(tx_root);
+                                } else {
+                                    ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
+                                }
+                            } else {
+                                ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
+                            }
+
+                            vTaskDelete(nullptr);
+                        }, "send_sol_task", 8192, args, 4, nullptr);
                     } else {
+                        delete args;
                         ESP_LOGW(CTAG, "Usage: send sol <amount> <recipient_address>");
                     }
 

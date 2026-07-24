@@ -26,8 +26,8 @@ namespace DisplayConfig {
 
 // ─── Buttons ──────────────────────────────────────────────
 namespace Buttons {
-    inline constexpr int     PIN_CONFIRM   = 20;  // GPIO20 (Physical confirm button)
-    inline constexpr int     PIN_BACK      = -1;  // -1 = unused (single-button mode; long-press acts as BACK)
+    inline constexpr int     PIN_CONFIRM   = 4;   // GPIO4 (Physical confirm button)
+    inline constexpr int     PIN_BACK      = -1;  // -1 = unused (single-button mode)
     inline constexpr uint32_t DEBOUNCE_MS  = 50;
     inline constexpr uint32_t LONG_PRESS_MS = 1000;
 }
@@ -55,9 +55,11 @@ namespace Tasks {
 
     // CPU core assignment
     inline constexpr int WALLET_CORE            = 1;   // Core 1: security-critical only
-    inline constexpr int UI_CORE                = 0;   // Core 0: UI, networking, services
+    inline constexpr int UI_CORE                = 0;   // Core 0: UI + console
     inline constexpr int WIFI_CORE              = 0;
-    inline constexpr int AI_CORE               = 0;
+    inline constexpr int AI_CORE                = 0;
+    inline constexpr int PRICE_CORE             = 1;   // Core 1: TLS won't starve IDLE0
+    inline constexpr int WEATHER_CORE           = 1;   // Core 1: TLS won't starve IDLE0
     inline constexpr int BUTTON_CORE            = 1;   // Core 1: responsive input
 }
 
@@ -103,9 +105,9 @@ namespace NVS {
 
 // ─── API Endpoints ────────────────────────────────────────
 namespace API {
-    // CoinGecko (no API key needed for basic)
+    // Binance — no API key, cert always in ESP-IDF bundle (DigiCert)
     inline constexpr const char* SOL_PRICE_URL =
-        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
+        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
 
     // Open-Meteo (no API key needed)
     inline constexpr const char* WEATHER_URL_FMT =
