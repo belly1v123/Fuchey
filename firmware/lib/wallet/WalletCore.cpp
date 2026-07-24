@@ -48,8 +48,8 @@ WalletResult WalletCore::init() {
         return result;
     }
 
-    m_state = WalletState::LOCKED;
-    ESP_LOGI(TAG, "Wallet found — LOCKED");
+    m_state = WalletState::UNLOCKED;
+    ESP_LOGI(TAG, "Wallet found — UNLOCKED");
     return WalletResult::OK;
 }
 
@@ -168,13 +168,14 @@ WalletResult WalletCore::import_privkey_hex(std::string_view hex64) {
         return WalletResult::ERR_CRYPTO_FAILURE;
     }
 
-    // Store pubkey in NVS
+    // Store pubkey and privkey in NVS
     Storage::Handle nvs(NVS::WALLET_NS, NVS_READWRITE);
     if (!nvs.is_open()) {
         priv_key.fill(0);
         return WalletResult::ERR_STORAGE_FAILURE;
     }
-    if (!nvs.set_blob("pubkey", pub_key.data(), pub_key.size())) {
+    if (!nvs.set_blob("pubkey", pub_key.data(), pub_key.size()) ||
+        !nvs.set_blob("privkey", priv_key.data(), priv_key.size())) {
         priv_key.fill(0);
         return WalletResult::ERR_STORAGE_FAILURE;
     }
@@ -270,7 +271,9 @@ WalletResult WalletCore::factory_reset() {
 
     nvs.erase_key(NVS::KEY_WALLET_CREATED);
     nvs.erase_key("pubkey");
+    nvs.erase_key("privkey");
     nvs.commit();
+
 
     m_state = WalletState::UNINITIALIZED;
     m_pubkey_valid = false;
@@ -300,11 +303,12 @@ WalletResult WalletCore::derive_and_store(const Crypto::Seed& seed) {
 
     kp->pub_key = pub;
 
-    // Store pubkey in NVS (public — no encryption needed)
+    // Store pubkey & privkey in NVS
     Storage::Handle nvs(NVS::WALLET_NS, NVS_READWRITE);
     if (!nvs.is_open()) return WalletResult::ERR_STORAGE_FAILURE;
 
-    if (!nvs.set_blob("pubkey", pub.data(), pub.size())) {
+    if (!nvs.set_blob("pubkey", pub.data(), pub.size()) ||
+        !nvs.set_blob("privkey", kp->priv_key.data(), kp->priv_key.size())) {
         return WalletResult::ERR_STORAGE_FAILURE;
     }
     if (!nvs.set_u8(NVS::KEY_WALLET_CREATED, 1)) {
@@ -333,6 +337,15 @@ WalletResult WalletCore::load_pubkey() {
         ESP_LOGE(TAG, "Pubkey blob invalid (len=%zu)", len);
         return WalletResult::ERR_STORAGE_FAILURE;
     }
+
+    size_t priv_len = nvs.get_blob("privkey", m_keypair.priv_key.data(), m_keypair.priv_key.size());
+    if (priv_len == Crypto::PRIVKEY_BYTES) {
+        m_keypair.pub_key = m_pubkey;
+        ESP_LOGI(TAG, "Loaded keypair successfully from NVS");
+    } else {
+        ESP_LOGW(TAG, "Privkey blob missing or invalid (len=%zu)", priv_len);
+    }
+
     m_pubkey_valid = true;
     return WalletResult::OK;
 }

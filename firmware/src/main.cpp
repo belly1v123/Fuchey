@@ -44,7 +44,9 @@ EventGroupHandle_t g_event_group = nullptr;
 } // namespace Events
 } // namespace Fuchey
 
-// Global ref for button driver callback
+namespace Fuchey {
+QueueHandle_t g_tx_confirm_queue = nullptr;
+}
 QueueHandle_t g_button_queue_ref = nullptr;
 
 static constexpr const char* TAG = "FucheyMain";
@@ -112,6 +114,7 @@ extern "C" void app_main(void) {
     Fuchey::Events::g_event_group  = xEventGroupCreate();
 
     g_button_queue_ref = Fuchey::Events::g_button_queue;
+    Fuchey::g_tx_confirm_queue = xQueueCreate(4, sizeof(Fuchey::Events::Event));
 
     // 2. Initialize System Layer (NVS, Storage, Drivers)
     ESP_ERROR_CHECK(Fuchey::Storage::init());
@@ -260,7 +263,7 @@ extern "C" void app_main(void) {
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
                 // ── NEXT option button ────────────────────────
-                } else if ((cmd[0] == 'n' || strcmp(cmd, "next") == 0)) {
+                } else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
                     ESP_LOGI(CTAG, "[INPUT] NEXT OPTION");
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::BACK,
@@ -528,10 +531,28 @@ extern "C" void app_main(void) {
                         evt.type = Fuchey::Events::EventType::WALLET_CREATED;
                         Fuchey::Events::post(Fuchey::Events::g_wallet_queue, evt);
                         s_ui.mark_wallet_configured(addr_str.c_str());
+                    } else if (r == Fuchey::WalletResult::ERR_ALREADY_EXISTS) {
+                        ESP_LOGW(CTAG, "[Wallet] A wallet already exists!");
+                        ESP_LOGW(CTAG, "  Use 'wallet_reset' first to erase it, then 'wallet_create'.");
+                        auto addr = s_wallet_core.get_address();
+                        ESP_LOGW(CTAG, "  Current address: %s", addr ? addr->c_str() : "(unknown)");
                     } else {
                         ESP_LOGE(CTAG, "[Wallet] Creation FAILED (err=%d)", static_cast<int>(r));
                     }
                     ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                // ── wallet_reset ──────────────────────────────
+                } else if (strcmp(cmd, "wallet_reset") == 0) {
+                    ESP_LOGW(CTAG, "-------------------------------------------------");
+                    ESP_LOGW(CTAG, "[Wallet] FACTORY RESET — erasing wallet from NVS...");
+                    Fuchey::WalletResult r = s_wallet_core.factory_reset();
+                    if (r == Fuchey::WalletResult::OK) {
+                        ESP_LOGW(CTAG, "[Wallet] Reset complete. You can now run 'wallet_create'.");
+                    } else {
+                        ESP_LOGE(CTAG, "[Wallet] Reset FAILED (err=%d)", static_cast<int>(r));
+                    }
+                    ESP_LOGW(CTAG, "-------------------------------------------------");
+
 
                 // ── wallet_import ─────────────────────────────
                 } else if (strncmp(cmd, "wallet_import ", 14) == 0 && len > 14) {
@@ -634,6 +655,7 @@ extern "C" void app_main(void) {
                                 return;
                             }
 
+                            s_wallet_core.unlock();
                             auto pubkey_opt = s_wallet_core.get_pubkey();
                             if (!pubkey_opt) {
                                 ESP_LOGE(CTAG, "[SEND SOL] Error: Wallet is locked or not setup.");
@@ -643,9 +665,11 @@ extern "C" void app_main(void) {
                             }
                             auto sender_pubkey = *pubkey_opt;
 
-                            // Flush any old events from g_wallet_queue
+                            // Flush any old events from g_tx_confirm_queue
                             Fuchey::Events::Event dummy_evt;
-                            while (xQueueReceive(Fuchey::Events::g_wallet_queue, &dummy_evt, 0) == pdTRUE) {}
+                            if (Fuchey::g_tx_confirm_queue) {
+                                while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
+                            }
 
                             // Prompt UI for hardware/serial button approval ($150/SOL baseline estimate)
                             uint64_t cents = static_cast<uint64_t>(amount * 150.0f * 100.0f);
@@ -658,9 +682,12 @@ extern "C" void app_main(void) {
                             ESP_LOGI(CTAG, "[SEND SOL] Waiting for hardware button press or serial 'c' approval...");
                             ESP_LOGI(CTAG, "-------------------------------------------------");
 
-                            // Wait up to 30 seconds for user confirmation
+                            // Wait up to 30 seconds for user confirmation on g_tx_confirm_queue
                             Fuchey::Events::Event app_evt{};
-                            bool got_response = (xQueueReceive(Fuchey::Events::g_wallet_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
+                            bool got_response = false;
+                            if (Fuchey::g_tx_confirm_queue) {
+                                got_response = (xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
+                            }
 
                             if (!got_response || app_evt.type != Fuchey::Events::EventType::TX_APPROVED) {
                                 ESP_LOGW(CTAG, "-------------------------------------------------");
@@ -709,34 +736,45 @@ extern "C" void app_main(void) {
                                 return;
                             }
 
-                            // Construct Solana Message
+                            // ── Build Solana message (the bytes that get signed) ──
+                            // Solana legacy message = header (3 bytes)
+                            //   + compact-u16 account count + accounts
+                            //   + recent blockhash (32 bytes)
+                            //   + compact-u16 instruction count + instructions
+                            // The num-signatures prefix (0x01) lives ONLY in the
+                            // wire transaction, never in the signed message.
                             uint64_t lamports = static_cast<uint64_t>(amount * 1000000000.0f);
                             std::vector<uint8_t> msg;
-                            msg.push_back(1); // 1 required signature
-                            msg.push_back(0); // 0 readonly signed
-                            msg.push_back(1); // 1 readonly unsigned (System Program)
 
-                            msg.push_back(3); // 3 account keys
-                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end());
-                            msg.insert(msg.end(), recipient_bytes.begin(), recipient_bytes.end());
-                            for (int i = 0; i < 32; i++) msg.push_back(0); // System Program (32 zero bytes)
+                            // Header (3 bytes)
+                            msg.push_back(1); // num_required_signatures = 1
+                            msg.push_back(0); // num_readonly_signed_accounts = 0
+                            msg.push_back(1); // num_readonly_unsigned_accounts = 1 (System Program)
 
+                            // Account addresses (compact-u16 count + 32-byte keys)
+                            msg.push_back(3); // 3 accounts: sender, recipient, System Program
+                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end()); // [0] signer+writable
+                            msg.insert(msg.end(), recipient_bytes.begin(), recipient_bytes.end()); // [1] writable
+                            for (int i = 0; i < 32; i++) msg.push_back(0); // [2] System Program = 11111…
+
+                            // Recent blockhash (32 bytes)
                             msg.insert(msg.end(), blockhash_bytes.begin(), blockhash_bytes.end());
 
+                            // Instructions (compact-u16 count + instruction data)
                             msg.push_back(1); // 1 instruction
-                            msg.push_back(2); // program_id_index = 2
-                            msg.push_back(2); // 2 account indices
-                            msg.push_back(0); // accounts[0] = sender
+                            // Instruction: System Program Transfer
+                            msg.push_back(2); // program_id_index = 2 (System Program)
+                            msg.push_back(2); // 2 account indices follow
+                            msg.push_back(0); // accounts[0] = sender  (index into account list)
                             msg.push_back(1); // accounts[1] = recipient
                             msg.push_back(12); // data length = 12 bytes
-
-                            // System Instruction Index 2 (Transfer) + 8-byte uint64 LE lamports
+                            // Transfer instruction data: u32 discriminant=2 + u64 lamports LE
                             msg.push_back(2); msg.push_back(0); msg.push_back(0); msg.push_back(0);
                             for (int i = 0; i < 8; i++) {
                                 msg.push_back(static_cast<uint8_t>((lamports >> (i * 8)) & 0xFF));
                             }
 
-                            // Sign message
+                            // Sign the message bytes
                             Fuchey::Crypto::Signature sig{};
                             auto sign_res = s_wallet_core.sign(msg, sig);
                             if (sign_res != Fuchey::WalletResult::OK) {
@@ -745,13 +783,32 @@ extern "C" void app_main(void) {
                                 return;
                             }
 
-                            // Build wire transaction
+                            // ── Build wire transaction ──
+                            // Format: [compact-u16 num_sigs] [sig…] [message]
                             std::vector<uint8_t> wire_tx;
-                            wire_tx.push_back(1); // 1 signature
-                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end());
-                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end());
+                            wire_tx.push_back(1); // compact-u16: 1 signature
+                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end()); // 64-byte signature
+                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end()); // message bytes
 
                             std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
+
+                            // ── Diagnostic: log pubkey, sig, and msg for offline verification ──
+                            {
+                                char hex[65];
+                                auto to_hex = [&](const uint8_t* d, int n) {
+                                    for (int i = 0; i < n; i++) snprintf(hex + i*2, 3, "%02x", d[i]);
+                                    hex[n*2] = '\0';
+                                };
+                                to_hex(sender_pubkey.data(), 32);
+                                ESP_LOGI(CTAG, "[DIAG] Pubkey  : %s", hex);
+                                to_hex(sig.data(), 32);
+                                ESP_LOGI(CTAG, "[DIAG] Sig R   : %s", hex);
+                                to_hex(sig.data()+32, 32);
+                                ESP_LOGI(CTAG, "[DIAG] Sig S   : %s", hex);
+                                to_hex(msg.data(), 32);
+                                ESP_LOGI(CTAG, "[DIAG] Msg[0-31]: %s", hex);
+                                ESP_LOGI(CTAG, "[DIAG] MsgLen  : %d bytes", (int)msg.size());
+                            }
 
                             char req_buf[2048];
                             snprintf(req_buf, sizeof(req_buf),
@@ -788,7 +845,7 @@ extern "C" void app_main(void) {
                             }
 
                             vTaskDelete(nullptr);
-                        }, "send_sol_task", 8192, args, 4, nullptr);
+                        }, "send_sol_task", 20480, args, 4, nullptr);
                     } else {
                         delete args;
                         ESP_LOGW(CTAG, "Usage: send sol <amount> <recipient_address>");

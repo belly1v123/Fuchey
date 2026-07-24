@@ -49,22 +49,46 @@ std::vector<std::string_view> BIP39::split_mnemonic(std::string_view mnemonic) {
     return words;
 }
 
-// ─── Generate from hardware RNG ───────────────────────────
+#include "esp_timer.h"
+#include "esp_cpu.h"
+#include "esp_system.h"
+
 std::optional<std::string> BIP39::generate(int words) {
     if (words != 12 && words != 24) {
         ESP_LOGE(TAG, "words must be 12 or 24");
         return std::nullopt;
     }
     int entropy_bytes = (words == 12) ? 16 : 32;
-    std::vector<uint8_t> entropy(entropy_bytes);
+    std::vector<uint8_t> raw_buf(64);
 
-    // ESP32-S3 hardware RNG (uses RF/thermal noise)
-    esp_fill_random(entropy.data(), entropy_bytes);
+    // 1. ESP32 hardware RNG
+    esp_fill_random(raw_buf.data(), 32);
+
+    // 2. High-precision system timers and CPU cycle counters
+    int64_t t = esp_timer_get_time();
+    uint32_t cycles = esp_cpu_get_cycle_count();
+    uint32_t free_heap = esp_get_free_heap_size();
+
+    std::memcpy(raw_buf.data() + 32, &t, sizeof(t));
+    std::memcpy(raw_buf.data() + 40, &cycles, sizeof(cycles));
+    std::memcpy(raw_buf.data() + 44, &free_heap, sizeof(free_heap));
+
+    // 3. Additional hardware random bytes
+    uint32_t extra_rnd = esp_random();
+    std::memcpy(raw_buf.data() + 48, &extra_rnd, sizeof(extra_rnd));
+
+    // 4. Hash raw entropy buffer with SHA256 to get cryptographically uniform entropy
+    auto hash = sha256(raw_buf);
+
+    std::vector<uint8_t> entropy(entropy_bytes);
+    std::copy(hash.begin(), hash.begin() + entropy_bytes, entropy.begin());
 
     auto result = entropy_to_mnemonic(std::span<const uint8_t>(entropy));
 
-    // Zero entropy immediately after use
+    // Zero sensitive memory immediately
+    std::fill(raw_buf.begin(), raw_buf.end(), 0);
     std::fill(entropy.begin(), entropy.end(), 0);
+
     return result;
 }
 

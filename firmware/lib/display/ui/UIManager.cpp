@@ -487,16 +487,20 @@ void UIManager::run() {
                 if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
                     ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
                              static_cast<double>(m_tx_amount_cents) / 100.0);
+                    extern QueueHandle_t g_tx_confirm_queue;
                     Events::Event tx_evt{};
                     tx_evt.type = Events::EventType::TX_APPROVED;
                     tx_evt.data.tx.amount_cents = m_tx_amount_cents;
                     Events::post(Events::g_wallet_queue, tx_evt);
+                    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
                     set_screen(UIScreen::IDLE_CLOCK);
                 } else if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.event == ButtonEvent::LONG_PRESS || btn.id == ButtonId::BACK) {
                     ESP_LOGI(TAG, "[TX] User REJECTED transaction");
+                    extern QueueHandle_t g_tx_confirm_queue;
                     Events::Event tx_evt{};
                     tx_evt.type = Events::EventType::TX_REJECTED;
                     Events::post(Events::g_wallet_queue, tx_evt);
+                    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
                     set_screen(UIScreen::IDLE_CLOCK);
                 }
             } else if (m_current_screen == UIScreen::MENU_MAIN) {
