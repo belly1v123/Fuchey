@@ -16,3 +16,6 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 - 🖥️ ESP32-S3 powered with OLED interface
 - 🛡️ Security-first modular architecture
 - 🌍 Fully open source
+
+## Designed by Pranjal KhareL 
+## https://pranjalkharel.com.np
