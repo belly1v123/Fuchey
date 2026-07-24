@@ -32,9 +32,9 @@ public:
 
 private:
     WiFiManager& m_wifi;
-    float m_lat{40.7128f};   // Default: New York
-    float m_lon{-74.0060f};
-    std::string m_city_name{"New York"};
+    float m_lat{27.7172f};   // Default: Kathmandu, Nepal
+    float m_lon{85.3240f};
+    std::string m_city_name{"Kathmandu"};
     bool m_geolocated{false};
 
     bool parse_weather_json(const std::string& json_str, Events::Event& evt);

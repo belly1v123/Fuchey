@@ -99,18 +99,22 @@ void WeatherService::task_entry(void* arg) {
 }
 
 void WeatherService::geolocate() {
-    auto resp = m_wifi.get("http://ip-api.com/json/?fields=city,lat,lon");
+    // ipapi.co: free, HTTPS, no API key required
+    auto resp = m_wifi.get("https://ipapi.co/json/");
     if (!resp.success) {
-        ESP_LOGW(TAG, "Geolocation HTTP request failed, using defaults");
+        ESP_LOGW(TAG, "Geolocation request failed, using default: %s", m_city_name.c_str());
         return;
     }
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
-    if (!root) return;
+    if (!root) {
+        ESP_LOGW(TAG, "Geolocation JSON parse failed, using default: %s", m_city_name.c_str());
+        return;
+    }
 
     cJSON* city = cJSON_GetObjectItem(root, "city");
-    cJSON* lat  = cJSON_GetObjectItem(root, "lat");
-    cJSON* lon  = cJSON_GetObjectItem(root, "lon");
+    cJSON* lat  = cJSON_GetObjectItem(root, "latitude");   // ipapi.co uses "latitude"
+    cJSON* lon  = cJSON_GetObjectItem(root, "longitude");  // ipapi.co uses "longitude"
 
     if (city && cJSON_IsString(city) && lat && cJSON_IsNumber(lat) && lon && cJSON_IsNumber(lon)) {
         set_location(city->valuestring,
@@ -118,6 +122,8 @@ void WeatherService::geolocate() {
                      static_cast<float>(lon->valuedouble));
         ESP_LOGI(TAG, "Geolocated: %s (%.4f, %.4f)",
                  city->valuestring, lat->valuedouble, lon->valuedouble);
+    } else {
+        ESP_LOGW(TAG, "Geolocation fields missing, using default: %s", m_city_name.c_str());
     }
 
     cJSON_Delete(root);

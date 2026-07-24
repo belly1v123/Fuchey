@@ -159,7 +159,7 @@ extern "C" void app_main(void) {
     s_wifi_manager.connect_from_nvs();
 
     // Initialize NTP (auto-syncs after WiFi gets IP)
-    setenv("TZ", "UTC", 1);
+    setenv("TZ", "NPT-5:45", 1);  // Nepal Time (UTC+5:45)
     tzset();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
@@ -300,68 +300,80 @@ extern "C" void app_main(void) {
                     } else if (!s_wifi_manager.has_ip()) {
                         ESP_LOGW(CTAG, "WiFi not connected — cannot fetch balance.");
                     } else {
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
-                        ESP_LOGI(CTAG, "[Balance] Querying %s (%s) for %s...",
-                                 s_is_devnet ? "Devnet" : "Mainnet-Beta",
-                                 get_rpc_url(),
-                                 addr->c_str());
+                        xTaskCreate([](void*) {
+                            static constexpr const char* CTAG = "Console";
+                            auto addr_opt = s_wallet_core.get_address();
+                            if (!addr_opt) { vTaskDelete(nullptr); return; }
+                            std::string address = *addr_opt;
 
-                        // JSON-RPC getBalance payload for SOL
-                        char sol_req[256];
-                        snprintf(sol_req, sizeof(sol_req),
-                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
-                                 addr->c_str());
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            ESP_LOGI(CTAG, "[Balance] Querying %s (%s) for %s...",
+                                     s_is_devnet ? "Devnet" : "Mainnet-Beta",
+                                     get_rpc_url(),
+                                     address.c_str());
 
-                        auto resp = s_wifi_manager.post_json(get_rpc_url(), sol_req);
-                        if (resp.success) {
-                            cJSON* root = cJSON_Parse(resp.body.c_str());
-                            if (root) {
-                                cJSON* res = cJSON_GetObjectItem(root, "result");
-                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
-                                if (val && cJSON_IsNumber(val)) {
-                                    double lamports = val->valuedouble;
-                                    double sol_bal = lamports / 1000000000.0;
-                                    ESP_LOGI(CTAG, "  SOL Balance:  %.6f SOL (%.0f lamports)", sol_bal, lamports);
-                                }
-                                cJSON_Delete(root);
-                            }
-                        } else {
-                            ESP_LOGE(CTAG, "Failed to query SOL balance from RPC");
-                        }
+                            // JSON-RPC getBalance payload for SOL
+                            char sol_req[256];
+                            snprintf(sol_req, sizeof(sol_req),
+                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
+                                     address.c_str());
 
-                        // JSON-RPC getTokenAccountsByOwner payload for USDC
-                        char usdc_req[512];
-                        snprintf(usdc_req, sizeof(usdc_req),
-                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
-                                 "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
-                                 addr->c_str(), get_usdc_mint());
-
-                        auto u_resp = s_wifi_manager.post_json(get_rpc_url(), usdc_req);
-                        if (u_resp.success) {
-                            cJSON* root = cJSON_Parse(u_resp.body.c_str());
-                            double usdc_bal = 0.0;
-                            if (root) {
-                                cJSON* res = cJSON_GetObjectItem(root, "result");
-                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
-                                if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {
-                                    cJSON* item0 = cJSON_GetArrayItem(val, 0);
-                                    cJSON* account = cJSON_GetObjectItem(item0, "account");
-                                    cJSON* data = account ? cJSON_GetObjectItem(account, "data") : nullptr;
-                                    cJSON* parsed = data ? cJSON_GetObjectItem(data, "parsed") : nullptr;
-                                    cJSON* info = parsed ? cJSON_GetObjectItem(parsed, "info") : nullptr;
-                                    cJSON* t_amt = info ? cJSON_GetObjectItem(info, "tokenAmount") : nullptr;
-                                    cJSON* ui_amt = t_amt ? cJSON_GetObjectItem(t_amt, "uiAmount") : nullptr;
-                                    if (ui_amt && cJSON_IsNumber(ui_amt)) {
-                                        usdc_bal = ui_amt->valuedouble;
+                            auto resp = s_wifi_manager.post_json(get_rpc_url(), sol_req);
+                            if (resp.success) {
+                                cJSON* root = cJSON_Parse(resp.body.c_str());
+                                if (root) {
+                                    cJSON* res = cJSON_GetObjectItem(root, "result");
+                                    cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                    if (val && cJSON_IsNumber(val)) {
+                                        double lamports = val->valuedouble;
+                                        double sol_bal = lamports / 1000000000.0;
+                                        ESP_LOGI(CTAG, "  SOL Balance:  %.6f SOL (%.0f lamports)", sol_bal, lamports);
+                                    } else {
+                                        ESP_LOGW(CTAG, "  SOL Balance:  0.000000 SOL (0 lamports)");
                                     }
+                                    cJSON_Delete(root);
+                                } else {
+                                    ESP_LOGE(CTAG, "  SOL: JSON parse failed. Body: %.80s", resp.body.c_str());
                                 }
-                                cJSON_Delete(root);
+                            } else {
+                                ESP_LOGE(CTAG, "Failed to query SOL balance from RPC");
                             }
-                            ESP_LOGI(CTAG, "  USDC Balance: $%.2f USDC", usdc_bal);
-                        } else {
-                            ESP_LOGE(CTAG, "Failed to query USDC balance from RPC");
-                        }
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                            // JSON-RPC getTokenAccountsByOwner payload for USDC
+                            char usdc_req[512];
+                            snprintf(usdc_req, sizeof(usdc_req),
+                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
+                                     "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
+                                     address.c_str(), get_usdc_mint());
+
+                            auto u_resp = s_wifi_manager.post_json(get_rpc_url(), usdc_req);
+                            if (u_resp.success) {
+                                cJSON* root = cJSON_Parse(u_resp.body.c_str());
+                                double usdc_bal = 0.0;
+                                if (root) {
+                                    cJSON* res = cJSON_GetObjectItem(root, "result");
+                                    cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                    if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {
+                                        cJSON* item0 = cJSON_GetArrayItem(val, 0);
+                                        cJSON* account = cJSON_GetObjectItem(item0, "account");
+                                        cJSON* data = account ? cJSON_GetObjectItem(account, "data") : nullptr;
+                                        cJSON* parsed = data ? cJSON_GetObjectItem(data, "parsed") : nullptr;
+                                        cJSON* info = parsed ? cJSON_GetObjectItem(parsed, "info") : nullptr;
+                                        cJSON* t_amt = info ? cJSON_GetObjectItem(info, "tokenAmount") : nullptr;
+                                        cJSON* ui_amt = t_amt ? cJSON_GetObjectItem(t_amt, "uiAmount") : nullptr;
+                                        if (ui_amt && cJSON_IsNumber(ui_amt)) {
+                                            usdc_bal = ui_amt->valuedouble;
+                                        }
+                                    }
+                                    cJSON_Delete(root);
+                                }
+                                ESP_LOGI(CTAG, "  USDC Balance: $%.2f USDC", usdc_bal);
+                            } else {
+                                ESP_LOGE(CTAG, "Failed to query USDC balance from RPC");
+                            }
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            vTaskDelete(nullptr);
+                        }, "bal_task", 8192, nullptr, 4, nullptr);
                     }
 
                 // ── network ───────────────────────────────────
@@ -413,30 +425,41 @@ extern "C" void app_main(void) {
                         sscanf(cmd + 7, "%f", &sol_amt);
                         if (sol_amt <= 0.0f) sol_amt = 1.0f;
 
-                        uint64_t lamports = static_cast<uint64_t>(sol_amt * 1000000000.0f);
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
-                        ESP_LOGI(CTAG, "[Airdrop] Requesting %.1f Devnet SOL for %s...", sol_amt, addr->c_str());
+                        xTaskCreate([](void* arg) {
+                            static constexpr const char* CTAG = "Console";
+                            float amount = *static_cast<float*>(arg);
+                            delete static_cast<float*>(arg);
 
-                        char req[384];
-                        snprintf(req, sizeof(req),
-                                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"%s\",%llu]}",
-                                 addr->c_str(), lamports);
+                            auto addr_opt = s_wallet_core.get_address();
+                            if (!addr_opt) { vTaskDelete(nullptr); return; }
+                            std::string address = *addr_opt;
 
-                        auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
-                        if (resp.success) {
-                            cJSON* root = cJSON_Parse(resp.body.c_str());
-                            cJSON* res = root ? cJSON_GetObjectItem(root, "result") : nullptr;
-                            if (res && cJSON_IsString(res)) {
-                                ESP_LOGI(CTAG, "  Airdrop SUCCESS! Tx Signature:");
-                                ESP_LOGI(CTAG, "  %s", res->valuestring);
+                            uint64_t lamports = static_cast<uint64_t>(amount * 1000000000.0f);
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            ESP_LOGI(CTAG, "[Airdrop] Requesting %.1f Devnet SOL for %s...", amount, address.c_str());
+
+                            char req[384];
+                            snprintf(req, sizeof(req),
+                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"%s\",%llu]}",
+                                     address.c_str(), lamports);
+
+                            auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+                            if (resp.success) {
+                                cJSON* root = cJSON_Parse(resp.body.c_str());
+                                cJSON* res = root ? cJSON_GetObjectItem(root, "result") : nullptr;
+                                if (res && cJSON_IsString(res)) {
+                                    ESP_LOGI(CTAG, "  Airdrop SUCCESS! Tx Signature:");
+                                    ESP_LOGI(CTAG, "  %s", res->valuestring);
+                                } else {
+                                    ESP_LOGW(CTAG, "  Airdrop requested (response received)");
+                                }
+                                if (root) cJSON_Delete(root);
                             } else {
-                                ESP_LOGW(CTAG, "  Airdrop requested (response received)");
+                                ESP_LOGE(CTAG, "Airdrop request failed");
                             }
-                            if (root) cJSON_Delete(root);
-                        } else {
-                            ESP_LOGE(CTAG, "Airdrop request failed");
-                        }
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            vTaskDelete(nullptr);
+                        }, "drop_task", 8192, new float(sol_amt), 4, nullptr);
                     }
 
                 // ── wallet_create ─────────────────────────────
