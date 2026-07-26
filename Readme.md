@@ -11,7 +11,6 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 - 🔐 Self-custodial Solana hardware wallet
 - ✍️ On-device transaction signing
 - 🤖 Integrated text-based AI assistant
-- 💸 Configurable autonomous micropayments (x402)
 - ⏰ Clock, weather, and live SOL price display
 - 🖥️ ESP32-S3 powered with OLED interface
 - 🛡️ Security-first modular architecture
