@@ -11,6 +11,7 @@
 #include "esp_random.h"
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 
 namespace Fuchey {
@@ -41,12 +42,41 @@ std::vector<std::string_view> BIP39::split_mnemonic(std::string_view mnemonic) {
     std::vector<std::string_view> words;
     size_t start = 0;
     while (start < mnemonic.size()) {
-        size_t end = mnemonic.find(' ', start);
-        if (end == std::string_view::npos) end = mnemonic.size();
+        while (start < mnemonic.size() &&
+               !std::isalpha(static_cast<unsigned char>(mnemonic[start]))) {
+            ++start;
+        }
+        if (start >= mnemonic.size()) break;
+
+        size_t end = start;
+        while (end < mnemonic.size() &&
+               std::isalpha(static_cast<unsigned char>(mnemonic[end]))) {
+            ++end;
+        }
         if (end > start) words.push_back(mnemonic.substr(start, end - start));
-        start = end + 1;
+        start = end;
     }
     return words;
+}
+
+static std::string normalize_mnemonic(std::string_view mnemonic) {
+    std::string normalized;
+    size_t start = 0;
+    while (start < mnemonic.size()) {
+        while (start < mnemonic.size() &&
+               !std::isalpha(static_cast<unsigned char>(mnemonic[start]))) {
+            ++start;
+        }
+        if (start >= mnemonic.size()) break;
+
+        if (!normalized.empty()) normalized += ' ';
+        while (start < mnemonic.size() &&
+               std::isalpha(static_cast<unsigned char>(mnemonic[start]))) {
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(mnemonic[start])));
+            ++start;
+        }
+    }
+    return normalized;
 }
 
 #include "esp_timer.h"
@@ -147,7 +177,8 @@ std::optional<std::string> BIP39::entropy_to_mnemonic(std::span<const uint8_t> e
 
 // ─── Mnemonic → Entropy (with checksum validation) ────────
 std::vector<uint8_t> BIP39::mnemonic_to_entropy(std::string_view mnemonic) {
-    auto words = split_mnemonic(mnemonic);
+    std::string normalized_mnemonic = normalize_mnemonic(mnemonic);
+    auto words = split_mnemonic(normalized_mnemonic);
     if (words.size() != 12 && words.size() != 24) {
         ESP_LOGE(TAG, "Invalid word count: %zu", words.size());
         return {};
@@ -211,12 +242,14 @@ bool BIP39::validate(std::string_view mnemonic) {
 bool BIP39::to_seed(std::string_view mnemonic,
                     std::string_view passphrase,
                     std::array<uint8_t, 64>& out_seed) {
+    std::string normalized_mnemonic = normalize_mnemonic(mnemonic);
+
     // Salt = "mnemonic" + passphrase
     std::string salt_str = "mnemonic";
     salt_str += passphrase;
 
     auto mnemonic_bytes = std::span<const uint8_t>(
-        reinterpret_cast<const uint8_t*>(mnemonic.data()), mnemonic.size());
+        reinterpret_cast<const uint8_t*>(normalized_mnemonic.data()), normalized_mnemonic.size());
     auto salt_bytes = std::span<const uint8_t>(
         reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
@@ -228,6 +261,7 @@ bool BIP39::to_seed(std::string_view mnemonic,
 
     // Zero salt
     std::fill(salt_str.begin(), salt_str.end(), '\0');
+    std::fill(normalized_mnemonic.begin(), normalized_mnemonic.end(), '\0');
 
     if (!ok) {
         ESP_LOGE(TAG, "PBKDF2 failed");

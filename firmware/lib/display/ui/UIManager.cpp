@@ -107,8 +107,8 @@ void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
         ESP_LOGI(TAG, "=================================================");
         ESP_LOGI(TAG, "  SETUP WIZARD: WiFi OK — Step 2: Wallet setup");
         ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <12 words>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <64hex>      Import raw private key");
+        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
+        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
         ESP_LOGI(TAG, "=================================================");
     }
 }
@@ -134,8 +134,8 @@ void UIManager::on_wifi_got_ip() {
         ESP_LOGI(TAG, "  [WiFi] CONNECTED! IP obtained.");
         ESP_LOGI(TAG, "  SETUP WIZARD: Step 2 — Wallet setup");
         ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <12 words>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <64hex>      Import raw private key");
+        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
+        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
         ESP_LOGI(TAG, "=================================================");
     }
 }
@@ -441,7 +441,7 @@ void UIManager::render_setup() {
             m_display.draw_text(4, 24, "Step 2: Wallet", Display::FontSize::SMALL);
             m_display.draw_text(4, 36, "wallet_create", Display::FontSize::SMALL);
             m_display.draw_text(4, 46, "wallet_import", Display::FontSize::SMALL);
-            m_display.draw_text(4, 56, "<12words or 64hex>", Display::FontSize::SMALL);
+            m_display.draw_text(4, 56, "<mnemonic/key>", Display::FontSize::SMALL);
             break;
 
         case SetupStage::DONE:

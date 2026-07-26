@@ -23,6 +23,7 @@
 #include "../lib/buttons/ButtonDriver.hpp"
 #include "../lib/crypto/CryptoEngine.hpp"
 #include "../lib/crypto/Base58.hpp"
+#include "../lib/crypto/Ed25519.hpp"
 #include "../lib/wallet/WalletCore.hpp"
 #include "../lib/policy/SpendingPolicy.hpp"
 #include "../lib/wallet_manager/WalletManager.hpp"
@@ -85,11 +86,11 @@ static const char* get_usdc_mint() {
 
 // ─── Helpers ──────────────────────────────────────────────
 
-// Check if string is exactly 64 hex characters (raw private key)
-static bool is_hex64(const char* s) {
+// Check if string is a Solana hex private key: 32-byte seed or 64-byte seed+pubkey.
+static bool is_hex_private_key(const char* s) {
     size_t len = strlen(s);
-    if (len != 64) return false;
-    for (size_t i = 0; i < 64; ++i) {
+    if (len != 64 && len != 128) return false;
+    for (size_t i = 0; i < len; ++i) {
         char c = s[i];
         if (!((c >= '0' && c <= '9') ||
               (c >= 'a' && c <= 'f') ||
@@ -98,6 +99,42 @@ static bool is_hex64(const char* s) {
         }
     }
     return true;
+}
+
+static bool is_single_base58_token(const char* s) {
+    if (!s || !*s) return false;
+    for (const char* p = s; *p; ++p) {
+        if (*p == ' ' || *p == '\t') return false;
+        if (!std::strchr(Fuchey::Crypto::Base58::ALPHABET, *p)) return false;
+    }
+    return true;
+}
+
+static int count_bip39_words(const char* s) {
+    int count = 0;
+    while (s && *s) {
+        while (*s && !std::isalpha(static_cast<unsigned char>(*s))) ++s;
+        if (*s) {
+            ++count;
+            while (*s && std::isalpha(static_cast<unsigned char>(*s))) ++s;
+        }
+    }
+    return count;
+}
+
+static std::string normalize_bip39_payload(const char* s) {
+    std::string normalized;
+    while (s && *s) {
+        while (*s && !std::isalpha(static_cast<unsigned char>(*s))) ++s;
+        if (!*s) break;
+
+        if (!normalized.empty()) normalized += ' ';
+        while (*s && std::isalpha(static_cast<unsigned char>(*s))) {
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(*s)));
+            ++s;
+        }
+    }
+    return normalized;
 }
 
 extern "C" void app_main(void) {
@@ -220,8 +257,9 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "  Commands:");
         ESP_LOGI(CTAG, "    w <ssid> <pass>           WiFi connect & save");
         ESP_LOGI(CTAG, "    wallet_create              Generate new wallet");
-        ESP_LOGI(CTAG, "    wallet_import <12 words>   Import BIP39 mnemonic");
-        ESP_LOGI(CTAG, "    wallet_import <64hex>      Import raw private key");
+        ESP_LOGI(CTAG, "    wallet_import <mnemonic>   Import BIP39 mnemonic");
+        ESP_LOGI(CTAG, "    wallet_import <key>        Import hex/base58 private key");
+        ESP_LOGI(CTAG, "    wallet_selftest            Verify Ed25519 math");
         ESP_LOGI(CTAG, "    wallet_info                Show current address");
         ESP_LOGI(CTAG, "    p                          Force SOL price fetch");
         ESP_LOGI(CTAG, "    c / 1                      CONFIRM button");
@@ -229,18 +267,64 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
 
-        char line[300];
+        char line[512];
+        std::string pending_line;
+        std::string pending_wallet_import;
         while (true) {
             if (fgets(line, sizeof(line), stdin)) {
+                size_t chunk_len = strlen(line);
+                bool line_complete = chunk_len > 0 &&
+                                     (line[chunk_len - 1] == '\r' || line[chunk_len - 1] == '\n');
+
+                pending_line.append(line, chunk_len);
+                if (!line_complete && pending_line.size() < sizeof(line) - 1) {
+                    continue;
+                }
+                if (pending_line.size() >= sizeof(line)) {
+                    ESP_LOGW(CTAG, "Command too long; discarding input (%d bytes)",
+                             static_cast<int>(pending_line.size()));
+                    pending_line.clear();
+                    continue;
+                }
+
+                std::strncpy(line, pending_line.c_str(), sizeof(line));
+                line[sizeof(line) - 1] = '\0';
+                pending_line.clear();
+
                 size_t len = strlen(line);
                 while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n')) {
                     line[--len] = '\0';
                 }
                 // Trim leading whitespace
                 char* cmd = line;
-                while (*cmd == ' ') ++cmd;
+                while (*cmd == ' ' || *cmd == '\t') ++cmd;
                 len = strlen(cmd);
+                while (len > 0 && (cmd[len - 1] == ' ' || cmd[len - 1] == '\t')) {
+                    cmd[--len] = '\0';
+                }
                 if (len == 0) continue;
+
+                if (!pending_wallet_import.empty() &&
+                    strcmp(cmd, "wallet_import_cancel") != 0) {
+                    const char* continuation = cmd;
+                    if (strncmp(cmd, "wallet_import ", 14) == 0 && len > 14) {
+                        continuation = cmd + 14;
+                        while (*continuation == ' ' || *continuation == '\t') ++continuation;
+                    }
+                    pending_wallet_import += ' ';
+                    pending_wallet_import += continuation;
+                    std::strncpy(line, pending_wallet_import.c_str(), sizeof(line));
+                    line[sizeof(line) - 1] = '\0';
+                    cmd = line;
+                    len = strlen(cmd);
+                }
+
+                if (strcmp(cmd, "wallet_import_cancel") == 0) {
+                    std::fill(pending_wallet_import.begin(), pending_wallet_import.end(), '\0');
+                    pending_wallet_import.clear();
+                    ESP_LOGW(CTAG, "[Wallet] Pending import cancelled");
+                    continue;
+                }
 
                 // ── CONFIRM / SELECT button ────────────────────
                 if ((cmd[0] == 'c' || cmd[0] == '1') && len == 1) {
@@ -310,6 +394,17 @@ extern "C" void app_main(void) {
                     } else {
                         ESP_LOGW(CTAG, "  No wallet configured yet.");
                     }
+
+                // ── wallet_selftest ───────────────────────────
+                } else if (strcmp(cmd, "wallet_selftest") == 0) {
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
+                    ESP_LOGI(CTAG, "[Wallet] Running Ed25519 RFC8032 self-test...");
+                    if (Fuchey::Crypto::Ed25519::self_test()) {
+                        ESP_LOGI(CTAG, "[Wallet] Self-test PASSED");
+                    } else {
+                        ESP_LOGE(CTAG, "[Wallet] Self-test FAILED");
+                    }
+                    ESP_LOGI(CTAG, "-------------------------------------------------");
 
                 // ── qr ────────────────────────────────────────
                 } else if (strcmp(cmd, "qr") == 0) {
@@ -558,27 +653,59 @@ extern "C" void app_main(void) {
                 } else if (strncmp(cmd, "wallet_import ", 14) == 0 && len > 14) {
                     const char* payload = cmd + 14;
                     // Skip leading spaces
-                    while (*payload == ' ') ++payload;
+                    while (*payload == ' ' || *payload == '\t') ++payload;
 
                     ESP_LOGI(CTAG, "-------------------------------------------------");
                     Fuchey::WalletResult r;
 
-                    // Auto-detect format: 64 hex chars = raw private key, else BIP39
-                    if (is_hex64(payload)) {
-                        ESP_LOGI(CTAG, "[Wallet] Detected: 64-char hex private key");
+                    // Auto-detect format: hex, Solana base58 secret key, or BIP39.
+                    if (is_hex_private_key(payload)) {
+                        ESP_LOGI(CTAG, "[Wallet] Detected: %d-char hex private key", static_cast<int>(strlen(payload)));
                         r = s_wallet_core.import_privkey_hex(payload);
-                    } else {
-                        int word_count = 0;
-                        const char* p = payload;
-                        while (*p) {
-                            while (*p == ' ') ++p;
-                            if (*p) { ++word_count; while (*p && *p != ' ') ++p; }
+                    } else if (is_single_base58_token(payload)) {
+                        size_t payload_len = strlen(payload);
+                        if (payload_len < 87) {
+                            pending_wallet_import = "wallet_import ";
+                            pending_wallet_import += payload;
+                            ESP_LOGW(CTAG, "[Wallet] Private key input looks incomplete (%d chars). Paste/type the remaining characters, or wallet_import_cancel.",
+                                     static_cast<int>(payload_len));
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            continue;
                         }
+                        ESP_LOGI(CTAG, "[Wallet] Detected: base58 private key");
+                        r = s_wallet_core.import_privkey_base58(payload);
+                    } else {
+                        std::string normalized = normalize_bip39_payload(payload);
+                        int word_count = count_bip39_words(normalized.c_str());
                         ESP_LOGI(CTAG, "[Wallet] Detected: BIP39 mnemonic (%d words)", word_count);
-                        r = s_wallet_core.import(payload);
+                        ESP_LOGI(CTAG, "[Wallet] Mnemonic payload length: raw=%d normalized=%d",
+                                 static_cast<int>(strlen(payload)),
+                                 static_cast<int>(normalized.size()));
+                        if (word_count > 0 && word_count < 12) {
+                            pending_wallet_import = "wallet_import ";
+                            pending_wallet_import += normalized;
+                            ESP_LOGW(CTAG, "[Wallet] Mnemonic input is incomplete (%d/12 words). Paste/type the remaining word(s), or wallet_import_cancel.",
+                                     word_count);
+                            std::fill(normalized.begin(), normalized.end(), '\0');
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            continue;
+                        }
+                        if (word_count > 12 && word_count < 24) {
+                            pending_wallet_import = "wallet_import ";
+                            pending_wallet_import += normalized;
+                            ESP_LOGW(CTAG, "[Wallet] Mnemonic input is incomplete (%d/24 words). Paste/type the remaining word(s), or wallet_import_cancel.",
+                                     word_count);
+                            std::fill(normalized.begin(), normalized.end(), '\0');
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            continue;
+                        }
+                        r = s_wallet_core.import(normalized);
+                        std::fill(normalized.begin(), normalized.end(), '\0');
                     }
 
                     if (r == Fuchey::WalletResult::OK) {
+                        std::fill(pending_wallet_import.begin(), pending_wallet_import.end(), '\0');
+                        pending_wallet_import.clear();
                         auto addr = s_wallet_core.get_address();
                         ESP_LOGI(CTAG, "[Wallet] IMPORTED SUCCESSFULLY!");
                         ESP_LOGI(CTAG, "  Address: %s", addr ? addr->c_str() : "(error)");
@@ -591,7 +718,7 @@ extern "C" void app_main(void) {
                     } else {
                         const char* reason =
                             (r == Fuchey::WalletResult::ERR_INVALID_MNEMONIC) ? "invalid mnemonic" :
-                            (r == Fuchey::WalletResult::ERR_INVALID_PRIVKEY)  ? "invalid private key (bad hex?)" :
+                            (r == Fuchey::WalletResult::ERR_INVALID_PRIVKEY)  ? "invalid private key (bad hex/base58?)" :
                             (r == Fuchey::WalletResult::ERR_ALREADY_EXISTS)   ? "wallet already exists" :
                             "unknown error";
                         ESP_LOGE(CTAG, "[Wallet] Import FAILED: %s", reason);
@@ -894,8 +1021,9 @@ extern "C" void app_main(void) {
                 } else if ((cmd[0] == 'h' || cmd[0] == '?') && len == 1) {
                     ESP_LOGI(CTAG, "  w <ssid> <pass>          WiFi connect & save");
                     ESP_LOGI(CTAG, "  wallet_create            Generate new wallet");
-                    ESP_LOGI(CTAG, "  wallet_import <12 words> Import BIP39 mnemonic");
-                    ESP_LOGI(CTAG, "  wallet_import <64hex>    Import raw private key");
+                    ESP_LOGI(CTAG, "  wallet_import <mnemonic> Import BIP39 mnemonic");
+                    ESP_LOGI(CTAG, "  wallet_import <key>      Import hex/base58 private key");
+                    ESP_LOGI(CTAG, "  wallet_selftest          Verify Ed25519 math");
                     ESP_LOGI(CTAG, "  wallet_info              Show current address");
                     ESP_LOGI(CTAG, "  balance                  Fetch live SOL & USDC balance");
                     ESP_LOGI(CTAG, "  ai <message>             Send prompt to AI Assistant");

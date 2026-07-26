@@ -67,11 +67,16 @@ public:
     // On success, wallet is UNLOCKED.
     WalletResult import(std::string_view mnemonic);
 
-    // Import wallet from raw 64-char hex-encoded Ed25519 private key (32 bytes).
+    // Import wallet from raw 64-char hex-encoded Ed25519 private key/seed (32 bytes).
     // Derives public key directly — no BIP39/SLIP0010 derivation path.
     // Example: "2f97510b0d6d19dd..." (exactly 64 lowercase hex chars)
     // On success, wallet is UNLOCKED.
     WalletResult import_privkey_hex(std::string_view hex64);
+
+    // Import wallet from a Solana base58 secret key.
+    // Accepts 32-byte seed or 64-byte seed+pubkey exports.
+    // On success, wallet is UNLOCKED.
+    WalletResult import_privkey_base58(std::string_view encoded);
 
     // ── Session management ───────────────────────────────
     // Lock: clear private key from memory

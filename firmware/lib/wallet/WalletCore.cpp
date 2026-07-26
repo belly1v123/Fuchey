@@ -126,33 +126,40 @@ WalletResult WalletCore::import_privkey_hex(std::string_view hex64) {
         return WalletResult::ERR_ALREADY_EXISTS;
     }
 
-    // Must be exactly 64 hex chars (32 bytes)
-    if (hex64.size() != 64) {
-        ESP_LOGE(TAG, "import_privkey_hex: expected 64 hex chars, got %zu", hex64.size());
+    // Must be 64 hex chars (32-byte seed) or 128 hex chars (64-byte seed+pubkey)
+    if (hex64.size() != 64 && hex64.size() != 128) {
+        ESP_LOGE(TAG, "import_privkey_hex: expected 64 or 128 hex chars, got %zu", hex64.size());
         return WalletResult::ERR_INVALID_PRIVKEY;
     }
 
-    // Parse hex string to 32-byte private key
-    Crypto::PrivKey priv_key{};
-    for (size_t i = 0; i < 32; ++i) {
-        char hi = hex64[i * 2];
-        char lo = hex64[i * 2 + 1];
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
 
-        auto hex_val = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-            return -1;
-        };
+    auto parse_hex_byte = [&](size_t byte_index, uint8_t& out) -> bool {
+        char hi = hex64[byte_index * 2];
+        char lo = hex64[byte_index * 2 + 1];
 
         int h = hex_val(hi);
         int l = hex_val(lo);
         if (h < 0 || l < 0) {
-            ESP_LOGE(TAG, "import_privkey_hex: invalid hex character at pos %zu", i * 2);
+            ESP_LOGE(TAG, "import_privkey_hex: invalid hex character at pos %zu", byte_index * 2);
+            return false;
+        }
+        out = static_cast<uint8_t>((h << 4) | l);
+        return true;
+    };
+
+    // Parse first 32 bytes as the Ed25519 seed/private key.
+    Crypto::PrivKey priv_key{};
+    for (size_t i = 0; i < Crypto::PRIVKEY_BYTES; ++i) {
+        if (!parse_hex_byte(i, priv_key[i])) {
             priv_key.fill(0);
             return WalletResult::ERR_INVALID_PRIVKEY;
         }
-        priv_key[i] = static_cast<uint8_t>((h << 4) | l);
     }
 
     // Derive public key directly from private key using Ed25519
@@ -166,6 +173,24 @@ WalletResult WalletCore::import_privkey_hex(std::string_view hex64) {
         priv_key.fill(0);
         ESP_LOGE(TAG, "import_privkey_hex: Ed25519 pubkey derivation failed");
         return WalletResult::ERR_CRYPTO_FAILURE;
+    }
+
+    if (hex64.size() == 128) {
+        Crypto::PubKey embedded_pub_key{};
+        for (size_t i = 0; i < Crypto::PUBKEY_BYTES; ++i) {
+            if (!parse_hex_byte(Crypto::PRIVKEY_BYTES + i, embedded_pub_key[i])) {
+                priv_key.fill(0);
+                embedded_pub_key.fill(0);
+                return WalletResult::ERR_INVALID_PRIVKEY;
+            }
+        }
+
+        if (embedded_pub_key != pub_key) {
+            priv_key.fill(0);
+            embedded_pub_key.fill(0);
+            ESP_LOGE(TAG, "import_privkey_hex: embedded pubkey does not match private key");
+            return WalletResult::ERR_INVALID_PRIVKEY;
+        }
     }
 
     // Store pubkey and privkey in NVS
@@ -203,6 +228,71 @@ WalletResult WalletCore::import_privkey_hex(std::string_view hex64) {
     return WalletResult::OK;
 }
 
+// ─── Import from Solana base58 secret key ─────────────────
+WalletResult WalletCore::import_privkey_base58(std::string_view encoded) {
+    if (m_state != WalletState::UNINITIALIZED) {
+        return WalletResult::ERR_ALREADY_EXISTS;
+    }
+
+    auto decoded = Crypto::Base58::decode(encoded);
+    if (decoded.size() != Crypto::PRIVKEY_BYTES && decoded.size() != 64) {
+        ESP_LOGE(TAG, "import_privkey_base58: decoded length %zu is invalid", decoded.size());
+        std::fill(decoded.begin(), decoded.end(), 0);
+        return WalletResult::ERR_INVALID_PRIVKEY;
+    }
+
+    Crypto::PrivKey priv_key{};
+    std::copy(decoded.begin(), decoded.begin() + Crypto::PRIVKEY_BYTES, priv_key.begin());
+
+    Crypto::PubKey pub_key{};
+    bool ok = Crypto::Ed25519::get_pubkey(
+        std::span<const uint8_t, 32>(priv_key.data(), 32),
+        std::span<uint8_t, 32>(pub_key.data(), 32)
+    );
+    if (!ok) {
+        std::fill(decoded.begin(), decoded.end(), 0);
+        priv_key.fill(0);
+        ESP_LOGE(TAG, "import_privkey_base58: Ed25519 pubkey derivation failed");
+        return WalletResult::ERR_CRYPTO_FAILURE;
+    }
+
+    if (decoded.size() == 64 &&
+        !std::equal(pub_key.begin(), pub_key.end(), decoded.begin() + Crypto::PRIVKEY_BYTES)) {
+        std::fill(decoded.begin(), decoded.end(), 0);
+        priv_key.fill(0);
+        ESP_LOGE(TAG, "import_privkey_base58: embedded pubkey does not match private key");
+        return WalletResult::ERR_INVALID_PRIVKEY;
+    }
+
+    Storage::Handle nvs(NVS::WALLET_NS, NVS_READWRITE);
+    if (!nvs.is_open()) {
+        std::fill(decoded.begin(), decoded.end(), 0);
+        priv_key.fill(0);
+        return WalletResult::ERR_STORAGE_FAILURE;
+    }
+    if (!nvs.set_blob("pubkey", pub_key.data(), pub_key.size()) ||
+        !nvs.set_blob("privkey", priv_key.data(), priv_key.size()) ||
+        !nvs.set_u8(NVS::KEY_WALLET_CREATED, 1) ||
+        !nvs.commit()) {
+        std::fill(decoded.begin(), decoded.end(), 0);
+        priv_key.fill(0);
+        return WalletResult::ERR_STORAGE_FAILURE;
+    }
+
+    m_keypair.priv_key = priv_key;
+    m_keypair.pub_key  = pub_key;
+    m_keypair.chain_code.fill(0);
+    m_pubkey       = pub_key;
+    m_pubkey_valid = true;
+
+    std::fill(decoded.begin(), decoded.end(), 0);
+    priv_key.fill(0);
+
+    m_state = WalletState::UNLOCKED;
+    ESP_LOGI(TAG, "Wallet imported from base58 private key successfully");
+    return WalletResult::OK;
+}
+
 // ─── Lock ─────────────────────────────────────────────────
 void WalletCore::lock() {
     zero_sensitive_data();
@@ -213,8 +303,6 @@ void WalletCore::lock() {
 }
 
 // ─── Unlock ───────────────────────────────────────────────
-// MVP: For now, unlock just transitions state (key stays in memory during boot)
-// Future: will re-derive from NVS-stored encrypted mnemonic + PIN
 WalletResult WalletCore::unlock() {
     if (m_state == WalletState::UNINITIALIZED) {
         return WalletResult::ERR_NOT_INITIALIZED;
@@ -222,7 +310,13 @@ WalletResult WalletCore::unlock() {
     if (m_state == WalletState::UNLOCKED) {
         return WalletResult::OK;
     }
-    // TODO: Re-derive keypair from NVS + PIN for post-MVP
+
+    auto result = load_pubkey();
+    if (result != WalletResult::OK) {
+        ESP_LOGE(TAG, "Failed to reload keypair from NVS during unlock");
+        return result;
+    }
+
     m_state = WalletState::UNLOCKED;
     ESP_LOGI(TAG, "Wallet unlocked");
     return WalletResult::OK;

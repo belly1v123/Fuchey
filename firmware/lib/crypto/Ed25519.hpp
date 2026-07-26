@@ -43,6 +43,9 @@ public:
                        std::span<const uint8_t>     message,
                        std::span<const uint8_t, 64> signature);
 
+    // Run a known RFC 8032 test vector against pubkey derivation and signing.
+    static bool self_test();
+
 private:
     // Low-level Ed25519 field operations (TweetNaCl-derived)
     // These are static functions with no external state
