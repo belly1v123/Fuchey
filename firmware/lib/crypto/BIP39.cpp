@@ -205,7 +205,7 @@ std::vector<uint8_t> BIP39::mnemonic_to_entropy(std::string_view mnemonic) {
         size_t byte_off = bit_offset / 8;
         int    bit_shift = static_cast<int>(bit_offset % 8);
 
-        uint32_t val = static_cast<uint32_t>(indices[i]) << (21 - bit_shift);
+        uint32_t val = static_cast<uint32_t>(indices[i]) << (13 - bit_shift);
         bit_buf[byte_off]     |= (val >> 16) & 0xFF;
         bit_buf[byte_off + 1] |= (val >>  8) & 0xFF;
         if (byte_off + 2 < bit_buf.size())
@@ -266,6 +266,8 @@ bool BIP39::to_seed(std::string_view mnemonic,
     if (!ok) {
         ESP_LOGE(TAG, "PBKDF2 failed");
         out_seed.fill(0);
+    } else {
+        ESP_LOG_BUFFER_HEX(TAG, out_seed.data(), out_seed.size());
     }
     return ok;
 }

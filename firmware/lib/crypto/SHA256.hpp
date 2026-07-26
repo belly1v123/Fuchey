@@ -13,6 +13,7 @@
 #include <mbedtls/private/sha512.h>
 #include <mbedtls/md.h>
 #include <mbedtls/private/pkcs5.h>
+#include <cstring>
 #include <cstdint>
 #include <cstddef>
 #include <array>
@@ -20,6 +21,8 @@
 
 namespace Fuchey {
 namespace Crypto {
+
+static constexpr size_t SHA512_BLOCK_SIZE = 128;
 
 // ─── SHA-256 ──────────────────────────────────────────────
 inline std::array<uint8_t, 32> sha256(std::span<const uint8_t> data) {
@@ -43,21 +46,46 @@ inline std::array<uint8_t, 64> sha512(std::span<const uint8_t> data) {
     return out;
 }
 
-// ─── HMAC-SHA512 (used in BIP39 seed and SLIP0010) ────────
+// ─── HMAC-SHA512 (RFC 2104) ──────────────────────────────
+// Manual implementation using the working sha512() function,
+// avoiding a bug in mbedTLS's HMAC context on this platform.
 inline std::array<uint8_t, 64> hmac_sha512(
     std::span<const uint8_t> key,
     std::span<const uint8_t> data)
 {
-    std::array<uint8_t, 64> out{};
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
-    mbedtls_md_setup(&ctx, info, 1 /* hmac */);
-    mbedtls_md_hmac_starts(&ctx, key.data(), key.size());
-    mbedtls_md_hmac_update(&ctx, data.data(), data.size());
-    mbedtls_md_hmac_finish(&ctx, out.data());
-    mbedtls_md_free(&ctx);
-    return out;
+    std::array<uint8_t, SHA512_BLOCK_SIZE> key_pad{};
+    std::array<uint8_t, SHA512_BLOCK_SIZE> ipad{};
+    std::array<uint8_t, SHA512_BLOCK_SIZE> opad{};
+
+    // If key is longer than block size, hash it first
+    std::array<uint8_t, 64> hashed_key{};
+    std::span<const uint8_t> k = key;
+    if (key.size() > SHA512_BLOCK_SIZE) {
+        hashed_key = sha512(key);
+        k = std::span<const uint8_t>(hashed_key.data(), hashed_key.size());
+    }
+
+    // Copy key into block-sized buffer and XOR with ipad/opad
+    std::memcpy(key_pad.data(), k.data(), k.size());
+    for (size_t i = 0; i < SHA512_BLOCK_SIZE; ++i) {
+        ipad[i] = key_pad[i] ^ 0x36;
+        opad[i] = key_pad[i] ^ 0x5c;
+    }
+
+    // Inner: SHA512(ipad || data)
+    std::array<uint8_t, 64> inner{};
+    {
+        std::array<uint8_t, SHA512_BLOCK_SIZE + 256> inner_buf{};
+        std::memcpy(inner_buf.data(), ipad.data(), SHA512_BLOCK_SIZE);
+        std::memcpy(inner_buf.data() + SHA512_BLOCK_SIZE, data.data(), data.size());
+        inner = sha512(std::span<const uint8_t>(inner_buf.data(), SHA512_BLOCK_SIZE + data.size()));
+    }
+
+    // Outer: SHA512(opad || inner)
+    std::array<uint8_t, SHA512_BLOCK_SIZE + 64> outer_buf{};
+    std::memcpy(outer_buf.data(), opad.data(), SHA512_BLOCK_SIZE);
+    std::memcpy(outer_buf.data() + SHA512_BLOCK_SIZE, inner.data(), inner.size());
+    return sha512(std::span<const uint8_t>(outer_buf.data(), SHA512_BLOCK_SIZE + inner.size()));
 }
 
 // ─── PBKDF2-HMAC-SHA512 (used in BIP39 mnemonic→seed) ────

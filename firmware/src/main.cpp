@@ -23,6 +23,7 @@
 #include "../lib/buttons/ButtonDriver.hpp"
 #include "../lib/crypto/CryptoEngine.hpp"
 #include "../lib/crypto/Base58.hpp"
+#include "../lib/crypto/SHA256.hpp"
 #include "../lib/crypto/Ed25519.hpp"
 #include "../lib/wallet/WalletCore.hpp"
 #include "../lib/policy/SpendingPolicy.hpp"
@@ -980,24 +981,238 @@ extern "C" void app_main(void) {
 
                 // ── Send USDC ─────────────────────────────────
                 } else if (strncmp(cmd, "send usdc ", 10) == 0 && len > 10) {
-                    float amount = 0.0f;
-                    char recipient[64] = {0};
-                    if (sscanf(cmd + 10, "%f %63s", &amount, recipient) == 2) {
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
-                        ESP_LOGI(CTAG, "[SEND USDC] Initiating SPL transfer:");
-                        ESP_LOGI(CTAG, "  Asset:     USDC (SPL Token)");
-                        ESP_LOGI(CTAG, "  Amount:    $%.2f USDC", amount);
-                        ESP_LOGI(CTAG, "  Recipient: %s", recipient);
+                    struct SendUsdcArgs {
+                        float amount;
+                        char  recipient[64];
+                    };
 
-                        // 1 USDC = $1.00 = 100 cents
-                        uint64_t cents = static_cast<uint64_t>(amount * 100.0f);
-                        Fuchey::Events::Event evt{};
-                        evt.type = Fuchey::Events::EventType::TX_REQUEST;
-                        evt.data.tx.amount_cents = cents;
-                        evt.data.tx.tx_len = 0;
-                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
-                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                    auto* args = new SendUsdcArgs();
+                    args->amount = 0.0f;
+                    memset(args->recipient, 0, sizeof(args->recipient));
+
+                    if (sscanf(cmd + 10, "%f %63s", &args->amount, args->recipient) == 2) {
+                        xTaskCreate([](void* p) {
+                            static constexpr const char* CTAG = "Console";
+                            auto* args = static_cast<SendUsdcArgs*>(p);
+                            float amount = args->amount;
+                            std::string recipient_str = args->recipient;
+                            delete args;
+
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+                            ESP_LOGI(CTAG, "[SEND USDC] Initiating SPL transfer:");
+                            ESP_LOGI(CTAG, "  Asset:     USDC (SPL Token)");
+                            ESP_LOGI(CTAG, "  Amount:    $%.2f USDC", amount);
+                            ESP_LOGI(CTAG, "  Recipient: %s", recipient_str.c_str());
+
+                            // Decode recipient address
+                            auto recipient_pubkey = Fuchey::Crypto::Base58::decode(recipient_str);
+                            if (recipient_pubkey.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error: Invalid Solana recipient address length (%d bytes, expected 32).",
+                                         recipient_pubkey.size());
+                                ESP_LOGI(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            s_wallet_core.unlock();
+                            auto pubkey_opt = s_wallet_core.get_pubkey();
+                            if (!pubkey_opt) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error: Wallet is locked or not setup.");
+                                ESP_LOGI(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+                            auto sender_pubkey = *pubkey_opt;
+
+                            // ── Decode program IDs ──
+                            auto token_prog = Fuchey::Crypto::Base58::decode(
+                                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+                            auto ata_prog = Fuchey::Crypto::Base58::decode(
+                                "ATokenGPvbdGVxr1b2hvZbsiqW5xrj25vdTucN6s");
+                            auto usdc_mint = Fuchey::Crypto::Base58::decode(get_usdc_mint());
+                            if (token_prog.size() != 32 || ata_prog.size() != 32 || usdc_mint.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding program IDs");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // ── Derive Associated Token Accounts ──
+                            // ATA = first 32 bytes of SHA256(owner || token_prog || mint || 0xFF || ata_prog)
+                            auto derive_ata = [&](const std::vector<uint8_t>& owner) -> std::array<uint8_t, 32> {
+                                std::array<uint8_t, 32 + 32 + 32 + 1 + 32> pda_input{};
+                                std::memcpy(pda_input.data(), owner.data(), 32);
+                                std::memcpy(pda_input.data() + 32, token_prog.data(), 32);
+                                std::memcpy(pda_input.data() + 64, usdc_mint.data(), 32);
+                                pda_input[96] = 0xFF;
+                                std::memcpy(pda_input.data() + 97, ata_prog.data(), 32);
+                                return Fuchey::Crypto::sha256(
+                                    std::span<const uint8_t>(pda_input.data(), pda_input.size()));
+                            };
+
+                            std::array<uint8_t, 32> sender_ata = derive_ata(
+                                std::vector<uint8_t>(sender_pubkey.begin(), sender_pubkey.end()));
+                            std::array<uint8_t, 32> recipient_ata = derive_ata(recipient_pubkey);
+
+                            // Flush old events
+                            Fuchey::Events::Event dummy_evt;
+                            if (Fuchey::g_tx_confirm_queue) {
+                                while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
+                            }
+
+                            // Prompt for confirmation
+                            uint64_t cents = static_cast<uint64_t>(amount * 100.0f);
+                            Fuchey::Events::Event evt{};
+                            evt.type = Fuchey::Events::EventType::TX_REQUEST;
+                            evt.data.tx.amount_cents = cents;
+                            evt.data.tx.tx_len = 0;
+                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
+
+                            ESP_LOGI(CTAG, "[SEND USDC] Waiting for hardware button press or serial 'c' approval...");
+                            ESP_LOGI(CTAG, "-------------------------------------------------");
+
+                            Fuchey::Events::Event app_evt{};
+                            bool got_response = false;
+                            if (Fuchey::g_tx_confirm_queue) {
+                                got_response = (xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
+                            }
+
+                            if (!got_response || app_evt.type != Fuchey::Events::EventType::TX_APPROVED) {
+                                ESP_LOGW(CTAG, "-------------------------------------------------");
+                                ESP_LOGW(CTAG, "[SEND USDC] Transfer REJECTED or TIMED OUT by user.");
+                                ESP_LOGW(CTAG, "-------------------------------------------------");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            ESP_LOGI(CTAG, "[SEND USDC] Transaction APPROVED! Fetching blockhash from Devnet...");
+
+                            // Fetch blockhash
+                            auto bh_resp = s_wifi_manager.post_json(
+                                get_rpc_url(),
+                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
+                            );
+
+                            if (!bh_resp.success) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            std::string blockhash_str;
+                            cJSON* bh_root = cJSON_Parse(bh_resp.body.c_str());
+                            if (bh_root) {
+                                cJSON* res = cJSON_GetObjectItem(bh_root, "result");
+                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+                                cJSON* bh  = val ? cJSON_GetObjectItem(val, "blockhash") : nullptr;
+                                if (bh && bh->valuestring) {
+                                    blockhash_str = bh->valuestring;
+                                }
+                                cJSON_Delete(bh_root);
+                            }
+
+                            if (blockhash_str.empty()) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error parsing blockhash: %.100s", bh_resp.body.c_str());
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
+                            if (blockhash_bytes.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Invalid blockhash decode size (%d)", blockhash_bytes.size());
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // ── Build Solana message ──
+                            // USDC has 6 decimals
+                            uint64_t raw_amount = static_cast<uint64_t>(amount * 1000000.0f);
+                            std::vector<uint8_t> msg;
+
+                            // Header
+                            msg.push_back(1); // num_required_signatures = 1
+                            msg.push_back(0); // num_readonly_signed_accounts = 0
+                            msg.push_back(1); // num_readonly_unsigned_accounts = 1 (Token Program)
+
+                            // Accounts
+                            msg.push_back(4); // 4 accounts
+                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end()); // [0] signer
+                            msg.insert(msg.end(), sender_ata.begin(), sender_ata.end());       // [1] source ATA
+                            msg.insert(msg.end(), recipient_ata.begin(), recipient_ata.end()); // [2] dest ATA
+                            msg.insert(msg.end(), token_prog.begin(), token_prog.end());       // [3] Token Program
+
+                            // Blockhash
+                            msg.insert(msg.end(), blockhash_bytes.begin(), blockhash_bytes.end());
+
+                            // Instructions
+                            msg.push_back(1); // 1 instruction
+                            msg.push_back(3); // program_id_index = 3 (Token Program)
+                            msg.push_back(3); // 3 account indices
+                            msg.push_back(1); // accounts[0] = source ATA (index 1)
+                            msg.push_back(2); // accounts[1] = dest ATA (index 2)
+                            msg.push_back(0); // accounts[2] = owner (index 0)
+                            msg.push_back(12); // data length = 12 bytes
+                            // SPL Transfer: u32 LE tag (3) + u64 LE amount
+                            msg.push_back(3); msg.push_back(0); msg.push_back(0); msg.push_back(0);
+                            for (int i = 0; i < 8; i++) {
+                                msg.push_back(static_cast<uint8_t>((raw_amount >> (i * 8)) & 0xFF));
+                            }
+
+                            // Sign
+                            Fuchey::Crypto::Signature sig{};
+                            auto sign_res = s_wallet_core.sign(msg, sig);
+                            if (sign_res != Fuchey::WalletResult::OK) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Signing failed (err=%d)", static_cast<int>(sign_res));
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // Build wire transaction
+                            std::vector<uint8_t> wire_tx;
+                            wire_tx.push_back(1);
+                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end());
+                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end());
+
+                            std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
+
+                            // Submit
+                            char req_buf[2048];
+                            snprintf(req_buf, sizeof(req_buf),
+                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"%s\",{\"encoding\":\"base58\"}]}",
+                                     base58_tx.c_str());
+
+                            ESP_LOGI(CTAG, "[SEND USDC] Broadcasting signed transaction to Solana Devnet...");
+                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
+
+                            if (tx_resp.success) {
+                                cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
+                                if (tx_root) {
+                                    cJSON* tx_res = cJSON_GetObjectItem(tx_root, "result");
+                                    cJSON* tx_err = cJSON_GetObjectItem(tx_root, "error");
+                                    if (tx_res && tx_res->valuestring) {
+                                        ESP_LOGI(CTAG, "=================================================");
+                                        ESP_LOGI(CTAG, "  [SUCCESS] USDC Transfer Broadcast Complete!");
+                                        ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
+                                        ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
+                                        ESP_LOGI(CTAG, "=================================================");
+                                    } else if (tx_err) {
+                                        cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
+                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s",
+                                                 msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown error");
+                                    } else {
+                                        ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
+                                    }
+                                    cJSON_Delete(tx_root);
+                                } else {
+                                    ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
+                                }
+                            } else {
+                                ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
+                            }
+
+                            vTaskDelete(nullptr);
+                        }, "send_usdc_task", 20480, args, 4, nullptr);
                     } else {
+                        delete args;
                         ESP_LOGW(CTAG, "Usage: send usdc <amount> <recipient_address>");
                     }
 
