@@ -340,7 +340,29 @@ WalletResult WalletCore::load_pubkey() {
 
     size_t priv_len = nvs.get_blob("privkey", m_keypair.priv_key.data(), m_keypair.priv_key.size());
     if (priv_len == Crypto::PRIVKEY_BYTES) {
-        m_keypair.pub_key = m_pubkey;
+        Crypto::PubKey derived_pubkey{};
+        bool ok = Crypto::Ed25519::get_pubkey(
+            std::span<const uint8_t, 32>(m_keypair.priv_key.data(), 32),
+            std::span<uint8_t, 32>(derived_pubkey.data(), 32)
+        );
+        if (!ok) {
+            ESP_LOGE(TAG, "Failed to rederive pubkey from stored private key");
+            return WalletResult::ERR_CRYPTO_FAILURE;
+        }
+
+        if (derived_pubkey != m_pubkey) {
+            ESP_LOGW(TAG, "Stored pubkey mismatch; refreshing from private key");
+            Storage::Handle write_nvs(NVS::WALLET_NS, NVS_READWRITE);
+            if (!write_nvs.is_open() ||
+                !write_nvs.set_blob("pubkey", derived_pubkey.data(), derived_pubkey.size()) ||
+                !write_nvs.commit()) {
+                ESP_LOGE(TAG, "Failed to refresh pubkey in NVS");
+                return WalletResult::ERR_STORAGE_FAILURE;
+            }
+        }
+
+        m_pubkey = derived_pubkey;
+        m_keypair.pub_key = derived_pubkey;
         ESP_LOGI(TAG, "Loaded keypair successfully from NVS");
     } else {
         ESP_LOGW(TAG, "Privkey blob missing or invalid (len=%zu)", priv_len);
