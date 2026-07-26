@@ -4,5 +4,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-docs/ 
+docs/
+Agent.md
+Memory.md
 
