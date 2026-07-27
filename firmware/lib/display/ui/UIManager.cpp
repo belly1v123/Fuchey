@@ -341,10 +341,7 @@ void UIManager::render_wallet_qr() {
 
     // Center the QR code; leave top-4px for the tiny "QR" label
     int x_off = (Display::WIDTH  - total) / 2;
-    int y_off = 4 + (Display::HEIGHT - 4 - total) / 2;
-
-    // Draw title
-    m_display.draw_text_centered(0, "WALLET QR", Display::FontSize::SMALL);
+    int y_off = (Display::HEIGHT - total) / 2;
 
     // Draw QR modules
     for (int row = 0; row < qr_size; row++) {

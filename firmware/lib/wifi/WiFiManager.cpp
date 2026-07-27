@@ -198,11 +198,19 @@ HttpResponse WiFiManager::get(const char* url, const char* bearer_token,
 HttpResponse WiFiManager::post_json(const char* url, const char* body,
                                      const char* bearer_token,
                                      uint32_t timeout_ms) {
-    esp_http_client_config_t cfg{};
-    cfg.url              = url;
-    cfg.timeout_ms       = static_cast<int>(timeout_ms);
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    return do_request(cfg, "POST", body, bearer_token, timeout_ms);
+    static constexpr int MAX_ATTEMPTS = 3;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt) {
+        esp_http_client_config_t cfg{};
+        cfg.url              = url;
+        cfg.timeout_ms       = static_cast<int>(timeout_ms);
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        auto resp = do_request(cfg, "POST", body, bearer_token, timeout_ms);
+        if (resp.success || attempt == MAX_ATTEMPTS) return resp;
+        ESP_LOGW(TAG, "HTTP POST failed (attempt %d/%d) — retrying in 500ms...", attempt, MAX_ATTEMPTS);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    HttpResponse fail{.status_code = -1, .body = "", .success = false};
+    return fail;
 }
 
 // ─── Body accumulator (used as user_data in HTTP events) ──

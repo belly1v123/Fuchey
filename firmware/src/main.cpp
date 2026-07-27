@@ -920,24 +920,6 @@ extern "C" void app_main(void) {
 
                             std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
 
-                            // ── Diagnostic: log pubkey, sig, and msg for offline verification ──
-                            {
-                                char hex[65];
-                                auto to_hex = [&](const uint8_t* d, int n) {
-                                    for (int i = 0; i < n; i++) snprintf(hex + i*2, 3, "%02x", d[i]);
-                                    hex[n*2] = '\0';
-                                };
-                                to_hex(sender_pubkey.data(), 32);
-                                ESP_LOGI(CTAG, "[DIAG] Pubkey  : %s", hex);
-                                to_hex(sig.data(), 32);
-                                ESP_LOGI(CTAG, "[DIAG] Sig R   : %s", hex);
-                                to_hex(sig.data()+32, 32);
-                                ESP_LOGI(CTAG, "[DIAG] Sig S   : %s", hex);
-                                to_hex(msg.data(), 32);
-                                ESP_LOGI(CTAG, "[DIAG] Msg[0-31]: %s", hex);
-                                ESP_LOGI(CTAG, "[DIAG] MsgLen  : %d bytes", (int)msg.size());
-                            }
-
                             char req_buf[2048];
                             snprintf(req_buf, sizeof(req_buf),
                                      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"%s\",{\"encoding\":\"base58\"}]}",
