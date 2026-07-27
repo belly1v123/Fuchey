@@ -13,13 +13,13 @@ namespace Fuchey {
 // ─── Firmware Version ─────────────────────────────────────
 inline constexpr const char* FW_VERSION = "1.0.0-dev";
 
-// ─── OLED Display (SSD1306 I2C) ───────────────────────────
+// ─── OLED Display (SH1106 I2C) ───────────────────────────
 namespace DisplayConfig {
     inline constexpr uint8_t    I2C_ADDRESS  = 0x3C;
     inline constexpr i2c_port_t I2C_PORT     = I2C_NUM_0;
     inline constexpr int        PIN_SDA      = 8;
     inline constexpr int        PIN_SCL      = 9;
-    inline constexpr uint32_t   I2C_FREQ_HZ  = 400000;  // 400 kHz Fast Mode
+    inline constexpr uint32_t   I2C_FREQ_HZ  = 100000;  // 100 kHz — SH1106 compatible
     inline constexpr int        WIDTH        = 128;
     inline constexpr int        HEIGHT       = 64;
 }

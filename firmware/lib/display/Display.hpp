@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================
 // Fuchey — Display.hpp
-// SSD1306 128x64 OLED driver via I2C.
+// SSD1306/SH1106 128x64 OLED driver via I2C.
 // RAII: open on construction, closes I2C on destruction.
 // Double-buffer: all drawing goes to back buffer; call
 // flush() to send to hardware atomically.

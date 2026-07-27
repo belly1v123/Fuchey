@@ -18,19 +18,18 @@ namespace Cmd {
     static constexpr uint8_t ENTIRE_ON_RESUME    = 0xA4;
     static constexpr uint8_t NORMAL_DISPLAY      = 0xA6;
     static constexpr uint8_t INVERT_DISPLAY      = 0xA7;
+    // Not used: 0x20 (MEM_ADDR_MODE) — SH1106 doesn't support it.
     static constexpr uint8_t SET_DISP_CLK_DIV   = 0xD5;
     static constexpr uint8_t SET_MUX_RATIO       = 0xA8;
     static constexpr uint8_t SET_DISP_OFFSET     = 0xD3;
     static constexpr uint8_t SET_START_LINE      = 0x40;
     static constexpr uint8_t CHARGE_PUMP         = 0x8D;
-    static constexpr uint8_t MEM_ADDR_MODE       = 0x20;
     static constexpr uint8_t SEG_REMAP           = 0xA1;
     static constexpr uint8_t COM_SCAN_DEC        = 0xC8;
     static constexpr uint8_t SET_COM_PINS        = 0xDA;
     static constexpr uint8_t SET_PRECHARGE       = 0xD9;
     static constexpr uint8_t SET_VCOM_DESEL      = 0xDB;
-    static constexpr uint8_t SET_COL_ADDR        = 0x21;
-    static constexpr uint8_t SET_PAGE_ADDR       = 0x22;
+    // Not used: 0x21 (SET_COL_ADDR), 0x22 (SET_PAGE_ADDR) — SH1106 doesn't support them.
 }
 
 // ─── Built-in 5x7 ASCII font (0x20 – 0x7E) ───────────────
@@ -229,22 +228,22 @@ bool Display::init() {
     return true;
 }
 
-// ─── SSD1306 init sequence ────────────────────────────────
+// ─── SH1106 init sequence ────────────────────────────────
 esp_err_t Display::ssd1306_init() {
+    vTaskDelay(pdMS_TO_TICKS(50));
     static const uint8_t init_cmds[] = {
         Cmd::DISPLAY_OFF,
         Cmd::SET_DISP_CLK_DIV, 0x80,
-        Cmd::SET_MUX_RATIO,    0x3F,   // 64-1
+        Cmd::SET_MUX_RATIO,    0x3F,
         Cmd::SET_DISP_OFFSET,  0x00,
         Cmd::SET_START_LINE | 0x00,
-        Cmd::CHARGE_PUMP,      0x14,   // Enable charge pump
-        Cmd::MEM_ADDR_MODE,    0x00,   // Horizontal addressing
+        Cmd::CHARGE_PUMP,      0x14,
         Cmd::SEG_REMAP,
         Cmd::COM_SCAN_DEC,
         Cmd::SET_COM_PINS,     0x12,
-        Cmd::SET_CONTRAST,     0xCF,
-        Cmd::SET_PRECHARGE,    0xF1,
-        Cmd::SET_VCOM_DESEL,   0x40,
+        Cmd::SET_CONTRAST,     0x80,
+        Cmd::SET_PRECHARGE,    0x22,
+        Cmd::SET_VCOM_DESEL,   0x30,
         Cmd::ENTIRE_ON_RESUME,
         Cmd::NORMAL_DISPLAY,
         Cmd::DISPLAY_ON,
@@ -342,12 +341,14 @@ void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent) {
 // ─── flush ────────────────────────────────────────────────
 bool Display::flush() {
     if (!m_ready) return false;
-    // Set column 0–127, page 0–7
-    uint8_t col_cmds[] = { Cmd::SET_COL_ADDR,  0, 127 };
-    uint8_t pag_cmds[] = { Cmd::SET_PAGE_ADDR, 0, 7   };
-    send_cmd_list(col_cmds, 3);
-    send_cmd_list(pag_cmds, 3);
-    return send_data(m_buffer.data(), m_buffer.size()) == ESP_OK;
+    for (int page = 0; page < 8; ++page) {
+        send_cmd(0xB0 | page);
+        send_cmd(0x02);
+        send_cmd(0x10);
+        esp_err_t err = send_data(m_buffer.data() + page * 128, 128);
+        if (err != ESP_OK) return false;
+    }
+    return true;
 }
 
 // ─── Scroll ───────────────────────────────────────────────
