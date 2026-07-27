@@ -60,6 +60,9 @@ public:
     // Centered text helpers
     void draw_text_centered(int y, std::string_view text, FontSize size = FontSize::SMALL);
 
+    // Bitmap rendering (1-bpp, row-major, MSB-first, byte-padded rows)
+    void draw_bitmap(int x, int y, int w, int h, const uint8_t* data);
+
     // Progress bar
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent);
 

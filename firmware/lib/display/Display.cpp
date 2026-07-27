@@ -332,6 +332,19 @@ void Display::draw_text_centered(int y, std::string_view text, FontSize size) {
     draw_text(x, y, text, size);
 }
 
+void Display::draw_bitmap(int x, int y, int w, int h, const uint8_t* data) {
+    int bytes_per_row = (w + 7) / 8;
+    for (int row = 0; row < h; ++row) {
+        for (int col = 0; col < w; ++col) {
+            int byte_idx = col / 8;
+            int bit_idx = 7 - (col % 8);
+            if (data[row * bytes_per_row + byte_idx] & (1u << bit_idx)) {
+                set_pixel(x + col, y + row);
+            }
+        }
+    }
+}
+
 void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent) {
     draw_rect(x, y, w, h);
     int fill = static_cast<int>((w - 2) * percent / 100);

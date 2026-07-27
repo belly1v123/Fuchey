@@ -73,12 +73,71 @@ void UIManager::process_event(const Events::Event& evt) {
             set_screen(UIScreen::CHAT_VIEW);
             break;
 
+        case Events::EventType::FUNDS_RECEIVED: {
+            // raw[] stores 4 doubles: sol_change, usdc_change, new_sol, new_usdc
+            double vals[4];
+            memcpy(vals, evt.data.raw, sizeof(vals));
+            m_recv_sol_change = vals[0];
+            m_recv_usdc_change = vals[1];
+            m_recv_new_sol = vals[2];
+            m_recv_new_usdc = vals[3];
+            m_recv_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            ESP_LOGI(TAG, "Funds received! +%.6f SOL +$%.2f USDC (Bal: %.6f SOL, $%.2f USDC)",
+                     m_recv_sol_change, m_recv_usdc_change, m_recv_new_sol, m_recv_new_usdc);
+            set_screen(UIScreen::TX_RECEIVED);
+            break;
+        }
+
         case Events::EventType::TX_REQUEST:
             m_tx_amount_cents = evt.data.tx.amount_cents;
             ESP_LOGI(TAG, "TX request received: $%.2f — showing confirmation",
                      static_cast<double>(m_tx_amount_cents) / 100.0);
             set_screen(UIScreen::TX_CONFIRM);
             break;
+
+        case Events::EventType::TX_BROADCAST_OK:
+        case Events::EventType::TX_BROADCAST_FAIL: {
+            m_tx_result_ok = (evt.type == Events::EventType::TX_BROADCAST_OK);
+            m_tx_result_amount_cents = evt.data.tx.amount_cents;
+
+            // Parse tx_data: "ASSET:amount_str:recipient" or "error message"
+            const char* data = reinterpret_cast<const char*>(evt.data.tx.tx_data);
+            const char* colon1 = strchr(data, ':');
+            const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : nullptr;
+
+            m_tx_result_asset[0] = '\0';
+            m_tx_result_recipient[0] = '\0';
+            m_tx_result_msg[0] = '\0';
+
+            if (colon1 && colon2) {
+                size_t asset_len = std::min<size_t>(colon1 - data, sizeof(m_tx_result_asset) - 1);
+                memcpy(m_tx_result_asset, data, asset_len);
+                m_tx_result_asset[asset_len] = '\0';
+
+                const char* rec = colon2 + 1;
+                size_t rec_len = std::min<size_t>(strlen(rec), sizeof(m_tx_result_recipient) - 1);
+                memcpy(m_tx_result_recipient, rec, rec_len);
+                m_tx_result_recipient[rec_len] = '\0';
+
+                // Truncate recipient for display
+                size_t rlen = strlen(m_tx_result_recipient);
+                if (rlen > 12) {
+                    memmove(m_tx_result_recipient + 4, m_tx_result_recipient + rlen - 4, 5);
+                    memcpy(m_tx_result_recipient + 4, "...", 3);
+                }
+            } else {
+                // Error message in tx_data
+                size_t msg_len = std::min<size_t>(strlen(data), sizeof(m_tx_result_msg) - 1);
+                memcpy(m_tx_result_msg, data, msg_len);
+                m_tx_result_msg[msg_len] = '\0';
+            }
+
+            m_tx_result_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            ESP_LOGI(TAG, "TX broadcast %s — showing result screen",
+                     m_tx_result_ok ? "OK" : "FAIL");
+            set_screen(m_tx_result_ok ? UIScreen::TX_SUCCESS : UIScreen::TX_FAIL);
+            break;
+        }
 
         default:
             break;
@@ -172,6 +231,9 @@ void UIManager::render() {
         case UIScreen::WALLET_INFO:  render_wallet_info(); break;
         case UIScreen::WALLET_QR:    render_wallet_qr();   break;
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
+        case UIScreen::TX_SUCCESS:
+        case UIScreen::TX_FAIL:      render_tx_result();   break;
+        case UIScreen::TX_RECEIVED:  render_tx_received(); break;
         case UIScreen::CHAT_VIEW:    render_chat();        break;
     }
 
@@ -366,6 +428,119 @@ void UIManager::render_tx_confirm() {
     m_display.draw_text(72, 50, "[B] REJECT", Display::FontSize::SMALL);
 }
 
+void UIManager::render_tx_result() {
+    bool ok = m_tx_result_ok;
+    uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    uint32_t elapsed = now_ms - m_tx_result_start_ms;
+
+    // Animation frames: 0=icon in, 1=steady, 2=flash, 3=steady
+    int frame = (elapsed / 500) % 4;
+
+    // ── Icon area (center-top, ~22x22) ──
+    int icon_cx = 64;
+    int icon_cy = 13;
+
+    if (ok) {
+        // ── Draw checkmark ──
+        if (frame != 2) {
+            // Short arm (down-right)
+            m_display.fill_rect(icon_cx - 3, icon_cy + 2, 3, 2);
+            m_display.fill_rect(icon_cx - 1, icon_cy + 5, 3, 2);
+            // Long arm (up-right)
+            m_display.fill_rect(icon_cx - 1, icon_cy + 5, 3, 2);
+            m_display.fill_rect(icon_cx + 2, icon_cy + 2, 3, 2);
+            m_display.fill_rect(icon_cx + 5, icon_cy - 1, 3, 2);
+            m_display.fill_rect(icon_cx + 8, icon_cy - 4, 3, 2);
+        }
+        // Status text
+        m_display.draw_text_centered(28, "TX SUCCESS", Display::FontSize::MEDIUM);
+    } else {
+        // ── Draw X mark ──
+        if (frame != 2) {
+            // Left arm (top-left to bottom-right)
+            m_display.fill_rect(icon_cx - 5, icon_cy - 5, 3, 2);
+            m_display.fill_rect(icon_cx - 2, icon_cy - 2, 3, 2);
+            m_display.fill_rect(icon_cx + 1, icon_cy + 1, 3, 2);
+            m_display.fill_rect(icon_cx + 4, icon_cy + 4, 3, 2);
+            // Right arm (top-right to bottom-left)
+            m_display.fill_rect(icon_cx + 3, icon_cy - 5, 3, 2);
+            m_display.fill_rect(icon_cx + 0, icon_cy - 2, 3, 2);
+            m_display.fill_rect(icon_cx - 3, icon_cy + 1, 3, 2);
+            m_display.fill_rect(icon_cx - 6, icon_cy + 4, 3, 2);
+        }
+        m_display.draw_text_centered(28, "TX FAILED", Display::FontSize::MEDIUM);
+    }
+
+    // ── Flash overlay on frame 2 ──
+    if (frame == 2) {
+        m_display.fill_rect(icon_cx - 11, icon_cy - 11, 22, 22);
+    }
+
+    // ── Transaction details ──
+    char line1[32];
+    char line2[56];
+    if (ok && m_tx_result_asset[0]) {
+        // "5.00 USDC"
+        snprintf(line1, sizeof(line1), "$%.2f %s",
+                 static_cast<double>(m_tx_result_amount_cents) / 100.0,
+                 m_tx_result_asset);
+        // "→ 52seV...Db2Y"
+        snprintf(line2, sizeof(line2), "-> %s", m_tx_result_recipient);
+    } else if (!ok && m_tx_result_msg[0]) {
+        snprintf(line1, sizeof(line1), "%.31s", m_tx_result_msg);
+        line2[0] = '\0';
+    } else if (!ok) {
+        snprintf(line1, sizeof(line1), "Broadcast failed");
+        line2[0] = '\0';
+    } else {
+        line1[0] = '\0';
+        line2[0] = '\0';
+    }
+
+    if (line1[0]) m_display.draw_text_centered(40, line1, Display::FontSize::SMALL);
+    if (line2[0]) m_display.draw_text_centered(52, line2, Display::FontSize::SMALL);
+
+    // ── Bottom hint ──
+    m_display.draw_text(0, 62, "b: Back", Display::FontSize::SMALL);
+}
+
+void UIManager::render_tx_received() {
+    uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    uint32_t elapsed = now_ms - m_recv_start_ms;
+
+    // Pulse: invert header text area every 800ms
+    bool pulse = (elapsed / 800) % 2 == 0;
+
+    m_display.draw_text_centered(2, "FUNDS RECEIVED", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 12, 128);
+
+    char buf[32];
+
+    if (m_recv_sol_change > 0.0) {
+        snprintf(buf, sizeof(buf), "+%.4f SOL", m_recv_sol_change);
+        m_display.draw_text_centered(20, buf, Display::FontSize::MEDIUM);
+    }
+    if (m_recv_usdc_change > 0.0) {
+        snprintf(buf, sizeof(buf), "+$%.2f USDC", m_recv_usdc_change);
+        m_display.draw_text_centered(34, buf, Display::FontSize::MEDIUM);
+    }
+
+    // New balances at bottom
+    m_display.draw_hline(0, 48, 128);
+    snprintf(buf, sizeof(buf), "Bal: %.4f SOL", m_recv_new_sol);
+    m_display.draw_text_centered(50, buf, Display::FontSize::SMALL);
+    snprintf(buf, sizeof(buf), "$%.2f USDC", m_recv_new_usdc);
+    m_display.draw_text_centered(60, buf, Display::FontSize::SMALL);
+
+    m_display.draw_text(0, 62, "b: Back", Display::FontSize::SMALL);
+
+    // Pulse effect: invert the header area on pulse frames
+    if (pulse) {
+        m_display.fill_rect(0, 0, 128, 12);
+        m_display.draw_text_centered(2, "FUNDS RECEIVED", Display::FontSize::SMALL);
+    }
+}
+
 void UIManager::render_chat() {
     m_display.draw_text_centered(2, "AI ASSISTANT", Display::FontSize::SMALL);
     m_display.draw_hline(0, 12, 128);
@@ -539,11 +714,33 @@ void UIManager::run() {
                     ESP_LOGI(TAG, "Screen: Returning to MENU_MAIN from CHAT_VIEW");
                     set_screen(UIScreen::MENU_MAIN);
                 }
+            } else if (m_current_screen == UIScreen::TX_SUCCESS ||
+                       m_current_screen == UIScreen::TX_FAIL) {
+                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
+                    ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
+                    set_screen(UIScreen::IDLE_CLOCK);
+                }
+            } else if (m_current_screen == UIScreen::TX_RECEIVED) {
+                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
+                    ESP_LOGI(TAG, "Screen: TX_RECEIVED -> returning to idle");
+                    set_screen(UIScreen::IDLE_CLOCK);
+                }
             }
         }
 
-        // Auto-timeout from Menu/subscreens back to Idle after 15s of inactivity
-        if (m_current_screen == UIScreen::MENU_MAIN ||
+        // Auto-timeout
+        if (m_current_screen == UIScreen::TX_SUCCESS ||
+            m_current_screen == UIScreen::TX_FAIL) {
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_tx_result_start_ms >= 4000) {
+                set_screen(UIScreen::IDLE_CLOCK);
+            }
+        } else if (m_current_screen == UIScreen::TX_RECEIVED) {
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_recv_start_ms >= 4000) {
+                set_screen(UIScreen::IDLE_CLOCK);
+            }
+        } else if (m_current_screen == UIScreen::MENU_MAIN ||
             m_current_screen == UIScreen::WALLET_INFO ||
             m_current_screen == UIScreen::WALLET_QR) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);

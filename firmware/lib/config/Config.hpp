@@ -42,6 +42,7 @@ namespace Tasks {
     inline constexpr uint32_t AI_STACK          = 8192;
     inline constexpr uint32_t WEATHER_STACK     = 8192;
     inline constexpr uint32_t PRICE_STACK       = 8192;
+    inline constexpr uint32_t BALANCE_STACK     = 8192;
     inline constexpr uint32_t UI_STACK          = 8192;
 
     // Priorities (higher number = higher priority)
@@ -51,6 +52,7 @@ namespace Tasks {
     inline constexpr int AI_PRIORITY            = 5;   // Intentionally lower than wallet
     inline constexpr int WEATHER_PRIORITY       = 3;
     inline constexpr int PRICE_PRIORITY         = 3;
+    inline constexpr int BALANCE_PRIORITY       = 3;
     inline constexpr int BUTTON_PRIORITY        = 8;
 
     // CPU core assignment
@@ -59,8 +61,9 @@ namespace Tasks {
     inline constexpr int WIFI_CORE              = 0;
     inline constexpr int AI_CORE                = 0;
     inline constexpr int PRICE_CORE             = 1;   // Core 1: TLS won't starve IDLE0
-    inline constexpr int WEATHER_CORE           = 1;   // Core 1: TLS won't starve IDLE0
-    inline constexpr int BUTTON_CORE            = 1;   // Core 1: responsive input
+    inline constexpr int WEATHER_CORE           = 1;
+    inline constexpr int BALANCE_CORE           = 1;
+    inline constexpr int BUTTON_CORE            = 1;
 }
 
 // ─── Queue Depths ─────────────────────────────────────────
@@ -76,6 +79,7 @@ namespace Timing {
     inline constexpr uint32_t IDLE_SCREEN_CYCLE_MS   = 10000;  // 10s per idle screen
     inline constexpr uint32_t WEATHER_UPDATE_MS       = 600000; // 10 minutes
     inline constexpr uint32_t PRICE_UPDATE_MS         = 300000; // 5 minutes
+    inline constexpr uint32_t BALANCE_POLL_MS         = 30000;  // 30 seconds
     inline constexpr uint32_t WIFI_RECONNECT_DELAY_MS = 5000;
     inline constexpr uint32_t SESSION_TIMEOUT_MS      = 300000; // 5 min auto-lock
     inline constexpr uint32_t DISPLAY_UPDATE_MS       = 100;    // 10 FPS UI refresh

@@ -22,6 +22,9 @@ enum class UIScreen {
     WALLET_INFO,
     WALLET_QR,
     TX_CONFIRM,
+    TX_SUCCESS,
+    TX_FAIL,
+    TX_RECEIVED,
     CHAT_VIEW
 };
 
@@ -58,12 +61,27 @@ private:
     UIScreen m_current_screen{UIScreen::IDLE_CLOCK};
 
     // Ambient cached data
-    float       m_weather_temp{-999.0f};   // sentinel until first API fetch
-    float       m_sol_price{-1.0f};        // sentinel until first API fetch
+    float       m_weather_temp{-999.0f};
+    float       m_sol_price{-1.0f};
     std::string m_weather_city{"--"};
     std::string m_last_ai_response{"Hello! I am Fuchey."};
     std::string m_tx_description{"Transfer 0.1 SOL"};
     uint64_t    m_tx_amount_cents{0};
+
+    // Transaction result (for TX_SUCCESS / TX_FAIL screens)
+    bool        m_tx_result_ok{false};
+    char        m_tx_result_asset[8]{};
+    uint64_t    m_tx_result_amount_cents{0};
+    char        m_tx_result_recipient[48]{};
+    char        m_tx_result_msg[64]{};
+    uint32_t    m_tx_result_start_ms{0};
+
+    // Receive notification (for TX_RECEIVED screen)
+    double      m_recv_sol_change{0.0};
+    double      m_recv_usdc_change{0.0};
+    double      m_recv_new_sol{0.0};
+    double      m_recv_new_usdc{0.0};
+    uint32_t    m_recv_start_ms{0};
 
     uint32_t    m_last_idle_cycle_ms{0};
 
@@ -84,6 +102,8 @@ private:
     void render_wallet_info();
     void render_wallet_qr();
     void render_tx_confirm();
+    void render_tx_result();
+    void render_tx_received();
     void render_chat();
     void render_setup();
 

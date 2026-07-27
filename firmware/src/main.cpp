@@ -32,6 +32,7 @@
 #include "../lib/chat/AIManager.hpp"
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
+#include "../lib/balance/BalanceMonitor.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -84,6 +85,8 @@ static const char* get_rpc_url() {
 static const char* get_usdc_mint() {
     return s_is_devnet ? Fuchey::API::USDC_DEVNET_MINT : Fuchey::API::USDC_MAINNET_MINT;
 }
+
+static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -190,6 +193,13 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "[OK] Wallet core initialized — state: %s",
              s_wallet_core.has_wallet() ? "LOCKED (wallet found)" : "UNINITIALIZED (no wallet)");
 
+    if (s_wallet_core.has_wallet()) {
+        auto addr_opt = s_wallet_core.get_address();
+        if (addr_opt) {
+            s_balance_monitor.set_address(*addr_opt);
+        }
+    }
+
     // 4. Initialize Network & Services
     s_wifi_manager.init();
     s_ai_manager.init();
@@ -245,8 +255,14 @@ extern "C" void app_main(void) {
 
     // Price Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
     xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
-                            Fuchey::Tasks::PRICE_STACK, &s_price_service,
-                            Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
+                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
+                             Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
+
+    // Balance Monitor Task (Core 1 — RPC polling)
+    xTaskCreatePinnedToCore(Fuchey::BalanceMonitor::task_entry, "balance_task",
+                             Fuchey::Tasks::BALANCE_STACK, &s_balance_monitor,
+                             Fuchey::Tasks::BALANCE_PRIORITY, nullptr, Fuchey::Tasks::BALANCE_CORE);
+    s_balance_monitor.init();
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {
@@ -627,6 +643,7 @@ extern "C" void app_main(void) {
                         evt.type = Fuchey::Events::EventType::WALLET_CREATED;
                         Fuchey::Events::post(Fuchey::Events::g_wallet_queue, evt);
                         s_ui.mark_wallet_configured(addr_str.c_str());
+                        s_balance_monitor.set_address(addr_str);
                     } else if (r == Fuchey::WalletResult::ERR_ALREADY_EXISTS) {
                         ESP_LOGW(CTAG, "[Wallet] A wallet already exists!");
                         ESP_LOGW(CTAG, "  Use 'wallet_reset' first to erase it, then 'wallet_create'.");
@@ -716,6 +733,7 @@ extern "C" void app_main(void) {
                         evt.type = Fuchey::Events::EventType::WALLET_IMPORTED;
                         Fuchey::Events::post(Fuchey::Events::g_wallet_queue, evt);
                         s_ui.mark_wallet_configured(addr_str.c_str());
+                        s_balance_monitor.set_address(addr_str);
                     } else {
                         const char* reason =
                             (r == Fuchey::WalletResult::ERR_INVALID_MNEMONIC) ? "invalid mnemonic" :
@@ -928,6 +946,12 @@ extern "C" void app_main(void) {
                             ESP_LOGI(CTAG, "[SEND SOL] Broadcasting signed transaction to Solana Devnet...");
                             auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
 
+                            Fuchey::Events::Event result_evt{};
+                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                     sizeof(result_evt.data.tx.tx_data),
+                                     "SOL:%.4f:%s", amount, recipient_str.c_str());
+
                             if (tx_resp.success) {
                                 cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
                                 if (tx_root) {
@@ -939,21 +963,35 @@ extern "C" void app_main(void) {
                                         ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
                                         ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
                                         ESP_LOGI(CTAG, "=================================================");
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_OK;
                                     } else if (tx_err) {
                                         cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
-                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s",
-                                                 msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown error");
+                                        const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
+                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
+                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                                 sizeof(result_evt.data.tx.tx_data), "%s", err_str);
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
+                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error");
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     }
                                     cJSON_Delete(tx_root);
                                 } else {
                                     ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
+                                    snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure");
+                                    result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                 }
                             } else {
                                 ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d", tx_resp.status_code);
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                             }
 
+                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                             vTaskDelete(nullptr);
                         }, "send_sol_task", 20480, args, 4, nullptr);
                     } else {
@@ -1165,6 +1203,12 @@ extern "C" void app_main(void) {
                             ESP_LOGI(CTAG, "[SEND USDC] Broadcasting signed transaction to Solana Devnet...");
                             auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
 
+                            Fuchey::Events::Event result_evt{};
+                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                     sizeof(result_evt.data.tx.tx_data),
+                                     "USDC:%.2f:%s", amount, recipient_str.c_str());
+
                             if (tx_resp.success) {
                                 cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
                                 if (tx_root) {
@@ -1176,21 +1220,35 @@ extern "C" void app_main(void) {
                                         ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
                                         ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
                                         ESP_LOGI(CTAG, "=================================================");
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_OK;
                                     } else if (tx_err) {
                                         cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
-                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s",
-                                                 msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown error");
+                                        const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
+                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
+                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                                 sizeof(result_evt.data.tx.tx_data), "%s", err_str);
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
+                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error");
+                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     }
                                     cJSON_Delete(tx_root);
                                 } else {
                                     ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
+                                    snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure");
+                                    result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                 }
                             } else {
                                 ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d", tx_resp.status_code);
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                             }
 
+                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                             vTaskDelete(nullptr);
                         }, "send_usdc_task", 20480, args, 4, nullptr);
                     } else {
