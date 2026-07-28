@@ -8,6 +8,7 @@
 
 #include "../Display.hpp"
 #include "../../events/Events.hpp"
+#include "../../balance/BalanceMonitor.hpp"
 #include <cstdint>
 #include <string>
 
@@ -24,8 +25,8 @@ enum class UIScreen {
     TX_CONFIRM,
     TX_SUCCESS,
     TX_FAIL,
-    TX_RECEIVED,
-    CHAT_VIEW
+    CHAT_VIEW,
+    BALANCE_VIEW
 };
 
 // Setup wizard stages (first-boot only)
@@ -56,6 +57,8 @@ public:
     static void task_entry(void* arg);
     void run();
 
+    void set_balance_monitor(BalanceMonitor* bm) { m_balance_monitor = bm; }
+
 private:
     Display& m_display;
     UIScreen m_current_screen{UIScreen::IDLE_CLOCK};
@@ -76,12 +79,12 @@ private:
     char        m_tx_result_msg[64]{};
     uint32_t    m_tx_result_start_ms{0};
 
-    // Receive notification (for TX_RECEIVED screen)
-    double      m_recv_sol_change{0.0};
-    double      m_recv_usdc_change{0.0};
-    double      m_recv_new_sol{0.0};
-    double      m_recv_new_usdc{0.0};
-    uint32_t    m_recv_start_ms{0};
+    // Balance view
+    BalanceMonitor* m_balance_monitor{nullptr};
+    double          m_bal_sol{0.0};
+    double          m_bal_usdc{0.0};
+    bool            m_bal_fetched{false};
+    uint32_t        m_bal_fetch_start_ms{0};
 
     uint32_t    m_last_idle_cycle_ms{0};
 
@@ -103,7 +106,7 @@ private:
     void render_wallet_qr();
     void render_tx_confirm();
     void render_tx_result();
-    void render_tx_received();
+    void render_balance();
     void render_chat();
     void render_setup();
 

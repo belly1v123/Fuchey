@@ -52,9 +52,6 @@ enum class EventType : uint32_t {
     UI_IDLE_TICK         = 0x0053,
     UI_SCREEN_CHANGE     = 0x0054,
 
-    // Balance
-    FUNDS_RECEIVED       = 0x0080,
-
     // System
     SYSTEM_BOOT_DONE     = 0x0060,
     SYSTEM_LOW_MEMORY    = 0x0061,

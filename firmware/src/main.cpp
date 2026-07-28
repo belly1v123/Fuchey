@@ -258,11 +258,8 @@ extern "C" void app_main(void) {
                              Fuchey::Tasks::PRICE_STACK, &s_price_service,
                              Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
-    // Balance Monitor Task (Core 1 — RPC polling)
-    xTaskCreatePinnedToCore(Fuchey::BalanceMonitor::task_entry, "balance_task",
-                             Fuchey::Tasks::BALANCE_STACK, &s_balance_monitor,
-                             Fuchey::Tasks::BALANCE_PRIORITY, nullptr, Fuchey::Tasks::BALANCE_CORE);
-    s_balance_monitor.init();
+    // Wire BalanceMonitor to UIManager for on-demand balance fetch
+    s_ui.set_balance_monitor(&s_balance_monitor);
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {

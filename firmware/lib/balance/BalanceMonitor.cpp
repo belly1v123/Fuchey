@@ -1,83 +1,26 @@
-// ============================================================
-// Fuchey — BalanceMonitor.cpp
-// Polls SOL + USDC balances every 30s. Posts FUNDS_RECEIVED
-// event to g_ui_queue when a balance increase is detected.
-// ============================================================
-
 #include "BalanceMonitor.hpp"
 #include "../wifi/WiFiManager.hpp"
-#include "../events/Events.hpp"
 #include "cJSON.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include <cstdio>
 #include <cstring>
 
 namespace Fuchey {
 
 BalanceMonitor::BalanceMonitor(WiFiManager& wifi, const std::string& wallet_addr,
-                               const std::string& usdc_mint, const std::string& rpc_url,
-                               double sol_threshold, double usdc_threshold)
+                               const std::string& usdc_mint, const std::string& rpc_url)
     : m_wifi(wifi), m_wallet_addr(wallet_addr), m_usdc_mint(usdc_mint),
-      m_rpc_url(rpc_url), m_sol_thresh(sol_threshold), m_usdc_thresh(usdc_threshold) {}
+      m_rpc_url(rpc_url) {}
 
-void BalanceMonitor::init() {
-    m_prev_sol = fetch_sol_balance();
-    m_prev_usdc = fetch_usdc_balance();
-    m_first_done = true;
-    ESP_LOGI(TAG, "Initial balances — SOL: %.6f, USDC: $%.2f", m_prev_sol, m_prev_usdc);
-}
+bool BalanceMonitor::fetch_balances(double& sol_out, double& usdc_out) {
+    if (m_wallet_addr.empty()) return false;
+    if (!m_wifi.has_ip()) return false;
 
-void BalanceMonitor::task_entry(void* arg) {
-    static_cast<BalanceMonitor*>(arg)->run();
-}
+    sol_out = fetch_sol_balance();
+    usdc_out = fetch_usdc_balance();
 
-void BalanceMonitor::run() {
-    ESP_LOGI(TAG, "BalanceMonitor task running on Core %d", xPortGetCoreID());
-    while (true) {
-        if (m_wifi.has_ip()) {
-            poll();
-        }
-        vTaskDelay(pdMS_TO_TICKS(30000));
-    }
-}
-
-void BalanceMonitor::poll() {
-    if (m_wallet_addr.empty()) return;
-    double sol = fetch_sol_balance();
-    double usdc = fetch_usdc_balance();
-
-    if (!m_first_done) {
-        m_prev_sol = sol;
-        m_prev_usdc = usdc;
-        m_first_done = true;
-        return;
-    }
-
-    double sol_change = sol - m_prev_sol;
-    double usdc_change = usdc - m_prev_usdc;
-
-    if (sol_change >= m_sol_thresh || usdc_change >= m_usdc_thresh) {
-        ESP_LOGI(TAG, "Funds received! SOL: +%.6f, USDC: +$%.2f", sol_change, usdc_change);
-
-        Events::Event evt{};
-        evt.type = Events::EventType::FUNDS_RECEIVED;
-
-        // We store raw doubles through the raw[] field
-        // Layout: [sol_change 8B] [usdc_change 8B] [new_sol 8B] [new_usdc 8B]
-        double vals[4] = { sol_change, usdc_change, sol, usdc };
-        static_assert(sizeof(vals) <= sizeof(evt.data.raw), "vals too large");
-        memcpy(evt.data.raw, vals, sizeof(vals));
-
-        Events::post(Events::g_ui_queue, evt);
-
-        m_prev_sol = sol;
-        m_prev_usdc = usdc;
-    } else {
-        // Update even on no-change in case of small drifts
-        m_prev_sol = sol;
-        m_prev_usdc = usdc;
-    }
+    ESP_LOGI(TAG, "Balances — SOL: %.6f, USDC: $%.2f", sol_out, usdc_out);
+    return true;
 }
 
 double BalanceMonitor::fetch_sol_balance() {
@@ -87,12 +30,12 @@ double BalanceMonitor::fetch_sol_balance() {
              m_wallet_addr.c_str());
 
     auto resp = m_wifi.post_json(m_rpc_url.c_str(), req);
-    if (!resp.success) return m_prev_sol;
+    if (!resp.success) return 0.0;
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
-    if (!root) return m_prev_sol;
+    if (!root) return 0.0;
 
-    double bal = m_prev_sol;
+    double bal = 0.0;
     cJSON* result = cJSON_GetObjectItem(root, "result");
     cJSON* value  = result ? cJSON_GetObjectItem(result, "value") : nullptr;
     if (value && cJSON_IsNumber(value)) {
@@ -110,12 +53,12 @@ double BalanceMonitor::fetch_usdc_balance() {
              m_wallet_addr.c_str(), m_usdc_mint.c_str());
 
     auto resp = m_wifi.post_json(m_rpc_url.c_str(), req);
-    if (!resp.success) return m_prev_usdc;
+    if (!resp.success) return 0.0;
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
-    if (!root) return m_prev_usdc;
+    if (!root) return 0.0;
 
-    double bal = m_prev_usdc;
+    double bal = 0.0;
     cJSON* result = cJSON_GetObjectItem(root, "result");
     cJSON* val = result ? cJSON_GetObjectItem(result, "value") : nullptr;
     if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {

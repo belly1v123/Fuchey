@@ -73,21 +73,6 @@ void UIManager::process_event(const Events::Event& evt) {
             set_screen(UIScreen::CHAT_VIEW);
             break;
 
-        case Events::EventType::FUNDS_RECEIVED: {
-            // raw[] stores 4 doubles: sol_change, usdc_change, new_sol, new_usdc
-            double vals[4];
-            memcpy(vals, evt.data.raw, sizeof(vals));
-            m_recv_sol_change = vals[0];
-            m_recv_usdc_change = vals[1];
-            m_recv_new_sol = vals[2];
-            m_recv_new_usdc = vals[3];
-            m_recv_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            ESP_LOGI(TAG, "Funds received! +%.6f SOL +$%.2f USDC (Bal: %.6f SOL, $%.2f USDC)",
-                     m_recv_sol_change, m_recv_usdc_change, m_recv_new_sol, m_recv_new_usdc);
-            set_screen(UIScreen::TX_RECEIVED);
-            break;
-        }
-
         case Events::EventType::TX_REQUEST:
             m_tx_amount_cents = evt.data.tx.amount_cents;
             ESP_LOGI(TAG, "TX request received: $%.2f — showing confirmation",
@@ -233,8 +218,8 @@ void UIManager::render() {
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::TX_SUCCESS:
         case UIScreen::TX_FAIL:      render_tx_result();   break;
-        case UIScreen::TX_RECEIVED:  render_tx_received(); break;
         case UIScreen::CHAT_VIEW:    render_chat();        break;
+        case UIScreen::BALANCE_VIEW: render_balance();     break;
     }
 
     m_display.flush();
@@ -307,11 +292,12 @@ void UIManager::render_menu() {
     m_display.draw_text_centered(2, "MAIN MENU", Display::FontSize::SMALL);
     m_display.draw_hline(0, 12, 128);
 
-    m_display.draw_text(8, 16, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
-    m_display.draw_text(8, 28, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
-    m_display.draw_text(8, 40, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
+    m_display.draw_text(8, 14, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
+    m_display.draw_text(8, 24, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
+    m_display.draw_text(8, 34, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
+    m_display.draw_text(8, 44, m_menu_index == 3 ? "> View Balance" : "  View Balance", Display::FontSize::SMALL);
 
-    m_display.draw_text(2, 54, "1x:Select 2x:Next", Display::FontSize::SMALL);
+    m_display.draw_text(2, 56, "1x:Select 2x:Next", Display::FontSize::SMALL);
 }
 
 void UIManager::render_wallet_info() {
@@ -433,58 +419,24 @@ void UIManager::render_tx_result() {
     uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     uint32_t elapsed = now_ms - m_tx_result_start_ms;
 
-    // Animation frames: 0=icon in, 1=steady, 2=flash, 3=steady
-    int frame = (elapsed / 500) % 4;
+    // Flash toggle every 500ms: full-screen white on even frames
+    bool flash = (elapsed / 500) % 2 == 0;
 
-    // ── Icon area (center-top, ~22x22) ──
-    int icon_cx = 64;
-    int icon_cy = 13;
-
-    if (ok) {
-        // ── Draw checkmark ──
-        if (frame != 2) {
-            // Short arm (down-right)
-            m_display.fill_rect(icon_cx - 3, icon_cy + 2, 3, 2);
-            m_display.fill_rect(icon_cx - 1, icon_cy + 5, 3, 2);
-            // Long arm (up-right)
-            m_display.fill_rect(icon_cx - 1, icon_cy + 5, 3, 2);
-            m_display.fill_rect(icon_cx + 2, icon_cy + 2, 3, 2);
-            m_display.fill_rect(icon_cx + 5, icon_cy - 1, 3, 2);
-            m_display.fill_rect(icon_cx + 8, icon_cy - 4, 3, 2);
-        }
-        // Status text
-        m_display.draw_text_centered(28, "TX SUCCESS", Display::FontSize::MEDIUM);
-    } else {
-        // ── Draw X mark ──
-        if (frame != 2) {
-            // Left arm (top-left to bottom-right)
-            m_display.fill_rect(icon_cx - 5, icon_cy - 5, 3, 2);
-            m_display.fill_rect(icon_cx - 2, icon_cy - 2, 3, 2);
-            m_display.fill_rect(icon_cx + 1, icon_cy + 1, 3, 2);
-            m_display.fill_rect(icon_cx + 4, icon_cy + 4, 3, 2);
-            // Right arm (top-right to bottom-left)
-            m_display.fill_rect(icon_cx + 3, icon_cy - 5, 3, 2);
-            m_display.fill_rect(icon_cx + 0, icon_cy - 2, 3, 2);
-            m_display.fill_rect(icon_cx - 3, icon_cy + 1, 3, 2);
-            m_display.fill_rect(icon_cx - 6, icon_cy + 4, 3, 2);
-        }
-        m_display.draw_text_centered(28, "TX FAILED", Display::FontSize::MEDIUM);
+    if (flash) {
+        m_display.fill_rect(0, 0, 128, 64);
+        return;
     }
 
-    // ── Flash overlay on frame 2 ──
-    if (frame == 2) {
-        m_display.fill_rect(icon_cx - 11, icon_cy - 11, 22, 22);
-    }
+    // ── Status text ──
+    m_display.draw_text_centered(13, ok ? "TX SUCCESS" : "TX FAILED", Display::FontSize::MEDIUM);
 
     // ── Transaction details ──
     char line1[32];
     char line2[56];
     if (ok && m_tx_result_asset[0]) {
-        // "5.00 USDC"
         snprintf(line1, sizeof(line1), "$%.2f %s",
                  static_cast<double>(m_tx_result_amount_cents) / 100.0,
                  m_tx_result_asset);
-        // "→ 52seV...Db2Y"
         snprintf(line2, sizeof(line2), "-> %s", m_tx_result_recipient);
     } else if (!ok && m_tx_result_msg[0]) {
         snprintf(line1, sizeof(line1), "%.31s", m_tx_result_msg);
@@ -499,46 +451,49 @@ void UIManager::render_tx_result() {
 
     if (line1[0]) m_display.draw_text_centered(40, line1, Display::FontSize::SMALL);
     if (line2[0]) m_display.draw_text_centered(52, line2, Display::FontSize::SMALL);
-
-    // ── Bottom hint ──
-    m_display.draw_text(0, 62, "b: Back", Display::FontSize::SMALL);
 }
 
-void UIManager::render_tx_received() {
-    uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    uint32_t elapsed = now_ms - m_recv_start_ms;
-
-    // Pulse: invert header text area every 800ms
-    bool pulse = (elapsed / 800) % 2 == 0;
-
-    m_display.draw_text_centered(2, "FUNDS RECEIVED", Display::FontSize::SMALL);
+void UIManager::render_balance() {
+    m_display.draw_text_centered(2, "BALANCE", Display::FontSize::SMALL);
     m_display.draw_hline(0, 12, 128);
 
+    if (!m_balance_monitor) {
+        m_display.draw_text_centered(28, "No balance service", Display::FontSize::SMALL);
+        return;
+    }
+
+    if (m_wallet_address.empty()) {
+        extern Fuchey::WalletCore* g_wallet_core_ptr;
+        if (g_wallet_core_ptr) {
+            auto addr = g_wallet_core_ptr->get_address();
+            if (addr) m_wallet_address = *addr;
+        }
+    }
+
+    if (m_wallet_address.empty()) {
+        m_display.draw_text_centered(28, "No wallet setup", Display::FontSize::SMALL);
+        return;
+    }
+
+    if (!m_bal_fetched) {
+        uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        uint32_t elapsed = now_ms - m_bal_fetch_start_ms;
+        int dot_count = (elapsed / 500) % 4;
+        char dots[5] = {};
+        for (int i = 0; i < dot_count; ++i) dots[i] = '.';
+
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Fetching%s", dots);
+        m_display.draw_text_centered(28, buf, Display::FontSize::MEDIUM);
+        return;
+    }
+
     char buf[32];
+    snprintf(buf, sizeof(buf), "%.6f SOL", m_bal_sol);
+    m_display.draw_text_centered(24, buf, Display::FontSize::MEDIUM);
 
-    if (m_recv_sol_change > 0.0) {
-        snprintf(buf, sizeof(buf), "+%.4f SOL", m_recv_sol_change);
-        m_display.draw_text_centered(20, buf, Display::FontSize::MEDIUM);
-    }
-    if (m_recv_usdc_change > 0.0) {
-        snprintf(buf, sizeof(buf), "+$%.2f USDC", m_recv_usdc_change);
-        m_display.draw_text_centered(34, buf, Display::FontSize::MEDIUM);
-    }
-
-    // New balances at bottom
-    m_display.draw_hline(0, 48, 128);
-    snprintf(buf, sizeof(buf), "Bal: %.4f SOL", m_recv_new_sol);
-    m_display.draw_text_centered(50, buf, Display::FontSize::SMALL);
-    snprintf(buf, sizeof(buf), "$%.2f USDC", m_recv_new_usdc);
-    m_display.draw_text_centered(60, buf, Display::FontSize::SMALL);
-
-    m_display.draw_text(0, 62, "b: Back", Display::FontSize::SMALL);
-
-    // Pulse effect: invert the header area on pulse frames
-    if (pulse) {
-        m_display.fill_rect(0, 0, 128, 12);
-        m_display.draw_text_centered(2, "FUNDS RECEIVED", Display::FontSize::SMALL);
-    }
+    snprintf(buf, sizeof(buf), "$%.2f USDC", m_bal_usdc);
+    m_display.draw_text_centered(42, buf, Display::FontSize::MEDIUM);
 }
 
 void UIManager::render_chat() {
@@ -678,7 +633,7 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::MENU_MAIN) {
                 // NEXT option (Double Press or BACK button or 'n' serial command)
                 if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.id == ButtonId::BACK) {
-                    m_menu_index = (m_menu_index + 1) % 3;
+                    m_menu_index = (m_menu_index + 1) % 4;
                     ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
                 }
                 // SELECT option (CONFIRM button / 'c' / '1' serial command)
@@ -692,6 +647,11 @@ void UIManager::run() {
                     } else if (m_menu_index == 2) {
                         ESP_LOGI(TAG, "Screen: IDLE_PRICE");
                         set_screen(UIScreen::IDLE_PRICE);
+                    } else if (m_menu_index == 3) {
+                        ESP_LOGI(TAG, "Screen: BALANCE_VIEW");
+                        m_bal_fetched = false;
+                        m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                        set_screen(UIScreen::BALANCE_VIEW);
                     }
                 }
             } else if (m_current_screen == UIScreen::WALLET_INFO) {
@@ -714,15 +674,15 @@ void UIManager::run() {
                     ESP_LOGI(TAG, "Screen: Returning to MENU_MAIN from CHAT_VIEW");
                     set_screen(UIScreen::MENU_MAIN);
                 }
+            } else if (m_current_screen == UIScreen::BALANCE_VIEW) {
+                if (btn.id == ButtonId::BACK) {
+                    ESP_LOGI(TAG, "Screen: BALANCE_VIEW -> MENU_MAIN");
+                    set_screen(UIScreen::MENU_MAIN);
+                }
             } else if (m_current_screen == UIScreen::TX_SUCCESS ||
                        m_current_screen == UIScreen::TX_FAIL) {
                 if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
                     ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
-                    set_screen(UIScreen::IDLE_CLOCK);
-                }
-            } else if (m_current_screen == UIScreen::TX_RECEIVED) {
-                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
-                    ESP_LOGI(TAG, "Screen: TX_RECEIVED -> returning to idle");
                     set_screen(UIScreen::IDLE_CLOCK);
                 }
             }
@@ -735,11 +695,6 @@ void UIManager::run() {
             if (now - m_tx_result_start_ms >= 4000) {
                 set_screen(UIScreen::IDLE_CLOCK);
             }
-        } else if (m_current_screen == UIScreen::TX_RECEIVED) {
-            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            if (now - m_recv_start_ms >= 4000) {
-                set_screen(UIScreen::IDLE_CLOCK);
-            }
         } else if (m_current_screen == UIScreen::MENU_MAIN ||
             m_current_screen == UIScreen::WALLET_INFO ||
             m_current_screen == UIScreen::WALLET_QR) {
@@ -748,9 +703,21 @@ void UIManager::run() {
                 ESP_LOGI(TAG, "[Menu] Timeout after 15s inactivity -> Returning to Idle Cycle");
                 set_screen(UIScreen::IDLE_CLOCK);
             }
+        } else if (m_current_screen == UIScreen::BALANCE_VIEW) {
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_bal_fetch_start_ms >= 15000) {
+                ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> MENU_MAIN");
+                set_screen(UIScreen::MENU_MAIN);
+            }
         } else if (!m_setup_needed) {
             // Cycle ambient idle screens (Clock -> Weather -> Price -> Message -> Clock)
             cycle_idle_screen();
+        }
+
+        // On-demand balance fetch (blocking, done before render)
+        if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched && m_balance_monitor) {
+            m_balance_monitor->fetch_balances(m_bal_sol, m_bal_usdc);
+            m_bal_fetched = true;
         }
 
         render();
