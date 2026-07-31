@@ -15,13 +15,17 @@ namespace Fuchey {
 
 static constexpr const char* TAG = "ButtonDriver";
 
-ButtonDriver::ButtonDriver(int pin_confirm, int pin_back,
+ButtonDriver::ButtonDriver(int pin_confirm, int pin_menu, int pin_select, int pin_back,
                            uint32_t debounce_ms, uint32_t long_press_ms)
     : m_debounce_ms(debounce_ms), m_long_press_ms(long_press_ms) {
     m_buttons[0].pin = pin_confirm;
     m_buttons[0].id  = ButtonId::CONFIRM;
-    m_buttons[1].pin = pin_back;
-    m_buttons[1].id  = ButtonId::BACK;
+    m_buttons[1].pin = pin_menu;
+    m_buttons[1].id  = ButtonId::MENU;
+    m_buttons[2].pin = pin_select;
+    m_buttons[2].id  = ButtonId::SELECT;
+    m_buttons[3].pin = pin_back;
+    m_buttons[3].id  = ButtonId::BACK;
 }
 
 ButtonDriver::~ButtonDriver() {
@@ -64,7 +68,7 @@ bool ButtonDriver::init(QueueHandle_t output_queue) {
             debounce_timer_cb
         );
 
-        // Long press timer (one-shot, fires after long_press_ms)
+        // Long press timer (one-shot, fires after long_press_ms while held)
         btn.long_press_timer = xTimerCreate(
             "btn_long",
             pdMS_TO_TICKS(m_long_press_ms),
@@ -151,7 +155,7 @@ void ButtonDriver::long_press_timer_cb(TimerHandle_t timer) {
     if (::g_button_queue_ref == nullptr) return;
 
     ButtonState state{
-        .id           = (btn->id == ButtonId::CONFIRM) ? ButtonId::BACK : btn->id,
+        .id           = btn->id,
         .event        = ButtonEvent::LONG_PRESS,
         .timestamp_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000),
     };

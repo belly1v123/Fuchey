@@ -88,6 +88,12 @@ private:
 
     uint32_t    m_last_idle_cycle_ms{0};
 
+    // TX confirmation state — accept is deferred until a clean single tap is
+    // confirmed (release without a double/long press following within the window).
+    bool        m_tx_pending_accept{false};
+    uint32_t    m_tx_accept_deadline_ms{0};
+    uint32_t    m_tx_press_start_ms{0};
+
     // Setup wizard
     bool        m_setup_needed{false};
     SetupStage  m_setup_stage{SetupStage::WIFI_PROMPT};
@@ -111,6 +117,8 @@ private:
     void render_setup();
 
     void cycle_idle_screen();
+    void approve_transaction();
+    void reject_transaction();
 
     static constexpr const char* TAG = "UIManager";
 };

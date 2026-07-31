@@ -20,14 +20,19 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 
 ## Hardware Wiring
 
-| Component | GPIO |
-|-----------|------|
-| OLED SCL  | 9    |
-| OLED SDA  | 8    |
-| Button    | 4    |
+| Component   | GPIO |
+|-------------|------|
+| OLED SCL    | 9    |
+| OLED SDA    | 8    |
+| TX button   | 4    |
+| Menu button | 5    |
+| Select      | 6    |
+| Back        | 7    |
 
-- CONFIRM = single press
-- BACK/NEXT = double press
+- GPIO4 (TX): single press = accept transaction · double press or hold = reject
+- GPIO5 (Menu): single press = open menu / next option · double press = show wallet QR
+- GPIO6 (Select): confirm the highlighted menu option
+- GPIO7 (Back): go back
 
 ## Quick Start
 

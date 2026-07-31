@@ -17,16 +17,18 @@ namespace Fuchey {
 
 // ─── Button IDs ───────────────────────────────────────────
 enum class ButtonId : uint8_t {
-    CONFIRM = 0,  // OK / Select / Up
-    BACK    = 1,  // Cancel / Back / Down
+    CONFIRM = 0,  // GPIO4 — transaction accept/reject only
+    MENU    = 1,  // GPIO5 — menu / next / double = QR
+    SELECT  = 2,  // GPIO6 — menu confirm / select
+    BACK    = 3,  // GPIO7 — back
 };
 
 // ─── Button Event Types ───────────────────────────────────
 enum class ButtonEvent : uint8_t {
     PRESS        = 0,
     RELEASE      = 1,
-    LONG_PRESS   = 2,
-    DOUBLE_PRESS = 3,
+    DOUBLE_PRESS = 2,
+    LONG_PRESS   = 3,
 };
 
 // ─── Button State ─────────────────────────────────────────
@@ -38,10 +40,10 @@ struct ButtonState {
 
 class ButtonDriver {
 public:
-    static constexpr int NUM_BUTTONS = 2;
+    static constexpr int NUM_BUTTONS = 4;
 
-    // pin_confirm, pin_back: GPIO numbers (active-low, internal pull-up)
-    ButtonDriver(int pin_confirm, int pin_back,
+    // pin_confirm, pin_menu, pin_select, pin_back: GPIO numbers (active-low, internal pull-up)
+    ButtonDriver(int pin_confirm, int pin_menu, int pin_select, int pin_back,
                  uint32_t debounce_ms = 50,
                  uint32_t long_press_ms = 1000);
     ~ButtonDriver();

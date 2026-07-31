@@ -75,6 +75,7 @@ void UIManager::process_event(const Events::Event& evt) {
 
         case Events::EventType::TX_REQUEST:
             m_tx_amount_cents = evt.data.tx.amount_cents;
+            m_tx_pending_accept = false;
             ESP_LOGI(TAG, "TX request received: $%.2f — showing confirmation",
                      static_cast<double>(m_tx_amount_cents) / 100.0);
             set_screen(UIScreen::TX_CONFIRM);
@@ -127,6 +128,31 @@ void UIManager::process_event(const Events::Event& evt) {
         default:
             break;
     }
+}
+
+// ─── TX approve / reject ──────────────────────────────────
+void UIManager::approve_transaction() {
+    m_tx_pending_accept = false;
+    ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
+             static_cast<double>(m_tx_amount_cents) / 100.0);
+    extern QueueHandle_t g_tx_confirm_queue;
+    Events::Event tx_evt{};
+    tx_evt.type = Events::EventType::TX_APPROVED;
+    tx_evt.data.tx.amount_cents = m_tx_amount_cents;
+    Events::post(Events::g_wallet_queue, tx_evt);
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    set_screen(UIScreen::IDLE_CLOCK);
+}
+
+void UIManager::reject_transaction() {
+    m_tx_pending_accept = false;
+    ESP_LOGI(TAG, "[TX] User REJECTED transaction (double/long press)");
+    extern QueueHandle_t g_tx_confirm_queue;
+    Events::Event tx_evt{};
+    tx_evt.type = Events::EventType::TX_REJECTED;
+    Events::post(Events::g_wallet_queue, tx_evt);
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    set_screen(UIScreen::IDLE_CLOCK);
 }
 
 // ─── Setup wizard ─────────────────────────────────────────
@@ -297,7 +323,7 @@ void UIManager::render_menu() {
     m_display.draw_text(8, 34, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
     m_display.draw_text(8, 44, m_menu_index == 3 ? "> View Balance" : "  View Balance", Display::FontSize::SMALL);
 
-    m_display.draw_text(2, 56, "1x:Select 2x:Next", Display::FontSize::SMALL);
+    m_display.draw_text(2, 56, "M:Next S:Sel B:Bck", Display::FontSize::SMALL);
 }
 
 void UIManager::render_wallet_info() {
@@ -410,8 +436,7 @@ void UIManager::render_tx_confirm() {
     m_display.draw_text_centered(20, buf, Display::FontSize::LARGE);
 
     m_display.draw_hline(0, 44, 128);
-    m_display.draw_text(4,  50, "[C] CONFIRM", Display::FontSize::SMALL);
-    m_display.draw_text(72, 50, "[B] REJECT", Display::FontSize::SMALL);
+    m_display.draw_text_centered(50, "1x:Acc 2x/Lng:Rej", Display::FontSize::SMALL);
 }
 
 void UIManager::render_tx_result() {
@@ -601,7 +626,9 @@ void UIManager::run() {
             xQueueReceive(Events::g_button_queue, &btn, pdMS_TO_TICKS(10)) == pdTRUE) {
 
             ESP_LOGI(TAG, "[BTN] id=%s event=%s",
-                     btn.id == ButtonId::CONFIRM ? "CONFIRM" : "BACK",
+                     btn.id == ButtonId::CONFIRM ? "CONFIRM" :
+                     btn.id == ButtonId::MENU    ? "MENU" :
+                     btn.id == ButtonId::SELECT  ? "SELECT" : "BACK",
                      btn.event == ButtonEvent::PRESS        ? "PRESS" :
                      btn.event == ButtonEvent::DOUBLE_PRESS ? "DOUBLE_PRESS" :
                      btn.event == ButtonEvent::LONG_PRESS   ? "LONG_PRESS" : "RELEASE");
@@ -609,35 +636,44 @@ void UIManager::run() {
             // Reset idle cycle timer on any button activity
             m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 
-            // Handle menu navigation & TX confirmation
-            if (m_current_screen == UIScreen::TX_CONFIRM) {
-                if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
-                    ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
-                             static_cast<double>(m_tx_amount_cents) / 100.0);
-                    extern QueueHandle_t g_tx_confirm_queue;
-                    Events::Event tx_evt{};
-                    tx_evt.type = Events::EventType::TX_APPROVED;
-                    tx_evt.data.tx.amount_cents = m_tx_amount_cents;
-                    Events::post(Events::g_wallet_queue, tx_evt);
-                    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
-                    set_screen(UIScreen::IDLE_CLOCK);
-                } else if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.event == ButtonEvent::LONG_PRESS || btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "[TX] User REJECTED transaction");
-                    extern QueueHandle_t g_tx_confirm_queue;
-                    Events::Event tx_evt{};
-                    tx_evt.type = Events::EventType::TX_REJECTED;
-                    Events::post(Events::g_wallet_queue, tx_evt);
-                    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
-                    set_screen(UIScreen::IDLE_CLOCK);
+            // ── Global MENU button handling ───────────────────
+            // MENU: single press opens the menu (or NEXT inside the menu);
+            //       double press shows the Wallet QR anywhere (except during TX).
+            if (btn.id == ButtonId::MENU &&
+                m_current_screen != UIScreen::TX_CONFIRM) {
+                if (btn.event == ButtonEvent::DOUBLE_PRESS) {
+                    ESP_LOGI(TAG, "[Menu] Double press -> showing Wallet QR");
+                    set_screen(UIScreen::WALLET_QR);
+                } else if (btn.event == ButtonEvent::PRESS) {
+                    if (m_current_screen == UIScreen::MENU_MAIN) {
+                        m_menu_index = (m_menu_index + 1) % 4;
+                        ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
+                    } else {
+                        ESP_LOGI(TAG, "[Menu] Opening main menu");
+                        set_screen(UIScreen::MENU_MAIN);
+                    }
+                }
+            } else if (m_current_screen == UIScreen::TX_CONFIRM) {
+                // Only the transaction button (CONFIRM) matters here.
+                // Single tap = accept (deferred until no double/long follows),
+                // double press or long press = reject.
+                if (btn.id == ButtonId::CONFIRM) {
+                    if (btn.event == ButtonEvent::PRESS) {
+                        m_tx_press_start_ms = btn.timestamp_ms;
+                        m_tx_pending_accept = false;
+                    } else if (btn.event == ButtonEvent::RELEASE) {
+                        // Clean single tap candidate — defer accept to rule out
+                        // a fast second press (double press) or a held long press.
+                        m_tx_pending_accept = true;
+                        m_tx_accept_deadline_ms = m_tx_press_start_ms + 500;
+                    } else if (btn.event == ButtonEvent::DOUBLE_PRESS ||
+                               btn.event == ButtonEvent::LONG_PRESS) {
+                        reject_transaction();
+                    }
                 }
             } else if (m_current_screen == UIScreen::MENU_MAIN) {
-                // NEXT option (Double Press or BACK button or 'n' serial command)
-                if (btn.event == ButtonEvent::DOUBLE_PRESS || btn.id == ButtonId::BACK) {
-                    m_menu_index = (m_menu_index + 1) % 4;
-                    ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
-                }
-                // SELECT option (CONFIRM button / 'c' / '1' serial command)
-                else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
+                // SELECT option (SELECT button / 'm' / 'select' serial command)
+                if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::SELECT) {
                     if (m_menu_index == 0) {
                         ESP_LOGI(TAG, "Screen: WALLET_INFO");
                         set_screen(UIScreen::WALLET_INFO);
@@ -653,21 +689,23 @@ void UIManager::run() {
                         m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
                         set_screen(UIScreen::BALANCE_VIEW);
                     }
+                } else if (btn.id == ButtonId::BACK) {
+                    ESP_LOGI(TAG, "Screen: MENU_MAIN -> IDLE_CLOCK");
+                    set_screen(UIScreen::IDLE_CLOCK);
                 }
             } else if (m_current_screen == UIScreen::WALLET_INFO) {
                 if (btn.id == ButtonId::BACK) {
                     ESP_LOGI(TAG, "Screen: WALLET_INFO -> MENU_MAIN");
                     set_screen(UIScreen::MENU_MAIN);
-                } else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::CONFIRM) {
-                    // 'q' / select on WALLET_INFO -> toggle to QR view
+                } else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::SELECT) {
                     ESP_LOGI(TAG, "Screen: WALLET_INFO -> WALLET_QR");
                     set_screen(UIScreen::WALLET_QR);
                 }
             } else if (m_current_screen == UIScreen::WALLET_QR) {
-                // Any key returns to address text view
-                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
-                    ESP_LOGI(TAG, "Screen: WALLET_QR -> WALLET_INFO");
-                    set_screen(UIScreen::WALLET_INFO);
+                // Any single press returns to the main menu
+                if (btn.event == ButtonEvent::PRESS) {
+                    ESP_LOGI(TAG, "Screen: WALLET_QR -> MENU_MAIN");
+                    set_screen(UIScreen::MENU_MAIN);
                 }
             } else if (m_current_screen == UIScreen::CHAT_VIEW) {
                 if (btn.id == ButtonId::BACK) {
@@ -681,10 +719,18 @@ void UIManager::run() {
                 }
             } else if (m_current_screen == UIScreen::TX_SUCCESS ||
                        m_current_screen == UIScreen::TX_FAIL) {
-                if (btn.id == ButtonId::BACK || btn.event == ButtonEvent::PRESS) {
+                if (btn.event == ButtonEvent::PRESS) {
                     ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
                     set_screen(UIScreen::IDLE_CLOCK);
                 }
+            }
+        }
+
+        // Deferred TX accept — a clean single tap was confirmed (no double/long press)
+        if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept) {
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now >= m_tx_accept_deadline_ms) {
+                approve_transaction();
             }
         }
 

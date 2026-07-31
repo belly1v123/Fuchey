@@ -26,10 +26,14 @@ namespace DisplayConfig {
 
 // ─── Buttons ──────────────────────────────────────────────
 namespace Buttons {
-    inline constexpr int     PIN_CONFIRM   = 4;   // GPIO4 (Physical confirm button)
-    inline constexpr int     PIN_BACK      = -1;  // -1 = unused (single-button mode)
+    // GPIO4 is the dedicated transaction button (single=accept, double=reject).
+    // GPIO5/6/7 are menu & QR navigation only.
+    inline constexpr int     PIN_CONFIRM   = 4;   // GPIO4 (Transaction accept/reject)
+    inline constexpr int     PIN_MENU      = 5;   // GPIO5 (Menu / Next / double = QR)
+    inline constexpr int     PIN_SELECT    = 6;   // GPIO6 (Menu confirm / select)
+    inline constexpr int     PIN_BACK      = 7;   // GPIO7 (Back)
     inline constexpr uint32_t DEBOUNCE_MS  = 50;
-    inline constexpr uint32_t LONG_PRESS_MS = 1000;
+    inline constexpr uint32_t LONG_PRESS_MS = 1000;  // hold = decline transaction
 }
 
 // ─── FreeRTOS Task Configuration ─────────────────────────

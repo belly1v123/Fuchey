@@ -91,7 +91,8 @@ private:
     bool            m_waiting_confirmation{false};
 
     // ── Confirmation handling ─────────────────────────────
-    // Blocks waiting for button press (CONFIRM or BACK)
+    // Blocks waiting for the transaction button (CONFIRM).
+    // Single press = accept, double/long press = reject.
     // Returns true if user confirmed, false if rejected/timeout
     bool wait_for_confirmation(const TxRequest& req,
                                uint32_t timeout_ms = 30000);

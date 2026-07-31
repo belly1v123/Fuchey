@@ -62,6 +62,8 @@ static Fuchey::Display        s_display(Fuchey::DisplayConfig::I2C_PORT,
                                         Fuchey::DisplayConfig::I2C_FREQ_HZ);
 static Fuchey::UIManager      s_ui(s_display);
 static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
+                                        Fuchey::Buttons::PIN_MENU,
+                                        Fuchey::Buttons::PIN_SELECT,
                                         Fuchey::Buttons::PIN_BACK,
                                         Fuchey::Buttons::DEBOUNCE_MS,
                                         Fuchey::Buttons::LONG_PRESS_MS);
@@ -183,7 +185,10 @@ extern "C" void app_main(void) {
     if (!s_buttons.init(Fuchey::Events::g_button_queue)) {
         ESP_LOGE(TAG, "[!!] Button Driver initialization failed");
     } else {
-        ESP_LOGI(TAG, "[OK] Button driver initialized (CONFIRM=GPIO%d)", Fuchey::Buttons::PIN_CONFIRM);
+        ESP_LOGI(TAG, "[OK] Button driver initialized "
+                      "(CONFIRM=GPIO%d, MENU=GPIO%d, SELECT=GPIO%d, BACK=GPIO%d)",
+                 Fuchey::Buttons::PIN_CONFIRM, Fuchey::Buttons::PIN_MENU,
+                 Fuchey::Buttons::PIN_SELECT, Fuchey::Buttons::PIN_BACK);
     }
 
     Fuchey::g_wallet_core_ptr = &s_wallet_core;
@@ -276,7 +281,12 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    wallet_selftest            Verify Ed25519 math");
         ESP_LOGI(CTAG, "    wallet_info                Show current address");
         ESP_LOGI(CTAG, "    p                          Force SOL price fetch");
-        ESP_LOGI(CTAG, "    c / 1                      CONFIRM button");
+        ESP_LOGI(CTAG, "    c / 1                      CONFIRM press (tx accept)");
+        ESP_LOGI(CTAG, "    x / 3                      CONFIRM double-press (tx reject)");
+        ESP_LOGI(CTAG, "    l                          CONFIRM long-press (tx reject)");
+        ESP_LOGI(CTAG, "    n / next                   MENU press (open menu / next)");
+        ESP_LOGI(CTAG, "    q                          MENU double-press (show QR)");
+        ESP_LOGI(CTAG, "    m / select                 SELECT press (choose option)");
         ESP_LOGI(CTAG, "    b / 2                      BACK button");
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
@@ -342,9 +352,59 @@ extern "C" void app_main(void) {
 
                 // ── CONFIRM / SELECT button ────────────────────
                 if ((cmd[0] == 'c' || cmd[0] == '1') && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] CONFIRM / SELECT");
+                    ESP_LOGI(CTAG, "[INPUT] CONFIRM press (tx accept)");
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::CONFIRM,
+                        .event = Fuchey::ButtonEvent::PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── CONFIRM double-press (tx reject) ───────────
+                } else if ((cmd[0] == 'x' || cmd[0] == '3') && len == 1) {
+                    ESP_LOGI(CTAG, "[INPUT] CONFIRM double-press (tx reject)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::CONFIRM,
+                        .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── CONFIRM long-press (tx reject) ─────────────
+                } else if (cmd[0] == 'l' && len == 1) {
+                    ESP_LOGI(CTAG, "[INPUT] CONFIRM long-press (tx reject)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::CONFIRM,
+                        .event = Fuchey::ButtonEvent::LONG_PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── MENU button (open menu / next) ─────────────
+                } else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] MENU press (open menu / next)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::MENU,
+                        .event = Fuchey::ButtonEvent::PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── MENU double-press (show QR) ────────────────
+                } else if (strcmp(cmd, "q") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] MENU double-press (show QR)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::MENU,
+                        .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── SELECT button (choose option) ──────────────
+                } else if ((cmd[0] == 'm' && len == 1) || strcmp(cmd, "select") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] SELECT press (choose option)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::SELECT,
                         .event = Fuchey::ButtonEvent::PRESS,
                         .timestamp_ms = 0
                     };
@@ -356,16 +416,6 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::BACK,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
-                    };
-                    xQueueSend(::g_button_queue_ref, &state, 0);
-
-                // ── NEXT option button ────────────────────────
-                } else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
-                    ESP_LOGI(CTAG, "[INPUT] NEXT OPTION");
-                    Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::BACK,
-                        .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);

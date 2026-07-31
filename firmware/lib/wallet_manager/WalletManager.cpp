@@ -6,6 +6,7 @@
 #include "../config/Config.hpp"
 #include "../buttons/ButtonDriver.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
@@ -197,20 +198,47 @@ bool WalletManager::wait_for_confirmation(const TxRequest& req,
 
     ButtonState btn{};
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    uint32_t press_start_ms = 0;
+    bool     pending_accept = false;
+    uint32_t accept_deadline_ms = 0;
 
     while (xTaskGetTickCount() < deadline) {
         TickType_t remaining = deadline - xTaskGetTickCount();
+        TickType_t wait = pdMS_TO_TICKS(25);
+        if (wait > remaining) wait = remaining;
+
         if (::g_button_queue_ref &&
-            xQueueReceive(::g_button_queue_ref, &btn, remaining) == pdTRUE) {
+            xQueueReceive(::g_button_queue_ref, &btn, wait) == pdTRUE) {
 
-            if (btn.event != ButtonEvent::PRESS) continue;
+            // Only the transaction button (CONFIRM) authorizes or rejects.
+            if (btn.id != ButtonId::CONFIRM) continue;
 
+            if (btn.event == ButtonEvent::PRESS) {
+                press_start_ms = btn.timestamp_ms;
+                pending_accept = false;
+            } else if (btn.event == ButtonEvent::RELEASE) {
+                // Clean single tap candidate — defer accept to rule out a
+                // fast second press (double press) or a held long press.
+                pending_accept = true;
+                accept_deadline_ms = press_start_ms + 500;
+            } else {
+                // DOUBLE_PRESS or LONG_PRESS → reject.
+                if (Events::g_event_group) {
+                    xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
+                }
+                m_waiting_confirmation = false;
+                return false;
+            }
+        }
+
+        // Deferred accept — a clean single tap was confirmed.
+        uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (pending_accept && now_ms >= accept_deadline_ms) {
             if (Events::g_event_group) {
                 xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
             }
             m_waiting_confirmation = false;
-
-            return (btn.id == ButtonId::CONFIRM);
+            return true;
         }
     }
 
