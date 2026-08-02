@@ -74,13 +74,13 @@ h
 
 ## Core Features
 
-- 🔐 Self-custodial Solana hardware wallet
-- ✍️ On-device transaction signing
-- 🤖 Integrated text-based AI assistant
-- ⏰ Clock, weather, and live SOL price display
-- 🖥️ ESP32-S3 powered with OLED interface
-- 🛡️ Security-first modular architecture
-- 🌍 Fully open source
+-  Self-custodial Solana hardware wallet
+-  On-device transaction signing
+-  Integrated text-based AI assistant
+-  Clock, weather, and live SOL price display
+-  ESP32-S3 powered with OLED interface
+-  Security-first modular architecture
+-  Fully open source
 
 ## Designed by Pranjal Kharel
 ## https://pranjalkharel.com.np
