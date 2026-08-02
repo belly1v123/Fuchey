@@ -66,6 +66,9 @@ public:
     // Progress bar
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent);
 
+    // Animated boot splash (title + label + progress bar)
+    void animate_boot(uint32_t duration_ms = 3000);
+
     // ── Output ───────────────────────────────────────────
     // Push back buffer to hardware
     bool flush();

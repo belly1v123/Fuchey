@@ -222,6 +222,9 @@ extern "C" void app_main(void) {
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
 
+    // Boot animation — WiFi is already connecting in the background
+    s_display.animate_boot(3000);
+
     // 5. Detect first-boot state for UIManager setup screen
     {
         bool wifi_missing = !s_wifi_manager.has_credentials();

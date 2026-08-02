@@ -5,6 +5,7 @@
 #include "PriceService.hpp"
 #include "../config/Config.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 
 namespace Fuchey {
@@ -76,11 +77,29 @@ void PriceService::task_entry(void* arg) {
 
 void PriceService::run() {
     ESP_LOGI(TAG, "PriceService task running");
+    int64_t ip_ts_us = 0;
     while (true) {
-        if (m_wifi.has_ip()) {
-            update_now();
+        uint32_t bits = 0;
+        if (Events::g_event_group) {
+            bits = xEventGroupWaitBits(Events::g_event_group, Events::BIT_WIFI_IP,
+                                       pdTRUE, pdFALSE,
+                                       pdMS_TO_TICKS(Timing::PRICE_UPDATE_MS));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(Timing::PRICE_UPDATE_MS));
         }
-        vTaskDelay(pdMS_TO_TICKS(Timing::PRICE_UPDATE_MS));
+        if (!m_wifi.has_ip()) continue;
+
+        if (bits & Events::BIT_WIFI_IP) {
+            ip_ts_us = esp_timer_get_time();  // woke on fresh IP signal
+        }
+        bool ok = update_now();
+        if (ip_ts_us != 0) {
+            if (ok) {
+                ESP_LOGI(TAG, "SOL Price fetched %.0f ms after WiFi IP",
+                         static_cast<double>(esp_timer_get_time() - ip_ts_us) / 1000.0);
+            }
+            ip_ts_us = 0;
+        }
     }
 }
 

@@ -5,6 +5,8 @@
 
 #include "Display.hpp"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cstring>
 #include <algorithm>
 
@@ -349,6 +351,25 @@ void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent) {
     draw_rect(x, y, w, h);
     int fill = static_cast<int>((w - 2) * percent / 100);
     fill_rect(x + 1, y + 1, fill, h - 2);
+}
+
+// ─── Animated boot splash ─────────────────────────────────
+void Display::animate_boot(uint32_t duration_ms) {
+    constexpr int BAR_X = 24;
+    constexpr int BAR_Y = 44;
+    constexpr int BAR_W = 80;
+    constexpr int BAR_H = 12;
+    constexpr int FRAMES = 100;
+
+    for (int frame = 0; frame <= FRAMES; ++frame) {
+        clear();
+        draw_text_centered(4, "FUCHEY", Display::FontSize::LARGE);
+        draw_text_centered(30, "Initializing", Display::FontSize::SMALL);
+        uint8_t pct = static_cast<uint8_t>(frame * 100 / FRAMES);
+        draw_progress_bar(BAR_X, BAR_Y, BAR_W, BAR_H, pct);
+        flush();
+        vTaskDelay(pdMS_TO_TICKS(duration_ms / FRAMES));
+    }
 }
 
 // ─── flush ────────────────────────────────────────────────
