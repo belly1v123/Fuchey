@@ -13,6 +13,7 @@
 #include "cJSON.h"
 #include <cstring>
 #include <cctype>
+#include <cmath>
 #include <string>
 
 #include "../lib/config/Config.hpp"
@@ -114,6 +115,122 @@ static bool is_single_base58_token(const char* s) {
         if (!std::strchr(Fuchey::Crypto::Base58::ALPHABET, *p)) return false;
     }
     return true;
+}
+
+// ─── Balance pre-check helpers ─────────────────────────────
+
+// Map a Solana RPC error message to a short, human-friendly string.
+// Insufficient-funds errors (payment for SOL, SPL Token "custom program error: 0x1")
+// are rewritten to a clear message; everything else passes through unchanged.
+static void friendly_tx_error(const char* raw, char* out, size_t out_len) {
+    if (!raw || !*raw) {
+        snprintf(out, out_len, "%s", "Unknown RPC error");
+        return;
+    }
+    std::string lower = raw;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.find("insufficient") != std::string::npos ||
+        lower.find("custom program error: 0x1") != std::string::npos) {
+        snprintf(out, out_len, "%s", "Insufficient balance");
+        return;
+    }
+    snprintf(out, out_len, "%.*s", static_cast<int>(out_len - 1), raw);
+}
+
+// Fetch SOL balance in lamports via getBalance. Returns -1.0 on RPC/parse failure.
+static double fetch_sol_balance_lamports(const std::string& address) {
+    if (!s_wifi_manager.has_ip()) return -1.0;
+
+    char req[256];
+    snprintf(req, sizeof(req),
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
+             address.c_str());
+
+    auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+    if (!resp.success) {
+        ESP_LOGE(TAG, "[PreCheck] SOL balance RPC failed (HTTP %d)", resp.status_code);
+        return -1.0;
+    }
+
+    cJSON* root = cJSON_Parse(resp.body.c_str());
+    if (!root) return -1.0;
+
+    double lamports = -1.0;
+    cJSON* res = cJSON_GetObjectItem(root, "result");
+    cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+    if (val && cJSON_IsNumber(val)) lamports = val->valuedouble;
+    cJSON_Delete(root);
+    return lamports;
+}
+
+// One USDC token account owned by an address, resolved from the chain.
+struct UsdcAccount {
+    std::string  pubkey;        // base58 token account address (empty if owner has none)
+    double       balance = 0.0; // balance in whole USDC units (for display only)
+    uint64_t     balance_micro = 0; // exact balance in 6-decimal micro-units (authoritative)
+    bool         ok = false;    // true when the RPC call itself succeeded
+};
+
+// Resolve an owner's real USDC token account (address + balance) via
+// getTokenAccountsByOwner. This is the same command used for balance display,
+// and always targets the actual funded account instead of guessing a PDA.
+static UsdcAccount fetch_usdc_account(const std::string& address) {
+    UsdcAccount out;
+
+    if (!s_wifi_manager.has_ip()) return out;
+
+    char req[512];
+    snprintf(req, sizeof(req),
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
+             "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
+             address.c_str(), get_usdc_mint());
+
+    auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+    if (!resp.success) {
+        ESP_LOGE(TAG, "[Pre-check] USDC account RPC failed (HTTP %d)", resp.status_code);
+        return out;
+    }
+
+    cJSON* root = cJSON_Parse(resp.body.c_str());
+    if (!root) return out;
+
+    cJSON* res = cJSON_GetObjectItem(root, "result");
+    cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+    if (cJSON_IsArray(val) && cJSON_GetArraySize(val) > 0) {
+        int n = cJSON_GetArraySize(val);
+        bool found = false;
+        // A wallet can own several USDC accounts (e.g. an empty one plus a funded
+        // one). Pick the account with the largest exact balance so we always send
+        // from (and report) the account that can actually fund the transfer.
+        for (int i = 0; i < n; ++i) {
+            cJSON* item0   = cJSON_GetArrayItem(val, i);
+            cJSON* pk      = cJSON_GetObjectItem(item0, "pubkey");
+            cJSON* account = cJSON_GetObjectItem(item0, "account");
+            cJSON* data    = account ? cJSON_GetObjectItem(account, "data")   : nullptr;
+            cJSON* parsed  = data    ? cJSON_GetObjectItem(data,    "parsed") : nullptr;
+            cJSON* info    = parsed  ? cJSON_GetObjectItem(parsed,  "info")   : nullptr;
+            cJSON* t_amt   = info    ? cJSON_GetObjectItem(info,    "tokenAmount") : nullptr;
+            // "amount" is the exact integer in micro-units (string); uiAmount is a
+            // rounded float used only for human display.
+            uint64_t micro = 0;
+            cJSON* ui_amt = nullptr;
+            if (t_amt) {
+                cJSON* amt = cJSON_GetObjectItem(t_amt, "amount");
+                ui_amt      = cJSON_GetObjectItem(t_amt, "uiAmount");
+                if (amt && amt->valuestring) micro = strtoull(amt->valuestring, nullptr, 10);
+            }
+            if (!found || micro > out.balance_micro) {
+                found = true;
+                out.balance_micro = micro;
+                if (pk && pk->valuestring) out.pubkey = pk->valuestring;
+                if (ui_amt && cJSON_IsNumber(ui_amt)) out.balance = ui_amt->valuedouble;
+            }
+        }
+    }
+    cJSON_Delete(root);
+
+    out.ok = true;
+    return out;
 }
 
 static int count_bip39_words(const char* s) {
@@ -860,6 +977,35 @@ extern "C" void app_main(void) {
                                 return;
                             }
                             auto sender_pubkey = *pubkey_opt;
+                            auto sender_addr_opt = s_wallet_core.get_address();
+                            if (sender_addr_opt) {
+                                std::string sender_addr = *sender_addr_opt;
+                                double lamports = fetch_sol_balance_lamports(sender_addr);
+                                if (lamports >= 0.0) {
+                                    const double amount_lamports = static_cast<double>(
+                                        static_cast<uint64_t>(amount * 1000000000.0));
+                                    constexpr double TX_FEE_LAMPORTS = 10000.0; // 0.00001 SOL buffer
+                                    if (lamports < amount_lamports + TX_FEE_LAMPORTS) {
+                                        ESP_LOGE(CTAG, "-------------------------------------------------");
+                                        ESP_LOGE(CTAG, "[SEND SOL] ERROR: Insufficient balance.");
+                                        ESP_LOGE(CTAG, "  Have: %.6f SOL  |  Need: %.6f SOL (+fee)",
+                                                 lamports / 1000000000.0,
+                                                 (amount_lamports + TX_FEE_LAMPORTS) / 1000000000.0);
+                                        ESP_LOGE(CTAG, "-------------------------------------------------");
+                                        Fuchey::Events::Event fail_evt{};
+                                        fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                        fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                                        snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
+                                                 sizeof(fail_evt.data.tx.tx_data),
+                                                 "%s", "Insufficient balance");
+                                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
+                                        vTaskDelete(nullptr);
+                                        return;
+                                    }
+                                } else {
+                                    ESP_LOGW(CTAG, "[SEND SOL] Could not verify balance — proceeding anyway.");
+                                }
+                            }
 
                             // Flush any old events from g_tx_confirm_queue
                             Fuchey::Events::Event dummy_evt;
@@ -867,8 +1013,8 @@ extern "C" void app_main(void) {
                                 while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
                             }
 
-                            // Prompt UI for hardware/serial button approval ($150/SOL baseline estimate)
-                            uint64_t cents = static_cast<uint64_t>(amount * 150.0f * 100.0f);
+                            // Prompt UI for hardware/serial button approval (live SOL/USD rate)
+                            uint64_t cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
                             Fuchey::Events::Event evt{};
                             evt.type = Fuchey::Events::EventType::TX_REQUEST;
                             evt.data.tx.amount_cents = cents;
@@ -1018,8 +1164,10 @@ extern "C" void app_main(void) {
                                         cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
                                         const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
                                         ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
+                                        char friendly_err[64];
+                                        friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s", err_str);
+                                                 sizeof(result_evt.data.tx.tx_data), "%s", friendly_err);
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
@@ -1094,34 +1242,95 @@ extern "C" void app_main(void) {
                             }
                             auto sender_pubkey = *pubkey_opt;
 
-                            // ── Decode program IDs ──
+                            // ── Decode Token Program ID ──
                             auto token_prog = Fuchey::Crypto::Base58::decode(
                                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-                            auto ata_prog = Fuchey::Crypto::Base58::decode(
-                                "ATokenGPvbdGVxr1b2hvZbsiqW5xrj25vdTucN6s");
-                            auto usdc_mint = Fuchey::Crypto::Base58::decode(get_usdc_mint());
-                            if (token_prog.size() != 32 || ata_prog.size() != 32 || usdc_mint.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding program IDs");
+                            if (token_prog.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding Token Program ID (%d)",
+                                         static_cast<int>(token_prog.size()));
                                 vTaskDelete(nullptr);
                                 return;
                             }
 
-                            // ── Derive Associated Token Accounts ──
-                            // ATA = first 32 bytes of SHA256(owner || token_prog || mint || 0xFF || ata_prog)
-                            auto derive_ata = [&](const std::vector<uint8_t>& owner) -> std::array<uint8_t, 32> {
-                                std::array<uint8_t, 32 + 32 + 32 + 1 + 32> pda_input{};
-                                std::memcpy(pda_input.data(), owner.data(), 32);
-                                std::memcpy(pda_input.data() + 32, token_prog.data(), 32);
-                                std::memcpy(pda_input.data() + 64, usdc_mint.data(), 32);
-                                pda_input[96] = 0xFF;
-                                std::memcpy(pda_input.data() + 97, ata_prog.data(), 32);
-                                return Fuchey::Crypto::sha256(
-                                    std::span<const uint8_t>(pda_input.data(), pda_input.size()));
-                            };
+                            // ── Resolve real USDC accounts from the chain ──
+                            // Never guess PDA addresses; getTokenAccountsByOwner returns the
+                            // actual funded token accounts for each owner.
+                            std::array<uint8_t, 32> sender_ata{};
+                            std::array<uint8_t, 32> recipient_ata{};
 
-                            std::array<uint8_t, 32> sender_ata = derive_ata(
-                                std::vector<uint8_t>(sender_pubkey.begin(), sender_pubkey.end()));
-                            std::array<uint8_t, 32> recipient_ata = derive_ata(recipient_pubkey);
+                            auto usdc_sender_addr = s_wallet_core.get_address();
+                            if (!usdc_sender_addr) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error: Wallet is locked or not setup.");
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            // USDC has 6 decimals. Compute the exact send amount once
+                            // (decimal-safe) and reuse it for both the pre-check and the
+                            // instruction so they always agree.
+                            uint64_t raw_amount = static_cast<uint64_t>(std::llround(amount * 1000000.0));
+
+                            UsdcAccount sender_acct = fetch_usdc_account(*usdc_sender_addr);
+                            if (!sender_acct.ok) {
+                                ESP_LOGW(CTAG, "[SEND USDC] Could not verify balance — proceeding anyway.");
+                            } else if (sender_acct.pubkey.empty() || sender_acct.balance_micro < raw_amount) {
+                                ESP_LOGE(CTAG, "-------------------------------------------------");
+                                ESP_LOGE(CTAG, "[SEND USDC] ERROR: Insufficient balance.");
+                                ESP_LOGE(CTAG, "  From: %s", sender_acct.pubkey.c_str());
+                                ESP_LOGE(CTAG, "  Have: %llu.%06llu USDC (exact) |  Need: %llu.%06llu USDC",
+                                         static_cast<unsigned long long>(sender_acct.balance_micro / 1000000),
+                                         static_cast<unsigned long long>(sender_acct.balance_micro % 1000000),
+                                         static_cast<unsigned long long>(raw_amount / 1000000),
+                                         static_cast<unsigned long long>(raw_amount % 1000000));
+                                ESP_LOGE(CTAG, "-------------------------------------------------");
+                                Fuchey::Events::Event fail_evt{};
+                                fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                                snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
+                                         sizeof(fail_evt.data.tx.tx_data),
+                                         "%s", "Insufficient balance");
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
+                                vTaskDelete(nullptr);
+                                return;
+                            } else {
+                                ESP_LOGI(CTAG, "[SEND USDC] Sending from: %s", sender_acct.pubkey.c_str());
+                                ESP_LOGI(CTAG, "  Balance:    %llu.%06llu USDC",
+                                         static_cast<unsigned long long>(sender_acct.balance_micro / 1000000),
+                                         static_cast<unsigned long long>(sender_acct.balance_micro % 1000000));
+                            }
+
+                            // Recipient must already own a USDC account to receive tokens.
+                            UsdcAccount recipient_acct = fetch_usdc_account(recipient_str);
+                            if (!recipient_acct.ok) {
+                                ESP_LOGW(CTAG, "[SEND USDC] Could not verify recipient account — proceeding anyway.");
+                            } else if (recipient_acct.pubkey.empty()) {
+                                ESP_LOGE(CTAG, "-------------------------------------------------");
+                                ESP_LOGE(CTAG, "[SEND USDC] ERROR: Recipient has no USDC account.");
+                                ESP_LOGE(CTAG, "  Recipient must first receive USDC once.");
+                                ESP_LOGE(CTAG, "-------------------------------------------------");
+                                Fuchey::Events::Event fail_evt{};
+                                fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                                snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
+                                         sizeof(fail_evt.data.tx.tx_data),
+                                         "%s", "No USDC acct");
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+
+                            auto sender_ata_bytes    = Fuchey::Crypto::Base58::decode(sender_acct.pubkey);
+                            auto recipient_ata_bytes = Fuchey::Crypto::Base58::decode(recipient_acct.pubkey);
+                            if (sender_ata_bytes.size() != 32 || recipient_ata_bytes.size() != 32) {
+                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding USDC account addresses "
+                                         "(sender=%d recipient=%d)",
+                                         static_cast<int>(sender_ata_bytes.size()),
+                                         static_cast<int>(recipient_ata_bytes.size()));
+                                vTaskDelete(nullptr);
+                                return;
+                            }
+                            std::memcpy(sender_ata.data(), sender_ata_bytes.data(), 32);
+                            std::memcpy(recipient_ata.data(), recipient_ata_bytes.data(), 32);
 
                             // Flush old events
                             Fuchey::Events::Event dummy_evt;
@@ -1194,8 +1403,8 @@ extern "C" void app_main(void) {
                             }
 
                             // ── Build Solana message ──
-                            // USDC has 6 decimals
-                            uint64_t raw_amount = static_cast<uint64_t>(amount * 1000000.0f);
+                            // raw_amount (6-decimal micro-units) was computed before
+                            // the pre-check and is shared with the broadcast path.
                             std::vector<uint8_t> msg;
 
                             // Header
@@ -1220,9 +1429,9 @@ extern "C" void app_main(void) {
                             msg.push_back(1); // accounts[0] = source ATA (index 1)
                             msg.push_back(2); // accounts[1] = dest ATA (index 2)
                             msg.push_back(0); // accounts[2] = owner (index 0)
-                            msg.push_back(12); // data length = 12 bytes
-                            // SPL Transfer: u32 LE tag (3) + u64 LE amount
-                            msg.push_back(3); msg.push_back(0); msg.push_back(0); msg.push_back(0);
+                            msg.push_back(9); // data length = 9 bytes
+                            // SPL Transfer: u8 tag (3) + u64 LE amount
+                            msg.push_back(3);
                             for (int i = 0; i < 8; i++) {
                                 msg.push_back(static_cast<uint8_t>((raw_amount >> (i * 8)) & 0xFF));
                             }
@@ -1275,8 +1484,10 @@ extern "C" void app_main(void) {
                                         cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
                                         const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
                                         ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
+                                        char friendly_err[64];
+                                        friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s", err_str);
+                                                 sizeof(result_evt.data.tx.tx_data), "%s", friendly_err);
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());

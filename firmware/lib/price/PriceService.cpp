@@ -12,7 +12,7 @@ namespace Fuchey {
 
 static constexpr const char* TAG = "PriceService";
 
-PriceService::PriceService(WiFiManager& wifi) : m_wifi(wifi) {}
+PriceService::PriceService(WiFiManager& wifi) : m_wifi(wifi), m_sol_usd(DEFAULT_SOL_USD) {}
 
 bool PriceService::init() {
     ESP_LOGI(TAG, "PriceService initialized");
@@ -56,6 +56,7 @@ bool PriceService::update_now() {
     float sol_usd = 0.0f;
     if (parse_price_json(resp.body, sol_usd)) {
         ESP_LOGI(TAG, "SOL Price updated: $%.2f", sol_usd);
+        m_sol_usd.store(sol_usd);
 
         Events::Event evt{};
         evt.type = Events::EventType::PRICE_UPDATED;
