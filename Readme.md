@@ -82,5 +82,18 @@ h
 -  Security-first modular architecture
 -  Fully open source
 
+## Security Tooling
+
+The `scripts/` folder contains developer tooling that guards against leaking secret material to the serial console:
+
+- `scripts/check-no-secret-logging.ps1` — scans the firmware source and fails if any log call could dump private-key / seed / chain-code bytes (e.g. `ESP_LOG_BUFFER_HEX`).
+  ```
+  pwsh -NoProfile -File scripts/check-no-secret-logging.ps1
+  ```
+- `scripts/install-hooks.ps1` — installs a git `pre-commit` hook that runs the check above automatically on every commit.
+  ```
+  pwsh -NoProfile -File scripts/install-hooks.ps1
+  ```
+
 ## Designed by Pranjal Kharel
 ## https://pranjalkharel.com.np
