@@ -334,6 +334,18 @@ std::optional<Crypto::PubKey> WalletCore::get_pubkey() const {
     return m_pubkey;
 }
 
+// ─── Export secret (deliberate, opt-in) ────────────────────
+std::optional<Crypto::SecretKey> WalletCore::export_secret() const {
+    if (m_state != WalletState::UNLOCKED || !m_pubkey_valid) {
+        return std::nullopt;
+    }
+    Crypto::SecretKey secret{};
+    std::copy(m_keypair.priv_key.begin(), m_keypair.priv_key.end(), secret.begin());
+    std::copy(m_pubkey.begin(), m_pubkey.end(),
+              secret.begin() + Crypto::PRIVKEY_BYTES);
+    return secret;
+}
+
 // ─── Sign ─────────────────────────────────────────────────
 WalletResult WalletCore::sign(std::span<const uint8_t> message,
                                Crypto::Signature&        out_sig) {

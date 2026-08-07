@@ -5,6 +5,7 @@
 //
 // SECURITY CONTRACT:
 //   - Never exposes private keys outside this module
+//     (single deliberate exception: export_secret(), opt-in only)
 //   - Never depends on AI, WiFi, or UI
 //   - Private key is held in memory only during active session
 //   - Mnemonic is stored encrypted in NVS
@@ -97,6 +98,12 @@ public:
 
     // Get public key bytes — available when locked or unlocked
     std::optional<Crypto::PubKey> get_pubkey() const;
+
+    // ── Deliberate secret export (opt-in) ─────────────────────
+    // SECURITY: The ONLY method that exposes key material outside this module.
+    // Returns the standard Solana 64-byte secret key (priv32 || pub32).
+    // Only available when UNLOCKED. Caller MUST zero the returned array after use.
+    std::optional<Crypto::SecretKey> export_secret() const;
 
     // ── Transaction signing ───────────────────────────────
     // SECURITY: Only callable when UNLOCKED.

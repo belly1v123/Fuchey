@@ -26,6 +26,7 @@ using PrivKey   = std::array<uint8_t, 32>;
 using PubKey    = std::array<uint8_t, 32>;
 using Signature = std::array<uint8_t, 64>;
 using Seed      = std::array<uint8_t, 64>;
+using SecretKey = std::array<uint8_t, 64>; // Solana 64-byte secret key (priv32 || pub32)
 using ChainCode = std::array<uint8_t, 32>;
 
 // ─── Key pair ─────────────────────────────────────────────

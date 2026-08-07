@@ -266,8 +266,6 @@ bool BIP39::to_seed(std::string_view mnemonic,
     if (!ok) {
         ESP_LOGE(TAG, "PBKDF2 failed");
         out_seed.fill(0);
-    } else {
-        ESP_LOG_BUFFER_HEX(TAG, out_seed.data(), out_seed.size());
     }
     return ok;
 }

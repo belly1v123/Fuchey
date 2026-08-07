@@ -400,6 +400,7 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    wallet_import <key>        Import hex/base58 private key");
         ESP_LOGI(CTAG, "    wallet_selftest            Verify Ed25519 math");
         ESP_LOGI(CTAG, "    wallet_info                Show current address");
+        ESP_LOGI(CTAG, "    wallet_export              Export private key (DANGER)");
         ESP_LOGI(CTAG, "    p                          Force SOL price fetch");
         ESP_LOGI(CTAG, "    c / 1                      CONFIRM press (tx accept)");
         ESP_LOGI(CTAG, "    x / 3                      CONFIRM double-press (tx reject)");
@@ -832,6 +833,61 @@ extern "C" void app_main(void) {
                         ESP_LOGE(CTAG, "[Wallet] Reset FAILED (err=%d)", static_cast<int>(r));
                     }
                     ESP_LOGW(CTAG, "-------------------------------------------------");
+
+                // ── wallet_export ──────────────────────────────
+                } else if (strcmp(cmd, "wallet_export") == 0) {
+                    if (!s_wallet_core.is_unlocked()) {
+                        ESP_LOGW(CTAG, "[Wallet] Wallet is locked. Export requires an unlocked wallet.");
+                        continue;
+                    }
+                    ESP_LOGW(CTAG, "==================================================");
+                    ESP_LOGW(CTAG, "[Wallet] EXPORT PRIVATE KEY");
+                    ESP_LOGW(CTAG, "  DANGER: Anyone with this key can steal your funds.");
+                    ESP_LOGW(CTAG, "  Press CONFIRM on the device within 10s to print it,");
+                    ESP_LOGW(CTAG, "  or double/long press to cancel.");
+                    ESP_LOGW(CTAG, "==================================================");
+
+                    // Arm the confirm screen so the physical CONFIRM button is accepted
+                    Fuchey::Events::Event req{};
+                    req.type = Fuchey::Events::EventType::TX_REQUEST;
+                    req.data.tx.amount_cents = 0;
+                    Fuchey::Events::post(Fuchey::Events::g_ui_queue, req);
+
+                    // Flush any stale confirm events
+                    Fuchey::Events::Event dummy_evt{};
+                    if (Fuchey::g_tx_confirm_queue) {
+                        while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
+                    }
+
+                    Fuchey::Events::Event app_evt{};
+                    bool confirmed = false;
+                    if (Fuchey::g_tx_confirm_queue) {
+                        confirmed =
+                            xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt,
+                                          pdMS_TO_TICKS(10000)) == pdTRUE &&
+                            app_evt.type == Fuchey::Events::EventType::TX_APPROVED;
+                    }
+
+                    s_ui.set_screen(Fuchey::UIScreen::IDLE_CLOCK);
+
+                    if (!confirmed) {
+                        ESP_LOGW(CTAG, "[Wallet] Export cancelled or timed out.");
+                        continue;
+                    }
+
+                    auto secret = s_wallet_core.export_secret();
+                    if (!secret) {
+                        ESP_LOGE(CTAG, "[Wallet] Failed to export secret key (wallet locked?)");
+                        continue;
+                    }
+                    std::string encoded = Fuchey::Crypto::Base58::encode(
+                        std::span<const uint8_t>(secret->data(), secret->size()));
+                    ESP_LOGW(CTAG, "--------------------------------------------------");
+                    ESP_LOGW(CTAG, "[Wallet] PRIVATE KEY (base58 — keep secret!):");
+                    ESP_LOGW(CTAG, "  %s", encoded.c_str());
+                    ESP_LOGW(CTAG, "--------------------------------------------------");
+                    std::fill(encoded.begin(), encoded.end(), '\0');
+                    secret->fill(0);
 
 
                 // ── wallet_import ─────────────────────────────
@@ -1541,6 +1597,7 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  wallet_import <key>      Import hex/base58 private key");
                     ESP_LOGI(CTAG, "  wallet_selftest          Verify Ed25519 math");
                     ESP_LOGI(CTAG, "  wallet_info              Show current address");
+                    ESP_LOGI(CTAG, "  wallet_export            Export private key (DANGER)");
                     ESP_LOGI(CTAG, "  balance                  Fetch live SOL & USDC balance");
                     ESP_LOGI(CTAG, "  ai <message>             Send prompt to AI Assistant");
                     ESP_LOGI(CTAG, "  ai_key <key>             Set OpenAI API key");

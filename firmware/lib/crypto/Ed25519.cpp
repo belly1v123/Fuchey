@@ -82,10 +82,6 @@ bool Ed25519::get_pubkey(std::span<const uint8_t, 32> priv_key,
     bool ok = secret_from_seed(priv_key, out_pubkey,
                                std::span<uint8_t, 64>(secret.data(), secret.size()));
     sodium_memzero(secret.data(), secret.size());
-    ESP_LOGI(TAG, "get_pubkey: input privkey");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, priv_key.data(), priv_key.size(), ESP_LOG_INFO);
-    ESP_LOGI(TAG, "get_pubkey: output pubkey");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, out_pubkey.data(), out_pubkey.size(), ESP_LOG_INFO);
     return ok;
 }
 

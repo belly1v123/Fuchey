@@ -30,9 +30,6 @@ std::optional<KeyPair> SLIP0010::derive_master(const Seed& seed) {
     // IR = last 32 bytes → chain code
     std::copy(I.begin() + 32,   I.end(),        kp.chain_code.begin());
 
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, kp.priv_key.data(), kp.priv_key.size(), ESP_LOG_INFO);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, kp.chain_code.data(), kp.chain_code.size(), ESP_LOG_INFO);
-
     // Zero I
     I.fill(0);
     return kp;
@@ -70,10 +67,6 @@ std::optional<KeyPair> SLIP0010::derive_child(const KeyPair& parent,
     std::copy(I.begin(),      I.begin() + 32, child.priv_key.begin());
     std::copy(I.begin() + 32, I.end(),        child.chain_code.begin());
     I.fill(0);
-
-    ESP_LOGI(TAG, "derive_child(index=0x%08X):", index);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, child.priv_key.data(), child.priv_key.size(), ESP_LOG_INFO);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, child.chain_code.data(), child.chain_code.size(), ESP_LOG_INFO);
 
     return child;
 }
