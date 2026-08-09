@@ -36,6 +36,18 @@ namespace Buttons {
     inline constexpr uint32_t LONG_PRESS_MS = 1000;  // hold = decline transaction
 }
 
+// ─── Onboard RGB LED (WS2812, ESP32-S3-DevKitC-1 GPIO48) ──
+namespace LedConfig {
+    inline constexpr int        PIN                = 48;  // DevKitC-1 onboard WS2812
+    inline constexpr uint32_t   RMT_RESOLUTION_HZ  = 10000000;  // 10 MHz → 0.1 us/tick
+    inline constexpr int        SUCCESS_BLINKS     = 5;   // green blink count
+    inline constexpr int        FAILURE_BLINKS     = 5;   // red blink count
+    inline constexpr uint32_t   BLINK_ON_MS        = 200;
+    inline constexpr uint32_t   BLINK_OFF_MS       = 200;
+    inline constexpr uint8_t    SUCCESS_BRIGHTNESS = 60;  // green 0–255
+    inline constexpr uint8_t    FAILURE_BRIGHTNESS = 60;  // red 0–255
+}
+
 // ─── FreeRTOS Task Configuration ─────────────────────────
 namespace Tasks {
     // Stack sizes in bytes (ESP-IDF xTaskCreate takes bytes)
@@ -48,6 +60,7 @@ namespace Tasks {
     inline constexpr uint32_t PRICE_STACK       = 8192;
     inline constexpr uint32_t BALANCE_STACK     = 8192;
     inline constexpr uint32_t UI_STACK          = 8192;
+    inline constexpr uint32_t LED_STACK         = 2048;
 
     // Priorities (higher number = higher priority)
     inline constexpr int WALLET_PRIORITY        = 10;  // Highest — security critical
@@ -58,6 +71,7 @@ namespace Tasks {
     inline constexpr int PRICE_PRIORITY         = 3;
     inline constexpr int BALANCE_PRIORITY       = 3;
     inline constexpr int BUTTON_PRIORITY        = 8;
+    inline constexpr int LED_PRIORITY           = 2;   // Idle most of the time
 
     // CPU core assignment
     inline constexpr int WALLET_CORE            = 1;   // Core 1: security-critical only
@@ -68,6 +82,7 @@ namespace Tasks {
     inline constexpr int WEATHER_CORE           = 1;
     inline constexpr int BALANCE_CORE           = 1;
     inline constexpr int BUTTON_CORE            = 1;
+    inline constexpr int LED_CORE               = 0;
 }
 
 // ─── Queue Depths ─────────────────────────────────────────
@@ -76,6 +91,7 @@ namespace Queues {
     inline constexpr int WALLET_REQUESTS        = 4;
     inline constexpr int UI_COMMANDS            = 16;
     inline constexpr int AI_MESSAGES            = 8;
+    inline constexpr int LED_COMMANDS           = 4;
 }
 
 // ─── Timing ───────────────────────────────────────────────

@@ -21,6 +21,7 @@
 #include "../lib/storage/Storage.hpp"
 #include "../lib/display/Display.hpp"
 #include "../lib/display/ui/UIManager.hpp"
+#include "../lib/led_indicator/LedIndicator.hpp"
 #include "../lib/buttons/ButtonDriver.hpp"
 #include "../lib/crypto/CryptoEngine.hpp"
 #include "../lib/crypto/Base58.hpp"
@@ -62,6 +63,7 @@ static Fuchey::Display        s_display(Fuchey::DisplayConfig::I2C_PORT,
                                         Fuchey::DisplayConfig::PIN_SCL,
                                         Fuchey::DisplayConfig::I2C_FREQ_HZ);
 static Fuchey::UIManager      s_ui(s_display);
+static Fuchey::LedIndicator   s_led_indicator;
 static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
                                         Fuchey::Buttons::PIN_MENU,
                                         Fuchey::Buttons::PIN_SELECT,
@@ -308,6 +310,12 @@ extern "C" void app_main(void) {
                  Fuchey::Buttons::PIN_SELECT, Fuchey::Buttons::PIN_BACK);
     }
 
+    if (!s_led_indicator.init()) {
+        ESP_LOGE(TAG, "[!!] RGB LED initialization failed — continuing without indicator");
+    } else {
+        ESP_LOGI(TAG, "[OK] RGB LED indicator initialized");
+    }
+
     Fuchey::g_wallet_core_ptr = &s_wallet_core;
     s_spending_policy.init();
     s_wallet_core.init();
@@ -383,8 +391,16 @@ extern "C" void app_main(void) {
                              Fuchey::Tasks::PRICE_STACK, &s_price_service,
                              Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
+    // RGB LED Indicator Task (Core 0 — idle until a TX result arrives)
+    xTaskCreatePinnedToCore(Fuchey::LedIndicator::task_entry, "led_task",
+                            Fuchey::Tasks::LED_STACK, &s_led_indicator,
+                            Fuchey::Tasks::LED_PRIORITY, nullptr, Fuchey::Tasks::LED_CORE);
+
     // Wire BalanceMonitor to UIManager for on-demand balance fetch
     s_ui.set_balance_monitor(&s_balance_monitor);
+
+    // Wire RGB LED indicator to UIManager for TX result feedback
+    s_ui.set_led_indicator(&s_led_indicator);
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {

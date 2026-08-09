@@ -14,6 +14,8 @@
 
 namespace Fuchey {
 
+class LedIndicator;
+
 enum class UIScreen {
     IDLE_CLOCK,
     IDLE_WEATHER,
@@ -58,6 +60,7 @@ public:
     void run();
 
     void set_balance_monitor(BalanceMonitor* bm) { m_balance_monitor = bm; }
+    void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
 
 private:
     Display& m_display;
@@ -85,6 +88,9 @@ private:
     double          m_bal_usdc{0.0};
     bool            m_bal_fetched{false};
     uint32_t        m_bal_fetch_start_ms{0};
+
+    // Transaction result RGB LED indicator
+    LedIndicator*   m_led_indicator{nullptr};
 
     uint32_t    m_last_idle_cycle_ms{0};
 

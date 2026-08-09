@@ -6,6 +6,7 @@
 #include "UIManager.hpp"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
+#include "../../led_indicator/LedIndicator.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "../../wallet/WalletCore.hpp"
@@ -122,6 +123,14 @@ void UIManager::process_event(const Events::Event& evt) {
             ESP_LOGI(TAG, "TX broadcast %s — showing result screen",
                      m_tx_result_ok ? "OK" : "FAIL");
             set_screen(m_tx_result_ok ? UIScreen::TX_SUCCESS : UIScreen::TX_FAIL);
+
+            if (m_led_indicator) {
+                if (m_tx_result_ok) {
+                    m_led_indicator->blink_success();
+                } else {
+                    m_led_indicator->blink_failure();
+                }
+            }
             break;
         }
 
