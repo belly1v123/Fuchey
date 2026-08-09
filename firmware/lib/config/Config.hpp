@@ -44,8 +44,8 @@ namespace LedConfig {
     inline constexpr int        FAILURE_BLINKS     = 5;   // red blink count
     inline constexpr uint32_t   BLINK_ON_MS        = 200;
     inline constexpr uint32_t   BLINK_OFF_MS       = 200;
-    inline constexpr uint8_t    SUCCESS_BRIGHTNESS = 60;  // green 0–255
-    inline constexpr uint8_t    FAILURE_BRIGHTNESS = 60;  // red 0–255
+    inline constexpr uint8_t    SUCCESS_BRIGHTNESS = 180; // green 0–255
+    inline constexpr uint8_t    FAILURE_BRIGHTNESS = 255; // red 0–255
 }
 
 // ─── FreeRTOS Task Configuration ─────────────────────────
@@ -60,7 +60,7 @@ namespace Tasks {
     inline constexpr uint32_t PRICE_STACK       = 8192;
     inline constexpr uint32_t BALANCE_STACK     = 8192;
     inline constexpr uint32_t UI_STACK          = 8192;
-    inline constexpr uint32_t LED_STACK         = 2048;
+    inline constexpr uint32_t LED_STACK         = 4096;
 
     // Priorities (higher number = higher priority)
     inline constexpr int WALLET_PRIORITY        = 10;  // Highest — security critical

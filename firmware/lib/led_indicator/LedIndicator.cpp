@@ -123,21 +123,26 @@ void LedIndicator::run() {
     while (true) {
         if (m_cmd_queue && xQueueReceive(m_cmd_queue, &cmd, portMAX_DELAY) == pdTRUE) {
             int blink_count = 0;
+            const char* name = "NONE";
 
             switch (cmd) {
                 case LedCommand::SUCCESS:
                     r = 0; g = Fuchey::LedConfig::SUCCESS_BRIGHTNESS; b = 0;
                     blink_count = Fuchey::LedConfig::SUCCESS_BLINKS;
+                    name = "SUCCESS";
                     break;
                 case LedCommand::FAILURE:
                     r = Fuchey::LedConfig::FAILURE_BRIGHTNESS; g = 0; b = 0;
                     blink_count = Fuchey::LedConfig::FAILURE_BLINKS;
+                    name = "FAILURE";
                     break;
                 case LedCommand::OFF:
                 default:
                     r = 0; g = 0; b = 0;
                     break;
             }
+
+            if (blink_count > 0) ESP_LOGI(TAG, "Blinking %s x%d (r=%d g=%d b=%d)", name, blink_count, r, g, b);
 
             for (int i = 0; i < blink_count; ++i) {
                 transmit_rgb(r, g, b);
@@ -148,6 +153,7 @@ void LedIndicator::run() {
                 }
             }
 
+            if (blink_count > 0) ESP_LOGI(TAG, "Blink done (%s)", name);
             if (blink_count == 0) transmit_rgb(0, 0, 0);
         }
     }
