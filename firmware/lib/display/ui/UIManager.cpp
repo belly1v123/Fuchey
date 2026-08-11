@@ -657,32 +657,9 @@ void UIManager::run() {
             // Reset idle cycle timer on any button activity
             m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 
-            // ── DEBUG: button-triggered TX result screens ──────────
-            // GPIO5 (MENU)   -> TX FAIL screen     (paint-4 fail animation)
-            // GPIO6 (SELECT) -> TX SUCCESS screen  (paint success animation)
-            // Normal menu/wallet/tx navigation below is commented out.
-            if (btn.event == ButtonEvent::PRESS) {
-                uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                m_tx_result_start_ms = now_ms;
-                if (btn.id == ButtonId::MENU) {
-                    ESP_LOGI(TAG, "DEBUG: GPIO5 (MENU) -> TX_FAIL");
-                    m_tx_result_ok = false;
-                    snprintf(m_tx_result_msg, sizeof(m_tx_result_msg), "%s", "Insufficient balance");
-                    snprintf(m_tx_result_recipient, sizeof(m_tx_result_recipient), "%s",
-                             "DZmNDebug...9H7p");
-                    set_screen(UIScreen::TX_FAIL);
-                } else if (btn.id == ButtonId::SELECT) {
-                    ESP_LOGI(TAG, "DEBUG: GPIO6 (SELECT) -> TX_SUCCESS");
-                    m_tx_result_ok = true;
-                    snprintf(m_tx_result_asset, sizeof(m_tx_result_asset), "%s", "SOL");
-                    m_tx_result_amount_cents = 50000; // $5.00
-                    snprintf(m_tx_result_recipient, sizeof(m_tx_result_recipient), "%s",
-                             "DZmNDebug...9H7p");
-                    set_screen(UIScreen::TX_SUCCESS);
-                }
-            }
-
-            /* ── Normal button handling (disabled for debug) ─────────────
+            // ── Global MENU button handling ───────────────────
+            // MENU: single press opens the menu (or NEXT inside the menu);
+            //       double press shows the Wallet QR anywhere (except during TX).
             if (btn.id == ButtonId::MENU &&
                 m_current_screen != UIScreen::TX_CONFIRM) {
                 if (btn.event == ButtonEvent::DOUBLE_PRESS) {
@@ -768,7 +745,6 @@ void UIManager::run() {
                     set_screen(UIScreen::IDLE_CLOCK);
                 }
             }
-            */ // ── end disabled button navigation ──
         }
 
         // Deferred TX accept — a clean single tap was confirmed (no double/long press)
@@ -782,12 +758,10 @@ void UIManager::run() {
         // Auto-timeout
         if (m_current_screen == UIScreen::TX_SUCCESS ||
             m_current_screen == UIScreen::TX_FAIL) {
-            // DEBUG: keep TX result screen on display until next button press.
-            // Normal 4s auto-timeout back to idle is disabled:
-            // uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            // if (now - m_tx_result_start_ms >= 4000) {
-            //     set_screen(UIScreen::IDLE_CLOCK);
-            // }
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_tx_result_start_ms >= 4000) {
+                set_screen(UIScreen::IDLE_CLOCK);
+            }
         } else if (m_current_screen == UIScreen::MENU_MAIN ||
             m_current_screen == UIScreen::WALLET_INFO ||
             m_current_screen == UIScreen::WALLET_QR) {
