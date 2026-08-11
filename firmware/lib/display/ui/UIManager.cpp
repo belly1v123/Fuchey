@@ -4,6 +4,7 @@
 // ============================================================
 
 #include "UIManager.hpp"
+#include "Animations.hpp"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
@@ -87,8 +88,9 @@ void UIManager::process_event(const Events::Event& evt) {
             m_tx_result_ok = (evt.type == Events::EventType::TX_BROADCAST_OK);
             m_tx_result_amount_cents = evt.data.tx.amount_cents;
 
-            // Parse tx_data: "ASSET:amount_str:recipient" or "error message"
+            // Parse tx_data: "ASSET:amount_str:recipient" or "error message|recipient" or "error message"
             const char* data = reinterpret_cast<const char*>(evt.data.tx.tx_data);
+            const char* bar = strchr(data, '|');
             const char* colon1 = strchr(data, ':');
             const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : nullptr;
 
@@ -96,7 +98,24 @@ void UIManager::process_event(const Events::Event& evt) {
             m_tx_result_recipient[0] = '\0';
             m_tx_result_msg[0] = '\0';
 
-            if (colon1 && colon2) {
+            if (bar) {
+                // "error message|recipient" — split on '|'
+                size_t msg_len = std::min<size_t>(bar - data, sizeof(m_tx_result_msg) - 1);
+                memcpy(m_tx_result_msg, data, msg_len);
+                m_tx_result_msg[msg_len] = '\0';
+
+                const char* rec = bar + 1;
+                size_t rec_len = std::min<size_t>(strlen(rec), sizeof(m_tx_result_recipient) - 1);
+                memcpy(m_tx_result_recipient, rec, rec_len);
+                m_tx_result_recipient[rec_len] = '\0';
+
+                // Truncate recipient for display
+                size_t rlen = strlen(m_tx_result_recipient);
+                if (rlen > 12) {
+                    memmove(m_tx_result_recipient + 4, m_tx_result_recipient + rlen - 4, 5);
+                    memcpy(m_tx_result_recipient + 4, "...", 3);
+                }
+            } else if (colon1 && colon2) {
                 size_t asset_len = std::min<size_t>(colon1 - data, sizeof(m_tx_result_asset) - 1);
                 memcpy(m_tx_result_asset, data, asset_len);
                 m_tx_result_asset[asset_len] = '\0';
@@ -450,6 +469,16 @@ void UIManager::render_tx_confirm() {
 
 void UIManager::render_tx_result() {
     bool ok = m_tx_result_ok;
+
+    if (!ok) {
+        // Paint-4 animation for failed transfers
+        m_display.draw_bitmap(3, 0, 123, 30, image_paint_4_bits);
+
+        if (m_tx_result_msg[0]) m_display.draw_text_centered(34, m_tx_result_msg, Display::FontSize::SMALL);
+        if (m_tx_result_recipient[0]) m_display.draw_text_centered(46, m_tx_result_recipient, Display::FontSize::SMALL);
+        return;
+    }
+
     uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     uint32_t elapsed = now_ms - m_tx_result_start_ms;
 
@@ -462,22 +491,16 @@ void UIManager::render_tx_result() {
     }
 
     // ── Status text ──
-    m_display.draw_text_centered(13, ok ? "TX SUCCESS" : "TX FAILED", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(13, "TX SUCCESS", Display::FontSize::MEDIUM);
 
     // ── Transaction details ──
     char line1[32];
     char line2[56];
-    if (ok && m_tx_result_asset[0]) {
+    if (m_tx_result_asset[0]) {
         snprintf(line1, sizeof(line1), "$%.2f %s",
                  static_cast<double>(m_tx_result_amount_cents) / 100.0,
                  m_tx_result_asset);
         snprintf(line2, sizeof(line2), "-> %s", m_tx_result_recipient);
-    } else if (!ok && m_tx_result_msg[0]) {
-        snprintf(line1, sizeof(line1), "%.31s", m_tx_result_msg);
-        line2[0] = '\0';
-    } else if (!ok) {
-        snprintf(line1, sizeof(line1), "Broadcast failed");
-        line2[0] = '\0';
     } else {
         line1[0] = '\0';
         line2[0] = '\0';

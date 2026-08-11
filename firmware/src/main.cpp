@@ -1069,7 +1069,7 @@ extern "C" void app_main(void) {
                                         fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
                                         snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
                                                  sizeof(fail_evt.data.tx.tx_data),
-                                                 "%s", "Insufficient balance");
+                                                 "%s|%s", "Insufficient balance", recipient_str.c_str());
                                         Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
                                         vTaskDelete(nullptr);
                                         return;
@@ -1239,25 +1239,25 @@ extern "C" void app_main(void) {
                                         char friendly_err[64];
                                         friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s", friendly_err);
+                                                 sizeof(result_evt.data.tx.tx_data), "%s|%s", friendly_err, recipient_str.c_str());
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error");
+                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     }
                                     cJSON_Delete(tx_root);
                                 } else {
                                     ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
                                     snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure");
+                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure|%s", recipient_str.c_str());
                                     result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                 }
                             } else {
                                 ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
                                 snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d", tx_resp.status_code);
+                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d|%s", tx_resp.status_code, recipient_str.c_str());
                                 result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                             }
 
@@ -1360,7 +1360,7 @@ extern "C" void app_main(void) {
                                 fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
                                 snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
                                          sizeof(fail_evt.data.tx.tx_data),
-                                         "%s", "Insufficient balance");
+                                         "%s|%s", "Insufficient balance", recipient_str.c_str());
                                 Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
                                 vTaskDelete(nullptr);
                                 return;
@@ -1385,7 +1385,7 @@ extern "C" void app_main(void) {
                                 fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
                                 snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
                                          sizeof(fail_evt.data.tx.tx_data),
-                                         "%s", "No USDC acct");
+                                         "%s|%s", "No USDC acct", recipient_str.c_str());
                                 Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
                                 vTaskDelete(nullptr);
                                 return;
@@ -1559,25 +1559,25 @@ extern "C" void app_main(void) {
                                         char friendly_err[64];
                                         friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s", friendly_err);
+                                                 sizeof(result_evt.data.tx.tx_data), "%s|%s", friendly_err, recipient_str.c_str());
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     } else {
                                         ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
                                         snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error");
+                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
                                         result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                     }
                                     cJSON_Delete(tx_root);
                                 } else {
                                     ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
                                     snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure");
+                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure|%s", recipient_str.c_str());
                                     result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                                 }
                             } else {
                                 ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
                                 snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d", tx_resp.status_code);
+                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d|%s", tx_resp.status_code, recipient_str.c_str());
                                 result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
                             }
 
