@@ -1066,7 +1066,7 @@ extern "C" void app_main(void) {
                                         ESP_LOGE(CTAG, "-------------------------------------------------");
                                         Fuchey::Events::Event fail_evt{};
                                         fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                        fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                                        fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
                                         snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
                                                  sizeof(fail_evt.data.tx.tx_data),
                                                  "%s|%s", "Insufficient balance", recipient_str.c_str());
@@ -1215,7 +1215,7 @@ extern "C" void app_main(void) {
                             auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
 
                             Fuchey::Events::Event result_evt{};
-                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
                             snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
                                      sizeof(result_evt.data.tx.tx_data),
                                      "SOL:%.4f:%s", amount, recipient_str.c_str());
