@@ -472,26 +472,15 @@ void UIManager::render_tx_result() {
 
     if (!ok) {
         // Paint-4 animation for failed transfers
-        m_display.draw_bitmap(3, 0, 123, 30, image_paint_4_bits);
+        m_display.draw_bitmap(3, 0, 123, 30, image_tx_fail_bits);
 
         if (m_tx_result_msg[0]) m_display.draw_text_centered(34, m_tx_result_msg, Display::FontSize::SMALL);
         if (m_tx_result_recipient[0]) m_display.draw_text_centered(46, m_tx_result_recipient, Display::FontSize::SMALL);
         return;
     }
 
-    uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    uint32_t elapsed = now_ms - m_tx_result_start_ms;
-
-    // Flash toggle every 500ms: full-screen white on even frames
-    bool flash = (elapsed / 500) % 2 == 0;
-
-    if (flash) {
-        m_display.fill_rect(0, 0, 128, 64);
-        return;
-    }
-
-    // ── Status text ──
-    m_display.draw_text_centered(13, "TX SUCCESS", Display::FontSize::MEDIUM);
+    // Paint success frame (fills y 0..28, x 4..123)
+    m_display.draw_bitmap(4, 0, 120, 29, image_tx_success_bits);
 
     // ── Transaction details ──
     char line1[32];
