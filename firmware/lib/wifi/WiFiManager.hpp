@@ -53,7 +53,8 @@ public:
     HttpResponse post_json(const char* url,
                            const char* body,
                            const char* bearer_token = nullptr,
-                           uint32_t timeout_ms = 30000);
+                           uint32_t timeout_ms = 30000,
+                           uint32_t max_attempts = 3);
 
 private:
     bool m_connected{false};

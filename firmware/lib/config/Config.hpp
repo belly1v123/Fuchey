@@ -6,6 +6,7 @@
 // ============================================================
 
 #include <cstdint>
+#include <cstddef>
 #include <driver/i2c.h>
 
 namespace Fuchey {
@@ -144,10 +145,30 @@ namespace API {
     inline constexpr const char* LLM_DEFAULT_MODEL = "gpt-4o-mini";
 
     // Solana Network Endpoints & Token Mints
+    // Primary endpoint (used for network display / logging)
     inline constexpr const char* SOLANA_MAINNET_RPC =
         "https://api.mainnet-beta.solana.com";
     inline constexpr const char* SOLANA_DEVNET_RPC =
         "https://api.devnet.solana.com";
+
+    // Failover order for the resilient RPC client (mainnet only).
+    // All verified: HTTP 200 + mainnet genesis hash (5eykt4Us…).
+    // ankr (403) and solana-devnet.publicnode.com (404) were dropped.
+    inline constexpr const char* SOLANA_MAINNET_RPC_URLS[] = {
+        "https://api.mainnet-beta.solana.com", // primary
+        "https://rpc.solanatracker.io/public", // fallback #1
+        "https://solana-rpc.publicnode.com",   // fallback #2
+    };
+    // Devnet stays on the old single-endpoint path — no keyless public
+    // fallback exists (only official devnet verified). Listed for clarity.
+    inline constexpr const char* SOLANA_DEVNET_RPC_URLS[] = {
+        "https://api.devnet.solana.com",
+    };
+
+    inline constexpr size_t SOLANA_MAINNET_RPC_COUNT =
+        sizeof(SOLANA_MAINNET_RPC_URLS) / sizeof(SOLANA_MAINNET_RPC_URLS[0]);
+    inline constexpr size_t SOLANA_DEVNET_RPC_COUNT =
+        sizeof(SOLANA_DEVNET_RPC_URLS) / sizeof(SOLANA_DEVNET_RPC_URLS[0]);
 
     inline constexpr const char* USDC_MAINNET_MINT =
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

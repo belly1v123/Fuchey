@@ -197,16 +197,17 @@ HttpResponse WiFiManager::get(const char* url, const char* bearer_token,
 // ─── HTTP POST ────────────────────────────────────────────
 HttpResponse WiFiManager::post_json(const char* url, const char* body,
                                      const char* bearer_token,
-                                     uint32_t timeout_ms) {
-    static constexpr int MAX_ATTEMPTS = 3;
-    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt) {
+                                     uint32_t timeout_ms,
+                                     uint32_t max_attempts) {
+    if (max_attempts < 1) max_attempts = 1;
+    for (uint32_t attempt = 1; attempt <= max_attempts; ++attempt) {
         esp_http_client_config_t cfg{};
         cfg.url              = url;
         cfg.timeout_ms       = static_cast<int>(timeout_ms);
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
         auto resp = do_request(cfg, "POST", body, bearer_token, timeout_ms);
-        if (resp.success || attempt == MAX_ATTEMPTS) return resp;
-        ESP_LOGW(TAG, "HTTP POST failed (attempt %d/%d) — retrying in 500ms...", attempt, MAX_ATTEMPTS);
+        if (resp.success || attempt == max_attempts) return resp;
+        ESP_LOGW(TAG, "HTTP POST failed (attempt %u/%u) — retrying in 500ms...", attempt, max_attempts);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     HttpResponse fail{.status_code = -1, .body = "", .success = false};
