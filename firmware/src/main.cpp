@@ -57,11 +57,7 @@ QueueHandle_t g_button_queue_ref = nullptr;
 static constexpr const char* TAG = "FucheyMain";
 
 // Core System Objects
-static Fuchey::Display        s_display(Fuchey::DisplayConfig::I2C_PORT,
-                                        Fuchey::DisplayConfig::I2C_ADDRESS,
-                                        Fuchey::DisplayConfig::PIN_SDA,
-                                        Fuchey::DisplayConfig::PIN_SCL,
-                                        Fuchey::DisplayConfig::I2C_FREQ_HZ);
+static Fuchey::Display        s_display;
 static Fuchey::UIManager      s_ui(s_display);
 static Fuchey::LedIndicator   s_led_indicator;
 static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
