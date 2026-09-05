@@ -6,6 +6,21 @@ The primary goal of Fuchey is to make **self-custody secure, intuitive, and enjo
 
 Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a modular, security-first architecture focused on reliability, maintainability, and an exceptional user experience.
 
+## Tech Stack
+
+- **MCU:** ESP32-S3-N16R8 — 16 MB flash, 8 MB Octal PSRAM (OPI, 80 MHz), 240 MHz CPU
+- **Board target:** `esp32-s3-devkitc-1`
+- **Framework:** ESP-IDF **v6.0.1** (resolved via the IDF Component Manager)
+- **Build system:** PlatformIO (`platform = espressif32`, `framework = espidf`)
+- **Language:** C++ (RTOS: FreeRTOS, bundled with ESP-IDF)
+- **Display:** Custom ST7789 SPI TFT driver (`St7789.hpp`, `driver/spi_master.h`) — no third-party TFT/GFX library
+- **QR codes:** Self-contained `qrcodegen` implementation for on-device receive-address QR
+- **Crypto:** `esphome/libsodium ^1.10021.1` (keypair generation, signing, encryption)
+- **JSON:** `espressif/cjson ^1.7.17` (IDF-managed component, locked to 1.7.19~2)
+- **Storage:** NVS, encrypted private key at rest
+- **Connectivity:** WiFi (STA), HTTPS via ESP-IDF HTTP client + mbedTLS (TLS 1.2/1.3)
+- **License:** Intended fully open source — *no `LICENSE` file is currently present in the repo*
+
 ## Current Stage
 
 - ✅ Create wallet (BIP39 12-word)
