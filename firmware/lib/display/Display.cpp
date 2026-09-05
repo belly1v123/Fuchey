@@ -13,7 +13,8 @@ namespace Fuchey {
 
 // ─── Font mapping ──────────────────────────────────────────
 // Font0 ~6x8, Font2 ~8x16, Font4 ~16x32 (built-in LovyanGFX bitmaps).
-void Display::apply_font(LGFX_Fuchey& gfx, FontSize size) {
+// Takes the common LovyanGFX base so both the panel and sprites can use it.
+void Display::apply_font(lgfx::LovyanGFX& gfx, FontSize size) {
     switch (size) {
         case FontSize::SMALL:  gfx.setFont(&lgfx::fonts::Font0); break;
         case FontSize::MEDIUM: gfx.setFont(&lgfx::fonts::Font2); break;
@@ -27,9 +28,8 @@ Display::Display() = default;
 
 // ─── init ──────────────────────────────────────────────────
 bool Display::init() {
-    m_lgfx.init();
-    if (!m_lgfx.is_ready()) {
-        ESP_LOGE(TAG, "ST7789 init failed — LGFX not ready");
+    if (!m_lgfx.init()) {
+        ESP_LOGE(TAG, "ST7789 init failed");
         return false;
     }
 
@@ -45,8 +45,8 @@ bool Display::init() {
 }
 
 // ─── Power ─────────────────────────────────────────────────
-void Display::power_on()  { m_lgfx.displayPowerOn(); }
-void Display::power_off() { m_lgfx.displayPowerOff(); }
+void Display::power_on()  { m_lgfx.powerSaveOff(); }
+void Display::power_off() { m_lgfx.powerSaveOn(); }
 
 // ─── Drawing ───────────────────────────────────────────────
 void Display::clear(Color c) { m_lgfx.fillScreen(c); }

@@ -86,7 +86,7 @@ private:
     LGFX_Fuchey m_lgfx;
     bool        m_ready{false};
 
-    static void apply_font(LGFX_Fuchey& gfx, FontSize size);
+    static void apply_font(lgfx::LovyanGFX& gfx, FontSize size);
 
     static constexpr const char* TAG = "Display";
 };

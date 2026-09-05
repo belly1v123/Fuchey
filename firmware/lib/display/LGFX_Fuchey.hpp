@@ -41,7 +41,6 @@ public:
         // module. If the image ships shifted/ghosted/inverted on the
         // actual hardware, tune offset_x/offset_y, invert and rgb_order
         // above (common alternates: invert=true, rgb_order=true).
-        p.rotation      = 0;
         _panel.config(p);
 
         setPanel(&_panel);
