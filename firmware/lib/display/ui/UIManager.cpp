@@ -281,8 +281,8 @@ void UIManager::render() {
 
 // ─── Idle screens ─────────────────────────────────────────
 void UIManager::render_clock() {
-    m_display.draw_text_centered(2, "FUCHEY WALLET", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "FUCHEY WALLET", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     char buf[16];
     time_t now = time(nullptr);
@@ -292,7 +292,7 @@ void UIManager::render_clock() {
     } else {
         snprintf(buf, sizeof(buf), "--:--");
     }
-    m_display.draw_text_centered(22, buf, Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(84, buf, Display::FontSize::MEDIUM);
 
     char date_buf[20];
     if (now > 100000) {
@@ -302,12 +302,12 @@ void UIManager::render_clock() {
     } else {
         snprintf(date_buf, sizeof(date_buf), "Syncing...");
     }
-    m_display.draw_text_centered(50, date_buf, Display::FontSize::SMALL);
+    m_display.draw_text_centered(176, date_buf, Display::FontSize::SMALL);
 }
 
 void UIManager::render_weather() {
-    m_display.draw_text_centered(2, "WEATHER", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "WEATHER", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     char buf[32];
     if (m_weather_temp < -100.0f) {
@@ -315,13 +315,13 @@ void UIManager::render_weather() {
     } else {
         snprintf(buf, sizeof(buf), "%.1f C", m_weather_temp);
     }
-    m_display.draw_text_centered(22, buf, Display::FontSize::LARGE);
-    m_display.draw_text_centered(50, m_weather_city.c_str(), Display::FontSize::SMALL);
+    m_display.draw_text_centered(64, buf, Display::FontSize::LARGE, Colors::BLUE);
+    m_display.draw_text_centered(170, m_weather_city.c_str(), Display::FontSize::SMALL);
 }
 
 void UIManager::render_price() {
-    m_display.draw_text_centered(2, "SOLANA", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "SOLANA", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     char buf[32];
     if (m_sol_price < 0.0f) {
@@ -329,34 +329,34 @@ void UIManager::render_price() {
     } else {
         snprintf(buf, sizeof(buf), "$%.2f", m_sol_price);
     }
-    m_display.draw_text_centered(22, buf, Display::FontSize::LARGE);
-    m_display.draw_text_centered(50, "CoinGecko", Display::FontSize::SMALL);
+    m_display.draw_text_centered(64, buf, Display::FontSize::LARGE, Colors::YELLOW);
+    m_display.draw_text_centered(170, "CoinGecko", Display::FontSize::SMALL);
 }
 
 void UIManager::render_message() {
-    m_display.draw_text_centered(2, "FUCHEY", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
-    m_display.draw_text_centered(28, "Have a great day!", Display::FontSize::SMALL);
-    m_display.draw_text_centered(44, "Solana hardware", Display::FontSize::SMALL);
-    m_display.draw_text_centered(54, "wallet + AI desk", Display::FontSize::SMALL);
+    m_display.draw_text_centered(6, "FUCHEY", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(88, "Have a great day!", Display::FontSize::SMALL);
+    m_display.draw_text_centered(140, "Solana hardware", Display::FontSize::SMALL);
+    m_display.draw_text_centered(184, "wallet + AI desk", Display::FontSize::SMALL);
 }
 
 // ─── Menu / Wallet / Chat screens ─────────────────────────
 void UIManager::render_menu() {
-    m_display.draw_text_centered(2, "MAIN MENU", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "MAIN MENU", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
-    m_display.draw_text(8, 14, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
-    m_display.draw_text(8, 24, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
-    m_display.draw_text(8, 34, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
-    m_display.draw_text(8, 44, m_menu_index == 3 ? "> View Balance" : "  View Balance", Display::FontSize::SMALL);
+    m_display.draw_text(24, 40, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
+    m_display.draw_text(24, 60, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
+    m_display.draw_text(24, 80, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
+    m_display.draw_text(24, 100, m_menu_index == 3 ? "> View Balance" : "  View Balance", Display::FontSize::SMALL);
 
-    m_display.draw_text(2, 56, "M:Next S:Sel B:Bck", Display::FontSize::SMALL);
+    m_display.draw_text_centered(215, "M:Next S:Sel B:Bck", Display::FontSize::SMALL);
 }
 
 void UIManager::render_wallet_info() {
-    m_display.draw_text_centered(2, "WALLET INFO", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "WALLET INFO", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     // Auto-fetch cached address via global pointer set in app_main()
     if (m_wallet_address.empty()) {
@@ -368,9 +368,9 @@ void UIManager::render_wallet_info() {
     }
 
     if (!m_wallet_address.empty()) {
-        // Split the full address across up to 3 lines of 15 chars each
-        // SMALL font ~6px/char on 128px → ~21 chars fit; use 15 for safe centering
-        static constexpr size_t CHUNK = 15;
+        // Split the full address across up to 3 lines of 30 chars each
+        // SMALL font ~6px/char on 240px → ~40 chars fit; use 30 for safety
+        static constexpr size_t CHUNK = 30;
         const char* p   = m_wallet_address.c_str();
         size_t      len = m_wallet_address.size();
 
@@ -387,17 +387,20 @@ void UIManager::render_wallet_info() {
         strncpy(line2, p + CHUNK,      l2); line2[l2] = '\0';
         strncpy(line3, p + CHUNK * 2,  l3); line3[l3] = '\0';
 
-        m_display.draw_text_centered(16, line1, Display::FontSize::SMALL);
-        if (l2) m_display.draw_text_centered(27, line2, Display::FontSize::SMALL);
-        if (l3) m_display.draw_text_centered(38, line3, Display::FontSize::SMALL);
-        m_display.draw_text_centered(52, "b: Back", Display::FontSize::SMALL);
+        m_display.draw_text_centered(44, line1, Display::FontSize::SMALL);
+        if (l2) m_display.draw_text_centered(74, line2, Display::FontSize::SMALL);
+        if (l3) m_display.draw_text_centered(104, line3, Display::FontSize::SMALL);
+        m_display.draw_text_centered(215, "b: Back", Display::FontSize::SMALL);
     } else {
-        m_display.draw_text_centered(30, "No wallet setup", Display::FontSize::SMALL);
-        m_display.draw_text_centered(52, "b: Back", Display::FontSize::SMALL);
+        m_display.draw_text_centered(90, "No wallet setup", Display::FontSize::SMALL);
+        m_display.draw_text_centered(215, "b: Back", Display::FontSize::SMALL);
     }
 }
 
 void UIManager::render_wallet_qr() {
+    m_display.draw_text_centered(6, "WALLET QR", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
+
     // Ensure we have the wallet address cached
     if (m_wallet_address.empty()) {
         extern Fuchey::WalletCore* g_wallet_core_ptr;
@@ -408,8 +411,8 @@ void UIManager::render_wallet_qr() {
     }
 
     if (m_wallet_address.empty()) {
-        m_display.draw_text_centered(28, "No wallet", Display::FontSize::SMALL);
-        m_display.draw_text_centered(42, "b: Back",   Display::FontSize::SMALL);
+        m_display.draw_text_centered(90, "No wallet", Display::FontSize::SMALL);
+        m_display.draw_text_centered(215, "b: Back",  Display::FontSize::SMALL);
         return;
     }
 
@@ -432,16 +435,16 @@ void UIManager::render_wallet_qr() {
     );
 
     if (!ok) {
-        m_display.draw_text_centered(28, "QR gen failed", Display::FontSize::SMALL);
-        m_display.draw_text_centered(42, "b: Back",       Display::FontSize::SMALL);
+        m_display.draw_text_centered(90, "QR gen failed", Display::FontSize::SMALL);
+        m_display.draw_text_centered(215, "b: Back",      Display::FontSize::SMALL);
         return;
     }
 
     int qr_size = qrcodegen_getSize(qr_code);   // number of modules (e.g. 29 for V3)
-    int px      = 2;                              // pixels per module
+    int px      = 4;                              // pixels per module
     int total   = qr_size * px;
 
-    // Center the QR code; leave top-4px for the tiny "QR" label
+    // Center the QR code in the content area (below the header divider)
     int x_off = (Display::WIDTH  - total) / 2;
     int y_off = (Display::HEIGHT - total) / 2;
 
@@ -456,31 +459,33 @@ void UIManager::render_wallet_qr() {
 }
 
 void UIManager::render_tx_confirm() {
-    m_display.draw_text_centered(2, "CONFIRM TX?", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "CONFIRM TX?", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "$%.2f", static_cast<double>(m_tx_amount_cents) / 100.0);
-    m_display.draw_text_centered(20, buf, Display::FontSize::LARGE);
+    m_display.draw_text_centered(80, buf, Display::FontSize::LARGE);
 
-    m_display.draw_hline(0, 44, 128);
-    m_display.draw_text_centered(50, "1x:Acc 2x/Lng:Rej", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 196, Display::WIDTH);
+    m_display.draw_text_centered(214, "1x:Acc 2x/Lng:Rej", Display::FontSize::SMALL);
 }
 
 void UIManager::render_tx_result() {
     bool ok = m_tx_result_ok;
 
     if (!ok) {
-        // Paint-4 animation for failed transfers
-        m_display.draw_bitmap(3, 0, 123, 30, image_tx_fail_bits);
+        // Paint-4 animation for failed transfers — centered, red on black
+        m_display.draw_bitmap((Display::WIDTH - 123) / 2, 40, 123, 30,
+                              image_tx_fail_bits, Colors::RED);
 
-        if (m_tx_result_msg[0]) m_display.draw_text_centered(34, m_tx_result_msg, Display::FontSize::SMALL);
-        if (m_tx_result_recipient[0]) m_display.draw_text_centered(46, m_tx_result_recipient, Display::FontSize::SMALL);
+        if (m_tx_result_msg[0]) m_display.draw_text_centered(150, m_tx_result_msg, Display::FontSize::SMALL);
+        if (m_tx_result_recipient[0]) m_display.draw_text_centered(200, m_tx_result_recipient, Display::FontSize::SMALL);
         return;
     }
 
-    // Paint success frame (fills y 0..28, x 4..123)
-    m_display.draw_bitmap(4, 0, 120, 29, image_tx_success_bits);
+    // Paint success frame — centered, green on black
+    m_display.draw_bitmap((Display::WIDTH - 120) / 2, 40, 120, 29,
+                          image_tx_success_bits, Colors::GREEN);
 
     // ── Transaction details ──
     char line1[32];
@@ -495,16 +500,16 @@ void UIManager::render_tx_result() {
         line2[0] = '\0';
     }
 
-    if (line1[0]) m_display.draw_text_centered(40, line1, Display::FontSize::SMALL);
-    if (line2[0]) m_display.draw_text_centered(52, line2, Display::FontSize::SMALL);
+    if (line1[0]) m_display.draw_text_centered(150, line1, Display::FontSize::SMALL);
+    if (line2[0]) m_display.draw_text_centered(192, line2, Display::FontSize::SMALL);
 }
 
 void UIManager::render_balance() {
-    m_display.draw_text_centered(2, "BALANCE", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "BALANCE", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
     if (!m_balance_monitor) {
-        m_display.draw_text_centered(28, "No balance service", Display::FontSize::SMALL);
+        m_display.draw_text_centered(90, "No balance service", Display::FontSize::SMALL);
         return;
     }
 
@@ -517,7 +522,7 @@ void UIManager::render_balance() {
     }
 
     if (m_wallet_address.empty()) {
-        m_display.draw_text_centered(28, "No wallet setup", Display::FontSize::SMALL);
+        m_display.draw_text_centered(90, "No wallet setup", Display::FontSize::SMALL);
         return;
     }
 
@@ -530,37 +535,37 @@ void UIManager::render_balance() {
 
         char buf[24];
         snprintf(buf, sizeof(buf), "Fetching%s", dots);
-        m_display.draw_text_centered(28, buf, Display::FontSize::MEDIUM);
+        m_display.draw_text_centered(90, buf, Display::FontSize::MEDIUM);
         return;
     }
 
     char buf[32];
     snprintf(buf, sizeof(buf), "%.6f SOL", m_bal_sol);
-    m_display.draw_text_centered(24, buf, Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(80, buf, Display::FontSize::MEDIUM);
 
     snprintf(buf, sizeof(buf), "$%.2f USDC", m_bal_usdc);
-    m_display.draw_text_centered(42, buf, Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(160, buf, Display::FontSize::MEDIUM);
 }
 
 void UIManager::render_chat() {
-    m_display.draw_text_centered(2, "AI ASSISTANT", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 12, 128);
+    m_display.draw_text_centered(6, "AI ASSISTANT", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 26, Display::WIDTH);
 
-    // Wrap response text at ~20 chars per line
+    // Wrap response text at ~38 chars per line
     const std::string& msg = m_last_ai_response;
     size_t pos = 0;
-    int y = 18;
-    while (pos < msg.size() && y < 58) {
-        size_t end = std::min(pos + 20, msg.size());
+    int y = 40;
+    while (pos < msg.size() && y < 200) {
+        size_t end = std::min(pos + 38, msg.size());
         // Try to break at space
         if (end < msg.size() && msg[end] != ' ') {
             size_t sp = msg.rfind(' ', end);
             if (sp != std::string::npos && sp > pos) end = sp;
         }
-        m_display.draw_text(4, y, msg.substr(pos, end - pos).c_str(), Display::FontSize::SMALL);
+        m_display.draw_text(12, y, msg.substr(pos, end - pos).c_str(), Display::FontSize::SMALL);
         pos = end;
         while (pos < msg.size() && msg[pos] == ' ') ++pos;
-        y += 10;
+        y += 24;
     }
 }
 
@@ -570,13 +575,13 @@ void UIManager::render_setup() {
 
         case SetupStage::WIFI_PROMPT:
             // Step 1: Ask for WiFi
-            m_display.draw_text_centered(0, "-- FUCHEY SETUP --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 10, 128);
-            m_display.draw_text_centered(14, "Step 1: WiFi", Display::FontSize::SMALL);
-            m_display.draw_text_centered(26, "Open serial monitor", Display::FontSize::SMALL);
-            m_display.draw_text_centered(37, "and type:", Display::FontSize::SMALL);
-            m_display.draw_text_centered(49, "w SSID PASSWORD", Display::FontSize::SMALL);
-            m_display.draw_rect(0, 48, 128, 16);
+            m_display.draw_text_centered(6, "-- FUCHEY SETUP --", Display::FontSize::SMALL);
+            m_display.draw_hline(0, 26, Display::WIDTH);
+            m_display.draw_text_centered(48, "Step 1: WiFi", Display::FontSize::SMALL);
+            m_display.draw_text_centered(100, "Open serial monitor", Display::FontSize::SMALL);
+            m_display.draw_text_centered(140, "and type:", Display::FontSize::SMALL);
+            m_display.draw_text_centered(180, "w SSID PASSWORD", Display::FontSize::SMALL);
+            m_display.draw_rect(20, 168, 200, 26);
             break;
 
         case SetupStage::WIFI_CONNECTING: {
@@ -589,38 +594,38 @@ void UIManager::render_setup() {
             char dots[5] = {0};
             for (int i = 0; i < m_connecting_dots; ++i) dots[i] = '.';
 
-            m_display.draw_text_centered(0,  "-- CONNECTING --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 10, 128);
+            m_display.draw_text_centered(6,  "-- CONNECTING --", Display::FontSize::SMALL);
+            m_display.draw_hline(0, 26, Display::WIDTH);
 
             // Truncate SSID to fit
             char ssid_buf[24];
             snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", m_connecting_ssid.c_str());
-            m_display.draw_text_centered(16, ssid_buf, Display::FontSize::SMALL);
+            m_display.draw_text_centered(56, ssid_buf, Display::FontSize::SMALL);
 
             char dot_buf[20];
             snprintf(dot_buf, sizeof(dot_buf), "Waiting for IP%s", dots);
-            m_display.draw_text_centered(30, dot_buf, Display::FontSize::SMALL);
+            m_display.draw_text_centered(110, dot_buf, Display::FontSize::SMALL);
 
             // Animated progress bar
             uint8_t pct = static_cast<uint8_t>((m_connecting_dots * 25) % 100);
-            m_display.draw_progress_bar(4, 44, 120, 10, pct);
+            m_display.draw_progress_bar(20, 196, 200, 16, pct);
             break;
         }
 
         case SetupStage::WALLET_PROMPT:
-            m_display.draw_text_centered(0,  "-- FUCHEY SETUP --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 10, 128);
-            m_display.draw_text(4, 14, "WiFi: OK", Display::FontSize::SMALL);
-            m_display.draw_text(4, 24, "Step 2: Wallet", Display::FontSize::SMALL);
-            m_display.draw_text(4, 36, "wallet_create", Display::FontSize::SMALL);
-            m_display.draw_text(4, 46, "wallet_import", Display::FontSize::SMALL);
-            m_display.draw_text(4, 56, "<mnemonic/key>", Display::FontSize::SMALL);
+            m_display.draw_text_centered(6,  "-- FUCHEY SETUP --", Display::FontSize::SMALL);
+            m_display.draw_hline(0, 26, Display::WIDTH);
+            m_display.draw_text(24, 48, "WiFi: OK", Display::FontSize::SMALL);
+            m_display.draw_text(24, 88, "Step 2: Wallet", Display::FontSize::SMALL);
+            m_display.draw_text(24, 130, "wallet_create", Display::FontSize::SMALL);
+            m_display.draw_text(24, 170, "wallet_import", Display::FontSize::SMALL);
+            m_display.draw_text(24, 210, "<mnemonic/key>", Display::FontSize::SMALL);
             break;
 
         case SetupStage::DONE:
         default:
-            m_display.draw_text_centered(28, "Setup Complete!", Display::FontSize::SMALL);
-            m_display.draw_text_centered(42, "Starting...", Display::FontSize::SMALL);
+            m_display.draw_text_centered(90, "Setup Complete!", Display::FontSize::SMALL);
+            m_display.draw_text_centered(170, "Starting...", Display::FontSize::SMALL);
             break;
     }
 }
