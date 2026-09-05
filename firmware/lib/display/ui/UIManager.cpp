@@ -188,6 +188,7 @@ void UIManager::reject_transaction() {
 // ─── Setup wizard ─────────────────────────────────────────
 void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
     m_setup_needed = wifi_missing || wallet_missing;
+    request_redraw();
 
     if (!m_setup_needed) {
         m_setup_stage = SetupStage::DONE;
@@ -224,12 +225,14 @@ void UIManager::mark_wifi_configured(const char* ssid) {
         ESP_LOGI(TAG, "  [WiFi] Connecting to '%s' ...", m_connecting_ssid.c_str());
         ESP_LOGI(TAG, "  Waiting for IP address...");
         ESP_LOGI(TAG, "-------------------------------------------------");
+        request_redraw();
     }
 }
 
 void UIManager::on_wifi_got_ip() {
     if (m_setup_stage == SetupStage::WIFI_CONNECTING) {
         m_setup_stage = SetupStage::WALLET_PROMPT;
+        request_redraw();
         ESP_LOGI(TAG, "=================================================");
         ESP_LOGI(TAG, "  [WiFi] CONNECTED! IP obtained.");
         ESP_LOGI(TAG, "  SETUP WIZARD: Step 2 — Wallet setup");
@@ -529,15 +532,8 @@ void UIManager::render_balance() {
     }
 
     if (!m_bal_fetched) {
-        uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-        uint32_t elapsed = now_ms - m_bal_fetch_start_ms;
-        int dot_count = (elapsed / 500) % 4;
-        char dots[5] = {};
-        for (int i = 0; i < dot_count; ++i) dots[i] = '.';
-
-        char buf[24];
-        snprintf(buf, sizeof(buf), "Fetching%s", dots);
-        m_display.draw_text_centered(90, buf, Display::FontSize::MEDIUM);
+        // Static: full-screen redraws are slow on SPI, so no animated dots.
+        m_display.draw_text_centered(90, "Fetching...", Display::FontSize::MEDIUM);
         return;
     }
 
@@ -587,15 +583,8 @@ void UIManager::render_setup() {
             break;
 
         case SetupStage::WIFI_CONNECTING: {
-            // Animate connecting dots
-            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            if (now - m_connecting_dots_ms > 400) {
-                m_connecting_dots_ms = now;
-                m_connecting_dots = (m_connecting_dots + 1) % 4;
-            }
-            char dots[5] = {0};
-            for (int i = 0; i < m_connecting_dots; ++i) dots[i] = '.';
-
+            // Static screen: full-screen redraws are slow on SPI, so no
+            // animated dots here — repaint happens on stage change only.
             m_display.draw_text_centered(6,  "-- CONNECTING --", Display::FontSize::SMALL);
             m_display.draw_hline(0, 26, Display::WIDTH);
 
@@ -604,13 +593,10 @@ void UIManager::render_setup() {
             snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", m_connecting_ssid.c_str());
             m_display.draw_text_centered(56, ssid_buf, Display::FontSize::SMALL);
 
-            char dot_buf[20];
-            snprintf(dot_buf, sizeof(dot_buf), "Waiting for IP%s", dots);
-            m_display.draw_text_centered(110, dot_buf, Display::FontSize::SMALL);
+            m_display.draw_text_centered(110, "Waiting for IP...", Display::FontSize::SMALL);
 
-            // Animated progress bar
-            uint8_t pct = static_cast<uint8_t>((m_connecting_dots * 25) % 100);
-            m_display.draw_progress_bar(20, 196, 200, 16, pct);
+            // Static empty progress bar (frame only)
+            m_display.draw_progress_bar(20, 196, 200, 16, 0);
             break;
         }
 
@@ -799,7 +785,8 @@ void UIManager::run() {
         }
 
         // Redraw only when state actually changed (screen/data/button). The idle
-        // clock and transient animations request periodic frames explicitly.
+        // clock requests a frame on each minute tick; all other screens are
+        // static between state changes (no full-screen animations on SPI).
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::IDLE_CLOCK) {
@@ -814,9 +801,6 @@ void UIManager::run() {
         } else {
             m_last_clock_minute = -1;
         }
-
-        if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched) need_render = true;
-        if (m_setup_needed && m_setup_stage == SetupStage::WIFI_CONNECTING) need_render = true;
 
         if (need_render) {
             render();
