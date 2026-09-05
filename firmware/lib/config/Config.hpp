@@ -20,10 +20,10 @@ namespace DisplayConfig {
     inline constexpr int  PIN_SCLK     = 12;
     inline constexpr int  PIN_MOSI     = 11;
     inline constexpr int  PIN_CS       = 10;
-    inline constexpr int  PIN_DC       = 13;
-    inline constexpr int  PIN_RST      = 14;
+    inline constexpr int  PIN_DC       = 6;                // TEST: shared with SELECT button
+    inline constexpr int  PIN_RST      = 7;                // TEST: shared with BACK button
     inline constexpr int  PIN_BL       = -1;               // no backlight control
-    inline constexpr int  SPI_FREQ_HZ  = 40000000;         // 40 MHz
+    inline constexpr int  SPI_FREQ_HZ  = 8000000;          // 8 MHz — matches working Adafruit test; >40MHz can black-screen on dupont wiring
     inline constexpr spi_host_device_t SPI_HOST = SPI2_HOST;
     inline constexpr int  WIDTH        = 240;
     inline constexpr int  HEIGHT       = 240;

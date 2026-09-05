@@ -290,13 +290,8 @@ extern "C" void app_main(void) {
     }
     ESP_LOGI(TAG, "[OK] Network configured: %s", s_is_devnet ? "Solana Devnet" : "Solana Mainnet-Beta");
 
-    if (!s_display.init()) {
-        ESP_LOGE(TAG, "[!!] Display initialization failed — continuing without OLED");
-    } else {
-        ESP_LOGI(TAG, "[OK] Display initialized");
-    }
-    s_ui.init();
-
+    // TEST: init buttons first so the display's output config on the
+    // shared GPIO6/7 (DC/RST) wins over the button pull-up inputs.
     if (!s_buttons.init(Fuchey::Events::g_button_queue)) {
         ESP_LOGE(TAG, "[!!] Button Driver initialization failed");
     } else {
@@ -305,6 +300,13 @@ extern "C" void app_main(void) {
                  Fuchey::Buttons::PIN_CONFIRM, Fuchey::Buttons::PIN_MENU,
                  Fuchey::Buttons::PIN_SELECT, Fuchey::Buttons::PIN_BACK);
     }
+
+    if (!s_display.init()) {
+        ESP_LOGE(TAG, "[!!] Display initialization failed — continuing without OLED");
+    } else {
+        ESP_LOGI(TAG, "[OK] Display initialized");
+    }
+    s_ui.init();
 
     if (!s_led_indicator.init()) {
         ESP_LOGE(TAG, "[!!] RGB LED initialization failed — continuing without indicator");

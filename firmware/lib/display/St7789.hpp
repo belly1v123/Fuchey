@@ -1,0 +1,60 @@
+#pragma once
+// ============================================================
+// Fuchey — St7789.hpp
+// Direct ST7789 240x240 SPI driver (no graphics library).
+// Uses the ESP-IDF SPI master driver with a CS GPIO owned by
+// spi_bus_add_device; DC and RST are driven as plain GPIOs.
+// This is the same code path proven by the boot-time raw probe
+// (RED/GREEN/WHITE fills), so it bypasses LovyanGFX entirely.
+// ============================================================
+
+#include <cstdint>
+#include <string_view>
+
+namespace Fuchey {
+
+class St7789 {
+public:
+    St7789() = default;
+    St7789(const St7789&) = delete;
+    St7789& operator=(const St7789&) = delete;
+
+    bool init();
+    bool is_ready() const { return m_ready; }
+
+    void power_on();
+    void power_off();
+
+    // ── Shapes (RGB565 colors) ────────────────────────────
+    void fill_screen(uint16_t c);
+    void fill_rect(int x, int y, int w, int h, uint16_t c);
+    void draw_rect(int x, int y, int w, int h, uint16_t c);
+    void draw_hline(int x, int y, int len, uint16_t c);
+    void draw_vline(int x, int y, int len, uint16_t c);
+
+    // ── Text (built-in 5x7 ASCII font, integer-scaled) ────
+    enum class FontSize { SMALL = 1, MEDIUM = 2, LARGE = 3 };
+    void draw_text(int x, int y, std::string_view text, FontSize size, uint16_t color);
+    int  text_width(std::string_view text, FontSize size) const;
+
+    // ── Bitmap (1-bpp, row-major, MSB-first, byte-padded) ─
+    void draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16_t fg);
+
+    // ── Progress bar ──────────────────────────────────────
+    void draw_progress_bar(int x, int y, int w, int h, uint8_t percent, uint16_t c);
+
+private:
+    void hw_reset();
+    void set_window(int x0, int y0, int x1, int y1);
+    void cmd(uint8_t v);
+    void data8(uint8_t v);
+    void data16(uint16_t v);
+    void push_pixels(const uint8_t* data, size_t bytes);
+    void push_fill(size_t pixel_count, uint16_t c);
+
+    void*       m_spi = nullptr;   // spi_device_handle_t
+    int         m_dc  = -1;
+    bool        m_ready = false;
+};
+
+} // namespace Fuchey

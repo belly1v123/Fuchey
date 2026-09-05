@@ -1,13 +1,12 @@
 #pragma once
 // ============================================================
 // Fuchey — Display.hpp
-// ST7789 240x240 TFT driver via LovyanGFX (LGFX_Fuchey).
-// Immediate-mode drawing backed by LGFX primitives; flush()
-// is a no-op kept for API compatibility with the old
-// double-buffered OLED driver.
+// ST7789 240x240 TFT driver (direct SPI, St7789 class).
+// Immediate-mode drawing; flush() is a no-op kept for API
+// compatibility with the old double-buffered OLED driver.
 // ============================================================
 
-#include "LGFX_Fuchey.hpp"
+#include "St7789.hpp"
 #include <cstdint>
 #include <string_view>
 
@@ -43,7 +42,7 @@ public:
     explicit Display();
     ~Display() = default;
 
-    // Non-copyable, non-movable (owns the LGFX device)
+    // Non-copyable, non-movable (owns the SPI device)
     Display(const Display&) = delete;
     Display& operator=(const Display&) = delete;
 
@@ -53,14 +52,14 @@ public:
     void power_off();
     bool is_ready() const { return m_ready; }
 
-    // ── Drawing (immediate, backed by LovyanGFX) ─────────
+    // ── Drawing (immediate) ──────────────────────────────
     void clear(Color c = TFT_BLACK);
 
     void draw_hline(int x, int y, int len, Color c = TFT_WHITE);
     void draw_rect(int x, int y, int w, int h, Color c = TFT_WHITE);
     void fill_rect(int x, int y, int w, int h, Color c = TFT_WHITE);
 
-    // Text rendering (LovyanGFX built-in fonts)
+    // Text rendering (built-in 5x7 font, scaled)
     void draw_text(int x, int y, std::string_view text,
                    FontSize size = FontSize::SMALL, Color c = TFT_WHITE);
     void draw_text_centered(int y, std::string_view text,
@@ -74,19 +73,16 @@ public:
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent,
                            Color c = TFT_WHITE);
 
-    // Animated boot splash (title + label + progress bar)
-    // Built frame-by-frame on an LGFX_Sprite, pushed once per frame.
+    // Animated boot splash (title + label + growing progress bar)
     void animate_boot(uint32_t duration_ms = 3000);
 
     // ── Output ───────────────────────────────────────────
-    // No-op: LGFX draws directly. Kept for API compatibility.
+    // No-op: displays draw directly. Kept for API compatibility.
     bool flush();
 
 private:
-    LGFX_Fuchey m_lgfx;
-    bool        m_ready{false};
-
-    static void apply_font(lgfx::LovyanGFX& gfx, FontSize size);
+    St7789 m_lcd;
+    bool   m_ready{false};
 
     static constexpr const char* TAG = "Display";
 };
