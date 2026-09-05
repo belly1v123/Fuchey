@@ -33,7 +33,7 @@ bool UIManager::init() {
 
 void UIManager::set_screen(UIScreen screen) {
     m_current_screen = screen;
-    render();
+    request_redraw();
 }
 
 // ─── Idle screen cycling ──────────────────────────────────
@@ -48,11 +48,13 @@ void UIManager::cycle_idle_screen() {
             case UIScreen::IDLE_MESSAGE: m_current_screen = UIScreen::IDLE_CLOCK;   break;
             default: break; // Stay on active wallet/menu screens
         }
+        request_redraw();
     }
 }
 
 // ─── Event processing ─────────────────────────────────────
 void UIManager::process_event(const Events::Event& evt) {
+    request_redraw();
     switch (evt.type) {
         case Events::EventType::WIFI_GOT_IP:
             ESP_LOGI(TAG, "WIFI_GOT_IP received — advancing setup stage");
@@ -752,6 +754,9 @@ void UIManager::run() {
             }
         }
 
+        // Any button activity can change what's on screen next tick
+        request_redraw();
+
         // Deferred TX accept — a clean single tap was confirmed (no double/long press)
         if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -790,9 +795,33 @@ void UIManager::run() {
         if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched && m_balance_monitor) {
             m_balance_monitor->fetch_balances(m_bal_sol, m_bal_usdc);
             m_bal_fetched = true;
+            request_redraw();
         }
 
-        render();
+        // Redraw only when state actually changed (screen/data/button). The idle
+        // clock and transient animations request periodic frames explicitly.
+        bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
+
+        if (!m_setup_needed && m_current_screen == UIScreen::IDLE_CLOCK) {
+            time_t now = time(nullptr);
+            struct tm ti{};
+            int minute = -1;
+            if (now > 100000 && localtime_r(&now, &ti)) minute = ti.tm_hour * 60 + ti.tm_min;
+            if (minute != m_last_clock_minute) {
+                need_render = true;
+                m_last_clock_minute = minute;
+            }
+        } else {
+            m_last_clock_minute = -1;
+        }
+
+        if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched) need_render = true;
+        if (m_setup_needed && m_setup_stage == SetupStage::WIFI_CONNECTING) need_render = true;
+
+        if (need_render) {
+            render();
+            m_last_rendered_epoch = m_redraw_epoch.load(std::memory_order_relaxed);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(Timing::DISPLAY_UPDATE_MS));
     }

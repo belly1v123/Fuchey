@@ -9,6 +9,7 @@
 #include "../Display.hpp"
 #include "../../events/Events.hpp"
 #include "../../balance/BalanceMonitor.hpp"
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -93,6 +94,15 @@ private:
     LedIndicator*   m_led_indicator{nullptr};
 
     uint32_t    m_last_idle_cycle_ms{0};
+
+    // Redraw gating: the run loop only renders when the redraw epoch advanced
+    // (screen/data/button change from any task) or a time-based animation asks
+    // for a frame. The counter is monotonic so cross-task requests are never lost.
+    std::atomic<uint32_t> m_redraw_epoch{1};
+    uint32_t              m_last_rendered_epoch{0};
+    int                   m_last_clock_minute{-1};
+
+    void request_redraw() { m_redraw_epoch.fetch_add(1, std::memory_order_relaxed); }
 
     // TX confirmation state — accept is deferred until a clean single tap is
     // confirmed (release without a double/long press following within the window).
