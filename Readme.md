@@ -19,7 +19,7 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 - **JSON:** `espressif/cjson ^1.7.17` (IDF-managed component, locked to 1.7.19~2)
 - **Storage:** NVS, encrypted private key at rest
 - **Connectivity:** WiFi (STA), HTTPS via ESP-IDF HTTP client + mbedTLS (TLS 1.2/1.3)
-- **License:** Intended fully open source — *no `LICENSE` file is currently present in the repo*
+
 
 ## Current Stage
 
