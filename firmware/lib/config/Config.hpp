@@ -6,22 +6,27 @@
 // ============================================================
 
 #include <cstdint>
-#include <driver/i2c.h>
+#include <driver/spi_common.h>
 
 namespace Fuchey {
 
 // ─── Firmware Version ─────────────────────────────────────
 inline constexpr const char* FW_VERSION = "1.0.0-dev";
 
-// ─── OLED Display (SH1106 I2C) ───────────────────────────
+// ─── TFT Display (ST7789 240x240 SPI) ─────────────────────
 namespace DisplayConfig {
-    inline constexpr uint8_t    I2C_ADDRESS  = 0x3C;
-    inline constexpr i2c_port_t I2C_PORT     = I2C_NUM_0;
-    inline constexpr int        PIN_SDA      = 8;
-    inline constexpr int        PIN_SCL      = 9;
-    inline constexpr uint32_t   I2C_FREQ_HZ  = 100000;  // 100 kHz — SH1106 compatible
-    inline constexpr int        WIDTH        = 128;
-    inline constexpr int        HEIGHT       = 64;
+    // 1.54" 240x240 ST7789V2 IPS over 4-wire SPI. BL tied to 3V3 on the
+    // module (PIN_BL < 0 means firmware never drives the backlight).
+    inline constexpr int  PIN_SCLK     = 12;
+    inline constexpr int  PIN_MOSI     = 11;
+    inline constexpr int  PIN_CS       = 10;
+    inline constexpr int  PIN_DC       = 13;
+    inline constexpr int  PIN_RST      = 14;
+    inline constexpr int  PIN_BL       = -1;               // no backlight control
+    inline constexpr int  SPI_FREQ_HZ  = 40000000;         // 40 MHz
+    inline constexpr spi_host_device_t SPI_HOST = SPI2_HOST;
+    inline constexpr int  WIDTH        = 240;
+    inline constexpr int  HEIGHT       = 240;
 }
 
 // ─── Buttons ──────────────────────────────────────────────
