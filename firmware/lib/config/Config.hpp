@@ -17,11 +17,11 @@ inline constexpr const char* FW_VERSION = "1.0.0-dev";
 namespace DisplayConfig {
     // 1.54" 240x240 ST7789V2 IPS over 4-wire SPI. BL tied to 3V3 on the
     // module (PIN_BL < 0 means firmware never drives the backlight).
-    inline constexpr int  PIN_SCLK     = 12;
-    inline constexpr int  PIN_MOSI     = 11;
+    inline constexpr int  PIN_SCLK     = 9;
+    inline constexpr int  PIN_MOSI     = 8;
     inline constexpr int  PIN_CS       = 10;
-    inline constexpr int  PIN_DC       = 6;                // TEST: shared with SELECT button
-    inline constexpr int  PIN_RST      = 7;                // TEST: shared with BACK button
+    inline constexpr int  PIN_DC       = 16;               // GPIO16 (J1-9) — plain I/O, no conflict
+    inline constexpr int  PIN_RST      = 17;               // GPIO17 (J1-10) — plain I/O, no conflict
     inline constexpr int  PIN_BL       = -1;               // no backlight control
     inline constexpr int  SPI_FREQ_HZ  = 8000000;          // 8 MHz — matches working Adafruit test; >40MHz can black-screen on dupont wiring
     inline constexpr spi_host_device_t SPI_HOST = SPI2_HOST;

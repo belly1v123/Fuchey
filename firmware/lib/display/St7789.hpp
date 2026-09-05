@@ -22,6 +22,10 @@ public:
     bool init();
     bool is_ready() const { return m_ready; }
 
+    // Pushes the RAM framebuffer to the panel in one SPI/DMA transfer.
+    // All draw calls below only touch RAM until this is called.
+    void push_frame();
+
     void power_on();
     void power_off();
 
@@ -51,10 +55,12 @@ private:
     void data16(uint16_t v);
     void push_pixels(const uint8_t* data, size_t bytes);
     void push_fill(size_t pixel_count, uint16_t c);
+    inline void put_px(int x, int y, uint16_t c);
 
     void*       m_spi = nullptr;   // spi_device_handle_t
     int         m_dc  = -1;
     bool        m_ready = false;
+    uint16_t*   m_fb = nullptr;    // WIDTH*HEIGHT RGB565 framebuffer, PSRAM+DMA capable
 };
 
 } // namespace Fuchey

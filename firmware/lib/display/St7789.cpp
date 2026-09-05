@@ -8,10 +8,12 @@
 #include "St7789.hpp"
 #include "../config/Config.hpp"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
+#include <cstring>
 
 namespace Fuchey {
 
@@ -148,7 +150,11 @@ bool St7789::init() {
     bus.sclk_io_num    = PIN_SCLK;
     bus.quadwp_io_num  = -1;
     bus.quadhd_io_num  = -1;
-    bus.max_transfer_sz = 4096;
+    // Must fit one push_frame() band (60 rows * WIDTH * 2 bytes = 28,800).
+    // NOTE: the S3 SPI DMA engine caps a single transaction at 32 KiB
+    // (SPI_LL_DMA_MAX_BIT_LEN), so a full 115,200-byte frame cannot be
+    // sent at once — push_frame() sends it in bands (see above).
+    bus.max_transfer_sz = 60 * DisplayConfig::WIDTH * 2;
 
     esp_err_t err = spi_bus_initialize(DisplayConfig::SPI_HOST, &bus, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
@@ -179,9 +185,19 @@ bool St7789::init() {
     cmd(0x29);                                 // DISPON
     vTaskDelay(pdMS_TO_TICKS(80));
 
+    m_fb = static_cast<uint16_t*>(heap_caps_malloc(
+        static_cast<size_t>(DisplayConfig::WIDTH) * DisplayConfig::HEIGHT * sizeof(uint16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA));
+    if (!m_fb) {
+        ESP_LOGE(TAG, "framebuffer alloc failed (%d bytes)",
+                 DisplayConfig::WIDTH * DisplayConfig::HEIGHT * 2);
+        return false;
+    }
+    memset(m_fb, 0, static_cast<size_t>(DisplayConfig::WIDTH) * DisplayConfig::HEIGHT * sizeof(uint16_t));
+
     m_ready = true;
-    ESP_LOGI(TAG, "ST7789 ready (%dMHz, SCLK=%d MOSI=%d CS=%d DC=%d RST=%d)",
-             DisplayConfig::SPI_FREQ_HZ / 1000000, PIN_SCLK, PIN_MOSI, PIN_CS, PIN_DC, PIN_RST);
+    ESP_LOGI(TAG, "ST7789 ready (%dMHz, SCLK=%d MOSI=%d CS=%d DC=%d RST=%d), fb=%p",
+             DisplayConfig::SPI_FREQ_HZ / 1000000, PIN_SCLK, PIN_MOSI, PIN_CS, PIN_DC, PIN_RST, (void*)m_fb);
     return true;
 }
 
@@ -260,10 +276,40 @@ void St7789::push_fill(size_t pixel_count, uint16_t c) {
 void St7789::power_on()  { cmd(0x11); vTaskDelay(pdMS_TO_TICKS(20)); }
 void St7789::power_off() { cmd(0x10); } // SLEEPIN
 
-// ─── Shapes ────────────────────────────────────────────────
+// ─── Framebuffer ───────────────────────────────────────────
+// ST7789 expects big-endian RGB565 over the wire; store it that way
+// in RAM so push_frame() can send the buffer as-is with no per-pixel
+// byte-swap on the hot path.
+inline void St7789::put_px(int x, int y, uint16_t c) {
+    if (!m_fb) return;
+    if ((unsigned)x >= (unsigned)DisplayConfig::WIDTH ||
+        (unsigned)y >= (unsigned)DisplayConfig::HEIGHT) return;
+    m_fb[y * DisplayConfig::WIDTH + x] = static_cast<uint16_t>((c >> 8) | (c << 8));
+}
+
+void St7789::push_frame() {
+    if (!m_fb) return;
+    // ESP32-S3 SPI DMA caps a single transaction at SPI_LL_DMA_MAX_BIT_LEN
+    // (256 Kib = 32 KiB), so push the frame in 60-row bands (28,800 bytes
+    // each) instead of one 115,200-byte transfer (rejected as
+    // "txdata transfer > hardware max supported len").
+    constexpr int BAND_ROWS = 60;
+    for (int y0 = 0; y0 < DisplayConfig::HEIGHT; y0 += BAND_ROWS) {
+        int y1 = y0 + BAND_ROWS - 1;
+        if (y1 > DisplayConfig::HEIGHT - 1) y1 = DisplayConfig::HEIGHT - 1;
+        set_window(0, y0, DisplayConfig::WIDTH - 1, y1);
+        push_pixels(reinterpret_cast<const uint8_t*>(
+                        m_fb + static_cast<size_t>(y0) * DisplayConfig::WIDTH),
+                    static_cast<size_t>(y1 - y0 + 1) * DisplayConfig::WIDTH * sizeof(uint16_t));
+    }
+}
+
+// ─── Shapes (now RAM-only; nothing hits SPI until push_frame()) ─
 void St7789::fill_screen(uint16_t c) {
-    set_window(0, 0, DisplayConfig::WIDTH - 1, DisplayConfig::HEIGHT - 1);
-    push_fill(static_cast<size_t>(DisplayConfig::WIDTH) * DisplayConfig::HEIGHT, c);
+    if (!m_fb) return;
+    const uint16_t swapped = static_cast<uint16_t>((c >> 8) | (c << 8));
+    const size_t n = static_cast<size_t>(DisplayConfig::WIDTH) * DisplayConfig::HEIGHT;
+    for (size_t i = 0; i < n; ++i) m_fb[i] = swapped;
 }
 
 void St7789::fill_rect(int x, int y, int w, int h, uint16_t c) {
@@ -274,8 +320,9 @@ void St7789::fill_rect(int x, int y, int w, int h, uint16_t c) {
     if (y < 0) { h += y; y = 0; }
     if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
     if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
-    set_window(x, y, x + w - 1, y + h - 1);
-    push_fill(static_cast<size_t>(w) * h, c);
+    for (int row = y; row < y + h; ++row)
+        for (int col = x; col < x + w; ++col)
+            put_px(col, row, c);
 }
 
 void St7789::draw_rect(int x, int y, int w, int h, uint16_t c) {

@@ -2,8 +2,8 @@
 // ============================================================
 // Fuchey — Display.hpp
 // ST7789 240x240 TFT driver (direct SPI, St7789 class).
-// Immediate-mode drawing; flush() is a no-op kept for API
-// compatibility with the old double-buffered OLED driver.
+// Framebuffer-backed: draw calls write into RAM, flush() pushes
+// the whole frame to the panel in one SPI/DMA transfer.
 // ============================================================
 
 #include "St7789.hpp"
@@ -77,7 +77,7 @@ public:
     void animate_boot(uint32_t duration_ms = 3000);
 
     // ── Output ───────────────────────────────────────────
-    // No-op: displays draw directly. Kept for API compatibility.
+    // Pushes the RAM framebuffer to the panel. Call once per render().
     bool flush();
 
 private:

@@ -70,8 +70,10 @@ void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, Col
 }
 
 // ─── Animated boot splash ──────────────────────────────────
-// Direct-draw; the progress bar only grows, so nothing is
-// wiped/redrawn between frames.
+// Framebuffer-backed: static parts are drawn once, then only the
+// growing bar segment is updated in RAM. A full-frame push costs
+// ~115 ms at 8 MHz, so flush every 10th frame (plus a final one)
+// to keep the ~3 s boot time instead of ~15 s.
 void Display::animate_boot(uint32_t duration_ms) {
     constexpr int BAR_X  = 20;
     constexpr int BAR_Y  = 196;
@@ -83,6 +85,7 @@ void Display::animate_boot(uint32_t duration_ms) {
     draw_text_centered(60, "FUCHEY", FontSize::LARGE);
     draw_text_centered(150, "Initializing", FontSize::SMALL);
     m_lcd.draw_rect(BAR_X, BAR_Y, BAR_W, BAR_H, TFT_WHITE);
+    flush();
 
     int prev_fill = 0;
     for (int frame = 0; frame <= FRAMES; ++frame) {
@@ -93,11 +96,15 @@ void Display::animate_boot(uint32_t duration_ms) {
                             fill - prev_fill, BAR_H - 2, TFT_GREEN);
             prev_fill = fill;
         }
+        if (frame % 10 == 0 || frame == FRAMES) flush();
         vTaskDelay(pdMS_TO_TICKS(duration_ms / FRAMES));
     }
+    flush();
 }
 
 // ─── flush ─────────────────────────────────────────────────
-bool Display::flush() { return true; }
+// Pushes the RAM framebuffer to the panel in one SPI/DMA transfer.
+// Everything above (clear/fill_rect/draw_text/...) only touches RAM.
+bool Display::flush() { m_lcd.push_frame(); return true; }
 
 } // namespace Fuchey
