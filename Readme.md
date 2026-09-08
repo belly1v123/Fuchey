@@ -27,27 +27,33 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 - ✅ Import wallet (mnemonic / hex / base58 private key)
 - ✅ Store private key encrypted in NVS
 - ✅ Send SOL and USDC with hardware button confirmation
-- ✅ Display receive address as QR code on OLED
+- ✅ Display receive address as QR code on TFT
 - ✅ On-demand SOL + USDC balance fetch via RPC
 - ✅ Idle display cycle: clock → weather → SOL price → message
 - ✅ AI Assistant chat via serial console
 - ✅ Auto-connect WiFi (saved in NVS), switch between devnet/mainnet
 
-## Hardware Wiring
+## Hardware Wiring (TFT_version — ST7789 240x240 SPI)
 
-| Component   | GPIO |
-|-------------|------|
-| OLED SCL    | 9    |
-| OLED SDA    | 8    |
-| TX button   | 4    |
-| Menu button | 5    |
-| Select      | 6    |
-| Back        | 7    |
+| Component   | GPIO | Notes |
+|-------------|------|-------|
+| TFT SCLK    | 9    | SPI2_HOST, 8 MHz |
+| TFT MOSI    | 8    | SPI2_HOST, 8 MHz |
+| TFT CS      | 5    | plain I/O |
+| TFT DC      | 16   | plain I/O, no conflict |
+| TFT RST     | 6    | plain I/O |
+| TFT BL      | —    | tied to 3V3 on module, firmware does not drive it (`PIN_BL = -1`) |
+| TX button   | 4    | transaction accept/reject |
+| Menu button | 10   | menu / next, double-press = wallet QR |
+| Select      | 17   | confirm highlighted menu option |
+| Back        | 13   | go back |
+| Buzzer      | 40   | active 5V via NPN low-side, parked LOW at boot (silent) |
+| RGB LED     | 48   | onboard WS2812 (DevKitC-1) |
 
 - GPIO4 (TX): single press = accept transaction · double press or hold = reject
-- GPIO5 (Menu): single press = open menu / next option · double press = show wallet QR
-- GPIO6 (Select): confirm the highlighted menu option
-- GPIO7 (Back): go back
+- GPIO10 (Menu): single press = open menu / next option · double press = show wallet QR
+- GPIO17 (Select): confirm the highlighted menu option
+- GPIO13 (Back): go back
 
 ## Quick Start
 
@@ -63,7 +69,7 @@ w <SSID> <PASSWORD>
 # Create wallet
 wallet_create
 
-# Show menu on OLED
+# Show menu on TFT
 menu
 
 # Send SOL
@@ -93,7 +99,7 @@ h
 -  On-device transaction signing
 -  Integrated text-based AI assistant
 -  Clock, weather, and live SOL price display
--  ESP32-S3 powered with OLED interface
+-  ESP32-S3 powered with TFT interface
 -  Security-first modular architecture
 -  Fully open source
 
