@@ -69,6 +69,12 @@ public:
     // Set bits are drawn with `fg`; clear bits are left untouched.
     void draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, Color fg = TFT_WHITE);
 
+    // RGB565 sprite blit (CPU-order RGB565, see scripts/convert_sprite.py).
+    // RAM-only; call flush() or flush_window() after.
+    void draw_sprite(int x, int y, int w, int h, const Color* data);
+    void draw_sprite_transparent(int x, int y, int w, int h, const Color* data,
+                                 Color transparent);
+
     // Progress bar
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent,
                            Color c = TFT_WHITE);
@@ -79,6 +85,9 @@ public:
     // ── Output ───────────────────────────────────────────
     // Pushes the RAM framebuffer to the panel. Call once per render().
     bool flush();
+    // Pushes only window (x,y,w,h). Use for sprite animation: 96x96 costs
+    // ~18KB SPI vs 115KB for flush(). Draw first, then call this.
+    bool flush_window(int x, int y, int w, int h);
 
 private:
     St7789 m_lcd;

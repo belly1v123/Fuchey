@@ -65,6 +65,15 @@ void Display::draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, Color
     m_lcd.draw_bitmap(x, y, w, h, mask, fg);
 }
 
+void Display::draw_sprite(int x, int y, int w, int h, const Color* data) {
+    m_lcd.draw_rgb565_image(x, y, w, h, data);
+}
+
+void Display::draw_sprite_transparent(int x, int y, int w, int h, const Color* data,
+                                      Color transparent) {
+    m_lcd.draw_rgb565_image_transparent(x, y, w, h, data, transparent);
+}
+
 void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, Color c) {
     m_lcd.draw_progress_bar(x, y, w, h, percent, c);
 }
@@ -106,5 +115,7 @@ void Display::animate_boot(uint32_t duration_ms) {
 // Pushes the RAM framebuffer to the panel in one SPI/DMA transfer.
 // Everything above (clear/fill_rect/draw_text/...) only touches RAM.
 bool Display::flush() { m_lcd.push_frame(); return true; }
+
+bool Display::flush_window(int x, int y, int w, int h) { m_lcd.push_window(x, y, w, h); return true; }
 
 } // namespace Fuchey

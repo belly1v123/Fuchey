@@ -398,7 +398,83 @@ void St7789::draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16
     }
 }
 
-// ─── Progress bar ──────────────────────────────────────────
+// ─── RGB565 sprite blit (RAM-only; call push_window/push_frame after) ─
+// Limits: clipped to 240x240. 96x96 = 18KB SPI on push_window (~20ms @8MHz).
+// data is CPU-order RGB565; we byte-swap once on write so the DMA path
+// stays memcpy-fast (same convention as put_px/fill_screen).
+void St7789::draw_rgb565_image(int x, int y, int w, int h, const uint16_t* data) {
+    if (!m_fb || !data || w <= 0 || h <= 0) return;
+    if (x >= DisplayConfig::WIDTH || y >= DisplayConfig::HEIGHT) return;
+    if (x + w <= 0 || y + h <= 0) return;
+    const int w0 = w;
+    int sx0 = 0, sy0 = 0;
+    if (x < 0) { sx0 = -x; w += x; x = 0; }
+    if (y < 0) { sy0 = -y; h += y; y = 0; }
+    if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
+    if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
+    for (int row = 0; row < h; ++row) {
+        const uint16_t* src = data + static_cast<size_t>(sy0 + row) * static_cast<size_t>(w0) + static_cast<size_t>(sx0);
+        uint16_t* dst = m_fb + static_cast<size_t>(y + row) * static_cast<size_t>(DisplayConfig::WIDTH) + static_cast<size_t>(x);
+        for (int col = 0; col < w; ++col) {
+            uint16_t c = src[col];
+            dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
+        }
+    }
+}
+
+void St7789::draw_rgb565_image_transparent(int x, int y, int w, int h,
+                                           const uint16_t* data, uint16_t transparent) {
+    if (!m_fb || !data || w <= 0 || h <= 0) return;
+    if (x >= DisplayConfig::WIDTH || y >= DisplayConfig::HEIGHT) return;
+    if (x + w <= 0 || y + h <= 0) return;
+    const int w0 = w;
+    int sx0 = 0, sy0 = 0;
+    if (x < 0) { sx0 = -x; w += x; x = 0; }
+    if (y < 0) { sy0 = -y; h += y; y = 0; }
+    if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
+    if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
+    for (int row = 0; row < h; ++row) {
+        const uint16_t* src = data + static_cast<size_t>(sy0 + row) * static_cast<size_t>(w0) + static_cast<size_t>(sx0);
+        uint16_t* dst = m_fb + static_cast<size_t>(y + row) * static_cast<size_t>(DisplayConfig::WIDTH) + static_cast<size_t>(x);
+        for (int col = 0; col < w; ++col) {
+            uint16_t c = src[col];
+            if (c == transparent) continue;
+            dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
+        }
+    }
+}
+
+void St7789::push_window(int x, int y, int w, int h) {
+    if (!m_fb || w <= 0 || h <= 0) return;
+    if (x >= DisplayConfig::WIDTH || y >= DisplayConfig::HEIGHT) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
+    if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
+    constexpr int BAND_ROWS = 60;
+    for (int y0 = y; y0 < y + h; y0 += BAND_ROWS) {
+        int y1 = y0 + BAND_ROWS - 1;
+        if (y1 > y + h - 1) y1 = y + h - 1;
+        set_window(x, y0, x + w - 1, y1);
+        if (w == DisplayConfig::WIDTH) {
+            push_pixels(reinterpret_cast<const uint8_t*>(
+                            m_fb + static_cast<size_t>(y0) * DisplayConfig::WIDTH + static_cast<size_t>(x)),
+                        static_cast<size_t>(y1 - y0 + 1) * static_cast<size_t>(w) * sizeof(uint16_t));
+        } else {
+            static uint8_t s_line[60 * 240 * 2];
+            uint8_t* q = s_line;
+            for (int r = y0; r <= y1; ++r) {
+                const uint8_t* src = reinterpret_cast<const uint8_t*>(
+                    m_fb + static_cast<size_t>(r) * DisplayConfig::WIDTH + static_cast<size_t>(x));
+                memcpy(q, src, static_cast<size_t>(w) * sizeof(uint16_t));
+                q += static_cast<size_t>(w) * sizeof(uint16_t);
+            }
+            push_pixels(s_line, static_cast<size_t>(y1 - y0 + 1) * static_cast<size_t>(w) * sizeof(uint16_t));
+        }
+    }
+}
+
+
 void St7789::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, uint16_t c) {
     if (percent > 100) percent = 100;
     draw_rect(x, y, w, h, c);
