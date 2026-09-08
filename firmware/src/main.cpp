@@ -22,6 +22,7 @@
 #include "../lib/display/Display.hpp"
 #include "../lib/display/ui/UIManager.hpp"
 #include "../lib/led_indicator/LedIndicator.hpp"
+#include "../lib/buzzer/Buzzer.hpp"
 #include "../lib/buttons/ButtonDriver.hpp"
 #include "../lib/crypto/CryptoEngine.hpp"
 #include "../lib/crypto/Base58.hpp"
@@ -60,6 +61,7 @@ static constexpr const char* TAG = "FucheyMain";
 static Fuchey::Display        s_display;
 static Fuchey::UIManager      s_ui(s_display);
 static Fuchey::LedIndicator   s_led_indicator;
+static Fuchey::Buzzer         s_buzzer;
 static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
                                         Fuchey::Buttons::PIN_MENU,
                                         Fuchey::Buttons::PIN_SELECT,
@@ -312,6 +314,14 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "[!!] RGB LED initialization failed — continuing without indicator");
     } else {
         ESP_LOGI(TAG, "[OK] RGB LED indicator initialized");
+    }
+
+    // Buzzer: park GPIO40 LOW immediately so the NPN stays off (a floating
+    // pin lets the transistor conduct and the buzzer sounds continuously).
+    if (!s_buzzer.init()) {
+        ESP_LOGE(TAG, "[!!] Buzzer initialization failed — continuing without buzzer");
+    } else {
+        ESP_LOGI(TAG, "[OK] Buzzer initialized (silent)");
     }
 
     Fuchey::g_wallet_core_ptr = &s_wallet_core;
