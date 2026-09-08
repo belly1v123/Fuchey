@@ -45,16 +45,13 @@ public:
     void draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16_t fg);
 
     // ── RGB565 sprite blit (framebuffer-only, call push_* after) ─
-    // data: w*h RGB565 pixels in CPU order (use convert_sprite.py output
-    // with FU_CG_SWAP=0). Clipped to 240x240. No transparency.
+    // data: w*h CPU-order RGB565 pixels (see scripts/convert_sprite.py).
     void draw_rgb565_image(int x, int y, int w, int h, const uint16_t* data);
-    // Same but skips pixels == transparent (color-key, e.g. 0xF81F magenta).
+    // Same, but skips pixels matching transparent (color-key).
     void draw_rgb565_image_transparent(int x, int y, int w, int h,
                                        const uint16_t* data, uint16_t transparent);
 
-    // Pushes only the window (x,y,w,h) to the panel. Much faster than
-    // push_frame() for small sprites: 96x96 = ~18KB vs 115KB full frame.
-    // Data is read back from the framebuffer, so draw_* first, then call this.
+    // Pushes only window (x,y,w,h). Faster than push_frame() for sprites.
     void push_window(int x, int y, int w, int h);
 
     // ── Progress bar ──────────────────────────────────────

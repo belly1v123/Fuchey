@@ -622,11 +622,7 @@ void UIManager::render_chat() {
     m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
-// ─── Animation test (feature/tft-animation-test only) ─────
-// Yeti 96x96x12 via SpritePlayer + draw_sprite + flush path.
-// Serial: `anim` to enter, BACK to leave.
-// Uses full flush() for simplicity; switch to flush_window() once timing
-// is confirmed (see flush_window docs in Display.hpp).
+// ─── Animation test ───────────────────────────────────────
 void UIManager::render_anim_test() {
     static SpritePlayer s_player;
     static bool s_started = false;
@@ -875,12 +871,10 @@ void UIManager::run() {
         }
 
         // Redraw only when state actually changed (screen/data/button). The idle
-        // clock requests a frame on each minute tick; ANIM_TEST requests a
-        // frame at its own fps (test branch; wallet screens stay static).
+        // clock requests a frame on each minute tick; ANIM_TEST renders every tick.
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
-            // 8fps test anim, UI tick is 100ms: render every tick while on screen.
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::IDLE_CLOCK) {
             time_t now = time(nullptr);

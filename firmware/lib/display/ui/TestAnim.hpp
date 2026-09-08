@@ -1,6 +1,5 @@
 #pragma once
 // Synthetic 64x64x4 test animation (green box slide). ~32KB flash.
-// Proves SpritePlayer + push_window path without committing Yeti art.
 #include <cstdint>
 #include "SpritePlayer.hpp"
 

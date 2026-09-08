@@ -620,7 +620,7 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "[UI] Switching to Wallet QR screen");
                     s_ui.set_screen(Fuchey::UIScreen::WALLET_QR);
 
-                // ── anim (test branch: sprite animation proof) ─
+                // ── anim ──────────────────────────────────────
                 } else if (strcmp(cmd, "anim") == 0) {
                     ESP_LOGI(CTAG, "[UI] Switching to ANIM_TEST screen");
                     s_ui.set_screen(Fuchey::UIScreen::ANIM_TEST);

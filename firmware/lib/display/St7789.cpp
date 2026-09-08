@@ -399,9 +399,7 @@ void St7789::draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16
 }
 
 // ─── RGB565 sprite blit (RAM-only; call push_window/push_frame after) ─
-// Limits: clipped to 240x240. 96x96 = 18KB SPI on push_window (~20ms @8MHz).
-// data is CPU-order RGB565; we byte-swap once on write so the DMA path
-// stays memcpy-fast (same convention as put_px/fill_screen).
+// data is CPU-order RGB565; byte-swapped once on write (see put_px).
 void St7789::draw_rgb565_image(int x, int y, int w, int h, const uint16_t* data) {
     if (!m_fb || !data || w <= 0 || h <= 0) return;
     if (x >= DisplayConfig::WIDTH || y >= DisplayConfig::HEIGHT) return;
@@ -473,7 +471,6 @@ void St7789::push_window(int x, int y, int w, int h) {
         }
     }
 }
-
 
 void St7789::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, uint16_t c) {
     if (percent > 100) percent = 100;
