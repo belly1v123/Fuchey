@@ -23,6 +23,12 @@ namespace Fuchey {
 
 static constexpr const char* TAG = "UIManager";
 
+// Extended palette (RGB565) for a richer TFT look — the built-in set only
+// has white/black/red/green/yellow/blue.
+inline constexpr Color TFT_CYAN   = 0x07FF;
+inline constexpr Color TFT_GRAY   = 0x8410;
+inline constexpr Color TFT_ORANGE = 0xFD20;
+
 UIManager::UIManager(Display& display) : m_display(display) {}
 
 bool UIManager::init() {
@@ -285,34 +291,39 @@ void UIManager::render() {
 }
 
 // ─── Idle screens ─────────────────────────────────────────
+// Layout system (240x240): MEDIUM header + divider at y=30, SMALL gray
+// footer hints above y=218, hero values in LARGE centered in between.
 void UIManager::render_clock() {
-    m_display.draw_text_centered(6, "FUCHEY WALLET", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "FUCHEY", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     char buf[16];
     time_t now = time(nullptr);
     struct tm timeinfo;
-    if (now > 100000 && localtime_r(&now, &timeinfo)) {
+    bool synced = now > 100000 && localtime_r(&now, &timeinfo);
+    if (synced) {
         strftime(buf, sizeof(buf), "%I:%M %p", &timeinfo);
     } else {
         snprintf(buf, sizeof(buf), "--:--");
     }
-    m_display.draw_text_centered(84, buf, Display::FontSize::MEDIUM);
+    // "08:34 PM" = 8 chars x 18px = 144px — fits centered
+    m_display.draw_text_centered(86, buf, Display::FontSize::LARGE);
 
     char date_buf[20];
-    if (now > 100000) {
+    if (synced) {
         struct tm ti;
         localtime_r(&now, &ti);
         strftime(date_buf, sizeof(date_buf), "%a %b %d", &ti);
     } else {
-        snprintf(date_buf, sizeof(date_buf), "Syncing...");
+        snprintf(date_buf, sizeof(date_buf), "Syncing time...");
     }
-    m_display.draw_text_centered(176, date_buf, Display::FontSize::SMALL);
+    m_display.draw_text_centered(134, date_buf, Display::FontSize::MEDIUM, TFT_CYAN);
+    m_display.draw_text_centered(200, "solana hardware wallet", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_weather() {
-    m_display.draw_text_centered(6, "WEATHER", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "WEATHER", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     char buf[32];
     if (m_weather_temp < -100.0f) {
@@ -320,13 +331,14 @@ void UIManager::render_weather() {
     } else {
         snprintf(buf, sizeof(buf), "%.1f C", m_weather_temp);
     }
-    m_display.draw_text_centered(64, buf, Display::FontSize::LARGE, Colors::BLUE);
-    m_display.draw_text_centered(170, m_weather_city.c_str(), Display::FontSize::SMALL);
+    m_display.draw_text_centered(82, buf, Display::FontSize::LARGE, TFT_CYAN);
+    m_display.draw_text_centered(136, m_weather_city.c_str(), Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(200, "open-meteo", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_price() {
-    m_display.draw_text_centered(6, "SOLANA", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "SOLANA", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     char buf[32];
     if (m_sol_price < 0.0f) {
@@ -334,34 +346,45 @@ void UIManager::render_price() {
     } else {
         snprintf(buf, sizeof(buf), "$%.2f", m_sol_price);
     }
-    m_display.draw_text_centered(64, buf, Display::FontSize::LARGE, Colors::YELLOW);
-    m_display.draw_text_centered(170, "CoinGecko", Display::FontSize::SMALL);
+    m_display.draw_text_centered(82, buf, Display::FontSize::LARGE, Colors::YELLOW);
+    m_display.draw_text_centered(136, "SOL / USD", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(200, "binance", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_message() {
-    m_display.draw_text_centered(6, "FUCHEY", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
-    m_display.draw_text_centered(88, "Have a great day!", Display::FontSize::SMALL);
-    m_display.draw_text_centered(140, "Solana hardware", Display::FontSize::SMALL);
-    m_display.draw_text_centered(184, "wallet + AI desk", Display::FontSize::SMALL);
+    m_display.draw_text_centered(8, "FUCHEY", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(78, "Have a great day!", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(112, "Solana hardware", Display::FontSize::MEDIUM, TFT_CYAN);
+    m_display.draw_text_centered(146, "wallet + AI desk", Display::FontSize::MEDIUM, TFT_CYAN);
 }
 
 // ─── Menu / Wallet / Chat screens ─────────────────────────
 void UIManager::render_menu() {
-    m_display.draw_text_centered(6, "MAIN MENU", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "MENU", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
-    m_display.draw_text(24, 40, m_menu_index == 0 ? "> Wallet Info" : "  Wallet Info", Display::FontSize::SMALL);
-    m_display.draw_text(24, 60, m_menu_index == 1 ? "> AI Assistant" : "  AI Assistant", Display::FontSize::SMALL);
-    m_display.draw_text(24, 80, m_menu_index == 2 ? "> SOL Price" : "  SOL Price", Display::FontSize::SMALL);
-    m_display.draw_text(24, 100, m_menu_index == 3 ? "> View Balance" : "  View Balance", Display::FontSize::SMALL);
+    static constexpr const char* kItems[4] = {
+        "Wallet Info", "AI Assistant", "SOL Price", "View Balance"
+    };
+    for (int i = 0; i < 4; ++i) {
+        int y = 52 + i * 34;
+        if (i == m_menu_index) {
+            // Inverted highlight bar for the selected row
+            m_display.fill_rect(12, y - 5, Display::WIDTH - 24, 26, Colors::WHITE);
+            m_display.draw_text(28, y, kItems[i], Display::FontSize::MEDIUM, Colors::BLACK);
+        } else {
+            m_display.draw_text(28, y, kItems[i], Display::FontSize::MEDIUM, TFT_GRAY);
+        }
+    }
 
-    m_display.draw_text_centered(215, "M:Next S:Sel B:Bck", Display::FontSize::SMALL);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "MENU:next  SEL:ok  BACK:back", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_wallet_info() {
-    m_display.draw_text_centered(6, "WALLET INFO", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "WALLET", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     // Auto-fetch cached address via global pointer set in app_main()
     if (m_wallet_address.empty()) {
@@ -373,9 +396,9 @@ void UIManager::render_wallet_info() {
     }
 
     if (!m_wallet_address.empty()) {
-        // Split the full address across up to 3 lines of 30 chars each
-        // SMALL font ~6px/char on 240px → ~40 chars fit; use 30 for safety
-        static constexpr size_t CHUNK = 30;
+        // 44-char base58 address in 3 centered MEDIUM lines of 15 chars
+        // (15 x 12px = 180px — fits with margins)
+        static constexpr size_t CHUNK = 15;
         const char* p   = m_wallet_address.c_str();
         size_t      len = m_wallet_address.size();
 
@@ -392,20 +415,20 @@ void UIManager::render_wallet_info() {
         strncpy(line2, p + CHUNK,      l2); line2[l2] = '\0';
         strncpy(line3, p + CHUNK * 2,  l3); line3[l3] = '\0';
 
-        m_display.draw_text_centered(44, line1, Display::FontSize::SMALL);
-        if (l2) m_display.draw_text_centered(74, line2, Display::FontSize::SMALL);
-        if (l3) m_display.draw_text_centered(104, line3, Display::FontSize::SMALL);
-        m_display.draw_text_centered(215, "b: Back", Display::FontSize::SMALL);
+        m_display.draw_text_centered(48, "address", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_text_centered(72, line1, Display::FontSize::MEDIUM);
+        if (l2) m_display.draw_text_centered(100, line2, Display::FontSize::MEDIUM);
+        if (l3) m_display.draw_text_centered(128, line3, Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
     } else {
-        m_display.draw_text_centered(90, "No wallet setup", Display::FontSize::SMALL);
-        m_display.draw_text_centered(215, "b: Back", Display::FontSize::SMALL);
+        m_display.draw_text_centered(100, "No wallet setup", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
     }
 }
 
 void UIManager::render_wallet_qr() {
-    m_display.draw_text_centered(6, "WALLET QR", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
-
     // Ensure we have the wallet address cached
     if (m_wallet_address.empty()) {
         extern Fuchey::WalletCore* g_wallet_core_ptr;
@@ -416,8 +439,11 @@ void UIManager::render_wallet_qr() {
     }
 
     if (m_wallet_address.empty()) {
-        m_display.draw_text_centered(90, "No wallet", Display::FontSize::SMALL);
-        m_display.draw_text_centered(215, "b: Back",  Display::FontSize::SMALL);
+        m_display.draw_text_centered(8, "WALLET QR", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(100, "No wallet", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
@@ -440,18 +466,27 @@ void UIManager::render_wallet_qr() {
     );
 
     if (!ok) {
-        m_display.draw_text_centered(90, "QR gen failed", Display::FontSize::SMALL);
-        m_display.draw_text_centered(215, "b: Back",      Display::FontSize::SMALL);
+        m_display.draw_text_centered(8, "WALLET QR", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(100, "QR gen failed", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
-    int qr_size = qrcodegen_getSize(qr_code);   // number of modules (e.g. 29 for V3)
-    int px      = 4;                              // pixels per module
-    int total   = qr_size * px;
+    int qr_size = qrcodegen_getSize(qr_code);   // number of modules (e.g. 33 for V4)
+    // Largest module size that fits the 240px panel with a quiet zone
+    int px = 196 / qr_size;
+    if (px > 6) px = 6;
+    if (px < 2) px = 2;
+    int total = qr_size * px;
 
-    // Center the QR code in the content area (below the header divider)
+    // Center the QR code on the full panel (no header — maximum scan size)
     int x_off = (Display::WIDTH  - total) / 2;
     int y_off = (Display::HEIGHT - total) / 2;
+
+    // Quiet zone: clear margin around the code
+    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
 
     // Draw QR modules
     for (int row = 0; row < qr_size; row++) {
@@ -464,15 +499,18 @@ void UIManager::render_wallet_qr() {
 }
 
 void UIManager::render_tx_confirm() {
-    m_display.draw_text_centered(6, "CONFIRM TX?", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "CONFIRM?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "$%.2f", static_cast<double>(m_tx_amount_cents) / 100.0);
-    m_display.draw_text_centered(80, buf, Display::FontSize::LARGE);
+    m_display.draw_text_centered(72, buf, Display::FontSize::LARGE);
 
-    m_display.draw_hline(0, 196, Display::WIDTH);
-    m_display.draw_text_centered(214, "1x:Acc 2x/Lng:Rej", Display::FontSize::SMALL);
+    if (!m_tx_description.empty())
+        m_display.draw_text_centered(124, m_tx_description.c_str(), Display::FontSize::MEDIUM, TFT_CYAN);
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "1x CONFIRM:send  2x/hold:no", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_tx_result() {
@@ -480,16 +518,20 @@ void UIManager::render_tx_result() {
 
     if (!ok) {
         // Paint-4 animation for failed transfers — centered, red on black
-        m_display.draw_bitmap((Display::WIDTH - 123) / 2, 40, 123, 30,
+        m_display.draw_text_centered(8, "FAILED", Display::FontSize::MEDIUM, Colors::RED);
+        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+        m_display.draw_bitmap((Display::WIDTH - 123) / 2, 56, 123, 30,
                               image_tx_fail_bits, Colors::RED);
 
-        if (m_tx_result_msg[0]) m_display.draw_text_centered(150, m_tx_result_msg, Display::FontSize::SMALL);
-        if (m_tx_result_recipient[0]) m_display.draw_text_centered(200, m_tx_result_recipient, Display::FontSize::SMALL);
+        if (m_tx_result_msg[0]) m_display.draw_text_centered(140, m_tx_result_msg, Display::FontSize::MEDIUM);
+        if (m_tx_result_recipient[0]) m_display.draw_text_centered(192, m_tx_result_recipient, Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
     // Paint success frame — centered, green on black
-    m_display.draw_bitmap((Display::WIDTH - 120) / 2, 40, 120, 29,
+    m_display.draw_text_centered(8, "SENT", Display::FontSize::MEDIUM, Colors::GREEN);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_bitmap((Display::WIDTH - 120) / 2, 56, 120, 29,
                           image_tx_success_bits, Colors::GREEN);
 
     // ── Transaction details ──
@@ -505,16 +547,16 @@ void UIManager::render_tx_result() {
         line2[0] = '\0';
     }
 
-    if (line1[0]) m_display.draw_text_centered(150, line1, Display::FontSize::SMALL);
-    if (line2[0]) m_display.draw_text_centered(192, line2, Display::FontSize::SMALL);
+    if (line1[0]) m_display.draw_text_centered(140, line1, Display::FontSize::MEDIUM);
+    if (line2[0]) m_display.draw_text_centered(184, line2, Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_balance() {
-    m_display.draw_text_centered(6, "BALANCE", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "BALANCE", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     if (!m_balance_monitor) {
-        m_display.draw_text_centered(90, "No balance service", Display::FontSize::SMALL);
+        m_display.draw_text_centered(100, "No balance service", Display::FontSize::MEDIUM);
         return;
     }
 
@@ -527,44 +569,54 @@ void UIManager::render_balance() {
     }
 
     if (m_wallet_address.empty()) {
-        m_display.draw_text_centered(90, "No wallet setup", Display::FontSize::SMALL);
+        m_display.draw_text_centered(100, "No wallet setup", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
     if (!m_bal_fetched) {
         // Static: full-screen redraws are slow on SPI, so no animated dots.
-        m_display.draw_text_centered(90, "Fetching...", Display::FontSize::MEDIUM);
+        m_display.draw_text_centered(100, "Fetching...", Display::FontSize::MEDIUM, TFT_CYAN);
         return;
     }
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "%.6f SOL", m_bal_sol);
-    m_display.draw_text_centered(80, buf, Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(52, "SOL", Display::FontSize::SMALL, TFT_GRAY);
+    snprintf(buf, sizeof(buf), "%.4f", m_bal_sol);
+    m_display.draw_text_centered(66, buf, Display::FontSize::LARGE);
 
-    snprintf(buf, sizeof(buf), "$%.2f USDC", m_bal_usdc);
-    m_display.draw_text_centered(160, buf, Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(122, "USDC", Display::FontSize::SMALL, TFT_GRAY);
+    snprintf(buf, sizeof(buf), "$%.2f", m_bal_usdc);
+    m_display.draw_text_centered(136, buf, Display::FontSize::MEDIUM, Colors::GREEN);
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_chat() {
-    m_display.draw_text_centered(6, "AI ASSISTANT", Display::FontSize::SMALL);
-    m_display.draw_hline(0, 26, Display::WIDTH);
+    m_display.draw_text_centered(8, "AI CHAT", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
-    // Wrap response text at ~38 chars per line
+    // Wrap response text at ~38 chars per line (38 x 6px = 228px)
     const std::string& msg = m_last_ai_response;
     size_t pos = 0;
-    int y = 40;
-    while (pos < msg.size() && y < 200) {
+    int y = 42;
+    while (pos < msg.size() && y < 206) {
         size_t end = std::min(pos + 38, msg.size());
         // Try to break at space
         if (end < msg.size() && msg[end] != ' ') {
             size_t sp = msg.rfind(' ', end);
             if (sp != std::string::npos && sp > pos) end = sp;
         }
-        m_display.draw_text(12, y, msg.substr(pos, end - pos).c_str(), Display::FontSize::SMALL);
+        m_display.draw_text(8, y, msg.substr(pos, end - pos).c_str(), Display::FontSize::SMALL);
         pos = end;
         while (pos < msg.size() && msg[pos] == ' ') ++pos;
-        y += 24;
+        y += 13;
     }
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 // ─── Setup wizard renderer ────────────────────────────────
@@ -573,47 +625,45 @@ void UIManager::render_setup() {
 
         case SetupStage::WIFI_PROMPT:
             // Step 1: Ask for WiFi
-            m_display.draw_text_centered(6, "-- FUCHEY SETUP --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 26, Display::WIDTH);
-            m_display.draw_text_centered(48, "Step 1: WiFi", Display::FontSize::SMALL);
-            m_display.draw_text_centered(100, "Open serial monitor", Display::FontSize::SMALL);
-            m_display.draw_text_centered(140, "and type:", Display::FontSize::SMALL);
-            m_display.draw_text_centered(180, "w SSID PASSWORD", Display::FontSize::SMALL);
-            m_display.draw_rect(20, 168, 200, 26);
+            m_display.draw_text_centered(8, "SETUP", Display::FontSize::MEDIUM);
+            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+            m_display.draw_text_centered(56, "Step 1: WiFi", Display::FontSize::MEDIUM, TFT_ORANGE);
+            m_display.draw_text_centered(104, "Type in serial:", Display::FontSize::SMALL, TFT_GRAY);
+            m_display.draw_text_centered(132, "w SSID PASS", Display::FontSize::MEDIUM, TFT_CYAN);
             break;
 
         case SetupStage::WIFI_CONNECTING: {
             // Static screen: full-screen redraws are slow on SPI, so no
             // animated dots here — repaint happens on stage change only.
-            m_display.draw_text_centered(6,  "-- CONNECTING --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 26, Display::WIDTH);
+            m_display.draw_text_centered(8, "CONNECTING", Display::FontSize::MEDIUM, TFT_ORANGE);
+            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
             // Truncate SSID to fit
             char ssid_buf[24];
             snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", m_connecting_ssid.c_str());
-            m_display.draw_text_centered(56, ssid_buf, Display::FontSize::SMALL);
+            m_display.draw_text_centered(72, ssid_buf, Display::FontSize::MEDIUM);
 
-            m_display.draw_text_centered(110, "Waiting for IP...", Display::FontSize::SMALL);
+            m_display.draw_text_centered(124, "Waiting for IP...", Display::FontSize::SMALL, TFT_GRAY);
 
             // Static empty progress bar (frame only)
-            m_display.draw_progress_bar(20, 196, 200, 16, 0);
+            m_display.draw_progress_bar(20, 180, 200, 16, 0);
             break;
         }
 
         case SetupStage::WALLET_PROMPT:
-            m_display.draw_text_centered(6,  "-- FUCHEY SETUP --", Display::FontSize::SMALL);
-            m_display.draw_hline(0, 26, Display::WIDTH);
-            m_display.draw_text(24, 48, "WiFi: OK", Display::FontSize::SMALL);
-            m_display.draw_text(24, 88, "Step 2: Wallet", Display::FontSize::SMALL);
-            m_display.draw_text(24, 130, "wallet_create", Display::FontSize::SMALL);
-            m_display.draw_text(24, 170, "wallet_import", Display::FontSize::SMALL);
-            m_display.draw_text(24, 210, "<mnemonic/key>", Display::FontSize::SMALL);
+            m_display.draw_text_centered(8, "SETUP", Display::FontSize::MEDIUM);
+            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+            m_display.draw_text_centered(48, "WiFi: OK", Display::FontSize::MEDIUM, Colors::GREEN);
+            m_display.draw_text_centered(84, "Step 2: Wallet", Display::FontSize::MEDIUM, TFT_ORANGE);
+            m_display.draw_text_centered(128, "wallet_create", Display::FontSize::MEDIUM, TFT_CYAN);
+            m_display.draw_text_centered(158, "wallet_import", Display::FontSize::MEDIUM, TFT_CYAN);
+            m_display.draw_text_centered(188, "<mnemonic / key>", Display::FontSize::SMALL, TFT_GRAY);
             break;
 
         case SetupStage::DONE:
         default:
-            m_display.draw_text_centered(90, "Setup Complete!", Display::FontSize::SMALL);
-            m_display.draw_text_centered(170, "Starting...", Display::FontSize::SMALL);
+            m_display.draw_text_centered(96, "Done!", Display::FontSize::LARGE, Colors::GREEN);
+            m_display.draw_text_centered(150, "Starting...", Display::FontSize::MEDIUM, TFT_GRAY);
             break;
     }
 }
