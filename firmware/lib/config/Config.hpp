@@ -19,9 +19,9 @@ namespace DisplayConfig {
     // module (PIN_BL < 0 means firmware never drives the backlight).
     inline constexpr int  PIN_SCLK     = 9;
     inline constexpr int  PIN_MOSI     = 8;
-    inline constexpr int  PIN_CS       = 10;
+    inline constexpr int  PIN_CS       = 5;                // GPIO5 (J1-5) — plain I/O
     inline constexpr int  PIN_DC       = 16;               // GPIO16 (J1-9) — plain I/O, no conflict
-    inline constexpr int  PIN_RST      = 17;               // GPIO17 (J1-10) — plain I/O, no conflict
+    inline constexpr int  PIN_RST      = 6;                // GPIO6 (J1-6) — plain I/O
     inline constexpr int  PIN_BL       = -1;               // no backlight control
     inline constexpr int  SPI_FREQ_HZ  = 8000000;          // 8 MHz — matches working Adafruit test; >40MHz can black-screen on dupont wiring
     inline constexpr spi_host_device_t SPI_HOST = SPI2_HOST;
@@ -34,16 +34,23 @@ namespace Buttons {
     // GPIO4 is the dedicated transaction button (single=accept, double=reject).
     // GPIO5/6/7 are menu & QR navigation only.
     inline constexpr int     PIN_CONFIRM   = 4;   // GPIO4 (Transaction accept/reject)
-    inline constexpr int     PIN_MENU      = 5;   // GPIO5 (Menu / Next / double = QR)
-    inline constexpr int     PIN_SELECT    = 6;   // GPIO6 (Menu confirm / select)
-    inline constexpr int     PIN_BACK      = 7;   // GPIO7 (Back)
+    inline constexpr int     PIN_MENU      = 10;  // GPIO10 (Menu / Next / double = QR)
+    inline constexpr int     PIN_SELECT    = 17;  // GPIO17 (Menu confirm / select)
+    inline constexpr int     PIN_BACK      = 13;  // GPIO13 (Back)
     inline constexpr uint32_t DEBOUNCE_MS  = 50;
     inline constexpr uint32_t LONG_PRESS_MS = 1000;  // hold = decline transaction
 }
 
+// ─── Buzzer (active 5 V electromagnetic buzzer, e.g. PS-HT1205 class) ─
+// Driven low-side via NPN transistor (GPIO -> 1k -> base, emitter -> GND,
+// collector -> buzzer(-), buzzer(+) -> 5V). Active-high: GPIO HIGH = sound.
+// NOTE: pin reserved here; beep driver + UI hooks are a follow-up step.
+namespace BuzzerConfig {
+    inline constexpr int PIN = 40;   // GPIO40 (J3-8, MTDO) — no boot-strapping role
+}
+
 // ─── Onboard RGB LED (WS2812, ESP32-S3-DevKitC-1 GPIO48) ──
-namespace LedConfig {
-    inline constexpr int        PIN                = 48;  // DevKitC-1 onboard WS2812
+namespace LedConfig {    inline constexpr int        PIN                = 48;  // DevKitC-1 onboard WS2812
     inline constexpr uint32_t   RMT_RESOLUTION_HZ  = 10000000;  // 10 MHz → 0.1 us/tick
     inline constexpr int        SUCCESS_BLINKS     = 5;   // green blink count
     inline constexpr int        FAILURE_BLINKS     = 5;   // red blink count

@@ -290,8 +290,8 @@ extern "C" void app_main(void) {
     }
     ESP_LOGI(TAG, "[OK] Network configured: %s", s_is_devnet ? "Solana Devnet" : "Solana Mainnet-Beta");
 
-    // TEST: init buttons first so the display's output config on the
-    // shared GPIO6/7 (DC/RST) wins over the button pull-up inputs.
+    // Buttons before display: harmless either way now that the display
+    // (8/9/5/16/6) shares no pins with the buttons (4/10/17/13).
     if (!s_buttons.init(Fuchey::Events::g_button_queue)) {
         ESP_LOGE(TAG, "[!!] Button Driver initialization failed");
     } else {
