@@ -7,10 +7,11 @@
 
 namespace Fuchey {
 
-BalanceMonitor::BalanceMonitor(WiFiManager& wifi, const std::string& wallet_addr,
-                               const std::string& usdc_mint, const std::string& rpc_url)
-    : m_wifi(wifi), m_wallet_addr(wallet_addr), m_usdc_mint(usdc_mint),
-      m_rpc_url(rpc_url) {}
+BalanceMonitor::BalanceMonitor(WiFiManager& wifi, RpcCall rpc_call,
+                               const std::string& wallet_addr,
+                               const std::string& usdc_mint)
+    : m_wifi(wifi), m_rpc_call(std::move(rpc_call)),
+      m_wallet_addr(wallet_addr), m_usdc_mint(usdc_mint) {}
 
 bool BalanceMonitor::fetch_balances(double& sol_out, double& usdc_out) {
     if (m_wallet_addr.empty()) return false;
@@ -29,7 +30,7 @@ double BalanceMonitor::fetch_sol_balance() {
              "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
              m_wallet_addr.c_str());
 
-    auto resp = m_wifi.post_json(m_rpc_url.c_str(), req);
+    auto resp = m_rpc_call(req, false);
     if (!resp.success) return 0.0;
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
@@ -52,7 +53,7 @@ double BalanceMonitor::fetch_usdc_balance() {
              "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
              m_wallet_addr.c_str(), m_usdc_mint.c_str());
 
-    auto resp = m_wifi.post_json(m_rpc_url.c_str(), req);
+    auto resp = m_rpc_call(req, false);
     if (!resp.success) return 0.0;
 
     cJSON* root = cJSON_Parse(resp.body.c_str());

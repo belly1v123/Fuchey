@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <string>
+#include <vector>
 
 #include "../lib/config/Config.hpp"
 #include "../lib/events/Events.hpp"
@@ -35,6 +36,7 @@
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
+#include "../lib/rpc/RpcClient.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -87,11 +89,38 @@ static const char* get_rpc_url() {
     return s_is_devnet ? Fuchey::API::SOLANA_DEVNET_RPC : Fuchey::API::SOLANA_MAINNET_RPC;
 }
 
+// Ordered endpoint list for the active network (failover order).
+static const std::vector<const char*>& get_rpc_urls() {
+    static const std::vector<const char*> devnet_urls(
+        Fuchey::API::SOLANA_DEVNET_RPC_URLS,
+        Fuchey::API::SOLANA_DEVNET_RPC_URLS + Fuchey::API::SOLANA_DEVNET_RPC_COUNT);
+    static const std::vector<const char*> mainnet_urls(
+        Fuchey::API::SOLANA_MAINNET_RPC_URLS,
+        Fuchey::API::SOLANA_MAINNET_RPC_URLS + Fuchey::API::SOLANA_MAINNET_RPC_COUNT);
+    return s_is_devnet ? devnet_urls : mainnet_urls;
+}
+
 static const char* get_usdc_mint() {
     return s_is_devnet ? Fuchey::API::USDC_DEVNET_MINT : Fuchey::API::USDC_MAINNET_MINT;
 }
 
-static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
+// Resilient RPC client. Mainnet gets endpoint failover; devnet stays on the
+// old single-endpoint path (routed inside solana_rpc_call below).
+static Fuchey::RpcClient s_rpc_client(s_wifi_manager, get_rpc_urls);
+
+// Route one JSON-RPC call. is_send_tx=true only for sendTransaction.
+static Fuchey::HttpResponse solana_rpc_call(const char* body, bool is_send_tx) {
+    if (s_is_devnet) {
+        return s_wifi_manager.post_json(get_rpc_url(), body);
+    }
+    return s_rpc_client.call(body, is_send_tx);
+}
+
+static Fuchey::BalanceMonitor s_balance_monitor(
+    s_wifi_manager,
+    [](const char* body, bool is_send_tx) { return solana_rpc_call(body, is_send_tx); },
+    "",
+    get_usdc_mint());
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -148,7 +177,7 @@ static double fetch_sol_balance_lamports(const std::string& address) {
              "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
              address.c_str());
 
-    auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+    auto resp = solana_rpc_call(req, false);
     if (!resp.success) {
         ESP_LOGE(TAG, "[PreCheck] SOL balance RPC failed (HTTP %d)", resp.status_code);
         return -1.0;
@@ -187,7 +216,7 @@ static UsdcAccount fetch_usdc_account(const std::string& address) {
              "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
              address.c_str(), get_usdc_mint());
 
-    auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+    auto resp = solana_rpc_call(req, false);
     if (!resp.success) {
         ESP_LOGE(TAG, "[Pre-check] USDC account RPC failed (HTTP %d)", resp.status_code);
         return out;
@@ -642,7 +671,7 @@ extern "C" void app_main(void) {
                             double lamports  = 0.0;
                             bool   sol_ok    = false;
 
-                            auto resp = s_wifi_manager.post_json(get_rpc_url(), sol_req);
+                            auto resp = solana_rpc_call(sol_req, false);
                             if (resp.success) {
                                 cJSON* root = cJSON_Parse(resp.body.c_str());
                                 if (root) {
@@ -681,7 +710,7 @@ extern "C" void app_main(void) {
                             double usdc_bal = 0.0;
                             bool   usdc_ok  = false;
 
-                            auto u_resp = s_wifi_manager.post_json(get_rpc_url(), usdc_req);
+                            auto u_resp = solana_rpc_call(usdc_req, false);
                             if (u_resp.success) {
                                 cJSON* root = cJSON_Parse(u_resp.body.c_str());
                                 if (root) {
@@ -784,7 +813,7 @@ extern "C" void app_main(void) {
                                      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"%s\",%llu]}",
                                      address.c_str(), lamports);
 
-                            auto resp = s_wifi_manager.post_json(get_rpc_url(), req);
+                            auto resp = solana_rpc_call(req, false);
                             if (resp.success) {
                                 cJSON* root = cJSON_Parse(resp.body.c_str());
                                 cJSON* res = root ? cJSON_GetObjectItem(root, "result") : nullptr;
@@ -1113,14 +1142,27 @@ extern "C" void app_main(void) {
 
                             ESP_LOGI(CTAG, "[SEND SOL] Transaction APPROVED! Fetching blockhash from Devnet...");
 
+                            // Result event for the UI — built now so every failure
+                            // path below can post TX_BROADCAST_FAIL instead of
+                            // silently leaving the UI hanging.
+                            Fuchey::Events::Event result_evt{};
+                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
+                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                     sizeof(result_evt.data.tx.tx_data),
+                                     "SOL:%.4f:%s", amount, recipient_str.c_str());
+
                             // Fetch latest blockhash
-                            auto bh_resp = s_wifi_manager.post_json(
-                                get_rpc_url(),
-                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
+                            auto bh_resp = solana_rpc_call(
+                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}",
+                                false
                             );
 
                             if (!bh_resp.success) {
                                 ESP_LOGE(CTAG, "[SEND SOL] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "RPC blockhash|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1139,6 +1181,10 @@ extern "C" void app_main(void) {
 
                             if (blockhash_str.empty()) {
                                 ESP_LOGE(CTAG, "[SEND SOL] Error parsing blockhash: %.100s", bh_resp.body.c_str());
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1146,6 +1192,10 @@ extern "C" void app_main(void) {
                             auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
                             if (blockhash_bytes.size() != 32) {
                                 ESP_LOGE(CTAG, "[SEND SOL] Invalid blockhash decode size (%d)", blockhash_bytes.size());
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "Invalid blockhash|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1193,6 +1243,10 @@ extern "C" void app_main(void) {
                             auto sign_res = s_wallet_core.sign(msg, sig);
                             if (sign_res != Fuchey::WalletResult::OK) {
                                 ESP_LOGE(CTAG, "[SEND SOL] Signing failed (err=%d)", static_cast<int>(sign_res));
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "Signing failed|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1212,13 +1266,7 @@ extern "C" void app_main(void) {
                                      base58_tx.c_str());
 
                             ESP_LOGI(CTAG, "[SEND SOL] Broadcasting signed transaction to Solana Devnet...");
-                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
-
-                            Fuchey::Events::Event result_evt{};
-                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
-                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                     sizeof(result_evt.data.tx.tx_data),
-                                     "SOL:%.4f:%s", amount, recipient_str.c_str());
+                            auto tx_resp = solana_rpc_call(req_buf, true);
 
                             if (tx_resp.success) {
                                 cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
@@ -1437,14 +1485,27 @@ extern "C" void app_main(void) {
 
                             ESP_LOGI(CTAG, "[SEND USDC] Transaction APPROVED! Fetching blockhash from Devnet...");
 
+                            // Result event for the UI — built now so every failure
+                            // path below can post TX_BROADCAST_FAIL instead of
+                            // silently leaving the UI hanging.
+                            Fuchey::Events::Event result_evt{};
+                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
+                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                     sizeof(result_evt.data.tx.tx_data),
+                                     "USDC:%.2f:%s", amount, recipient_str.c_str());
+
                             // Fetch blockhash
-                            auto bh_resp = s_wifi_manager.post_json(
-                                get_rpc_url(),
-                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
+                            auto bh_resp = solana_rpc_call(
+                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}",
+                                false
                             );
 
                             if (!bh_resp.success) {
                                 ESP_LOGE(CTAG, "[SEND USDC] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "RPC blockhash|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1463,6 +1524,10 @@ extern "C" void app_main(void) {
 
                             if (blockhash_str.empty()) {
                                 ESP_LOGE(CTAG, "[SEND USDC] Error parsing blockhash: %.100s", bh_resp.body.c_str());
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1470,6 +1535,10 @@ extern "C" void app_main(void) {
                             auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
                             if (blockhash_bytes.size() != 32) {
                                 ESP_LOGE(CTAG, "[SEND USDC] Invalid blockhash decode size (%d)", blockhash_bytes.size());
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "Invalid blockhash|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1513,6 +1582,10 @@ extern "C" void app_main(void) {
                             auto sign_res = s_wallet_core.sign(msg, sig);
                             if (sign_res != Fuchey::WalletResult::OK) {
                                 ESP_LOGE(CTAG, "[SEND USDC] Signing failed (err=%d)", static_cast<int>(sign_res));
+                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                                         sizeof(result_evt.data.tx.tx_data), "Signing failed|%s", recipient_str.c_str());
+                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                                 vTaskDelete(nullptr);
                                 return;
                             }
@@ -1532,13 +1605,7 @@ extern "C" void app_main(void) {
                                      base58_tx.c_str());
 
                             ESP_LOGI(CTAG, "[SEND USDC] Broadcasting signed transaction to Solana Devnet...");
-                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
-
-                            Fuchey::Events::Event result_evt{};
-                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
-                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                     sizeof(result_evt.data.tx.tx_data),
-                                     "USDC:%.2f:%s", amount, recipient_str.c_str());
+                            auto tx_resp = solana_rpc_call(req_buf, true);
 
                             if (tx_resp.success) {
                                 cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
