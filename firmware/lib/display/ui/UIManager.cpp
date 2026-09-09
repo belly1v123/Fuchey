@@ -41,6 +41,15 @@ bool UIManager::init() {
 
 void UIManager::set_screen(UIScreen screen) {
     m_current_screen = screen;
+    if (screen == UIScreen::MENU_MAIN) {
+        m_menu_anim_last_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    }
+    if (screen == UIScreen::ANIM_TEST) {
+        // Restart animation from frame 0 on every entry.
+        m_anim_started = false;
+        m_anim_chrome_drawn = false;
+        m_anim_last_frame = 255;
+    }
     request_redraw();
 }
 
@@ -266,6 +275,14 @@ void UIManager::mark_wallet_configured(const char* address) {
 
 // ─── Render dispatch ──────────────────────────────────────
 void UIManager::render() {
+    // ANIM_TEST is self-flushing (static chrome via full flush once, then
+    // 96x96 sprite/counter window flushes per changed frame). Keep it out
+    // of the clear()+full-flush path below.
+    if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
+        render_anim_test();
+        return;
+    }
+
     m_display.clear();
 
     if (m_setup_needed) {
@@ -287,7 +304,7 @@ void UIManager::render() {
         case UIScreen::TX_FAIL:      render_tx_result();   break;
         case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
-        case UIScreen::ANIM_TEST:    render_anim_test();   break;
+        case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
     }
 
     m_display.flush();
@@ -367,6 +384,13 @@ void UIManager::render_menu() {
     m_display.draw_text_centered(8, "MENU", Display::FontSize::MEDIUM);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
+    // Animated selection cursor: bouncing ">" next to the active row.
+    // Time-based (no extra state); run() re-renders MENU_MAIN at ~4fps.
+    // Triangle wave over 4 x 250ms steps: dx = 0,3,6,3 px.
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    const int step = static_cast<int>((now / 250u) % 4u);
+    const int dx = (step == 1 || step == 3) ? 3 : (step == 2 ? 6 : 0);
+
     static constexpr const char* kItems[4] = {
         "Wallet Info", "AI Assistant", "SOL Price", "View Balance"
     };
@@ -375,9 +399,10 @@ void UIManager::render_menu() {
         if (i == m_menu_index) {
             // Inverted highlight bar for the selected row
             m_display.fill_rect(12, y - 5, Display::WIDTH - 24, 26, Colors::WHITE);
-            m_display.draw_text(28, y, kItems[i], Display::FontSize::MEDIUM, Colors::BLACK);
+            m_display.draw_text(14 + dx, y, ">", Display::FontSize::MEDIUM, Colors::BLACK);
+            m_display.draw_text(32, y, kItems[i], Display::FontSize::MEDIUM, Colors::BLACK);
         } else {
-            m_display.draw_text(28, y, kItems[i], Display::FontSize::MEDIUM, TFT_GRAY);
+            m_display.draw_text(32, y, kItems[i], Display::FontSize::MEDIUM, TFT_GRAY);
         }
     }
 
@@ -623,31 +648,64 @@ void UIManager::render_chat() {
 }
 
 // ─── Animation test ───────────────────────────────────────
+// Partial-flush animation: static chrome is full-flushed once on entry;
+// each changed frame erases/redraws only the 96x96 sprite rect (transparent
+// color-key 0xF81F) plus a narrow counter strip. No-op when tick() is false,
+// so run() calling us every tick costs zero SPI on idle frames.
 void UIManager::render_anim_test() {
-    static SpritePlayer s_player;
-    static bool s_started = false;
+    static constexpr Color kTransparent = 0xF81F;
+    static constexpr int kCounterY = 190;
+    static constexpr int kCounterH = 10; // SMALL font is 8px tall
+
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    if (!s_started) {
-        s_player.set_anim(&YetiAnim, now);
-        s_started = true;
-    }
-    s_player.tick(now);
-
-    m_display.draw_text_centered(8, "YETI", Display::FontSize::MEDIUM, TFT_CYAN);
-    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-
-    const SpritePixel* f = s_player.current_frame_data();
-    if (f != nullptr) {
-        int x = (Display::WIDTH - YetiAnim.w) / 2;
-        int y = 88 - YetiAnim.h / 2 + 30;
-        m_display.draw_sprite(x, y, YetiAnim.w, YetiAnim.h, f);
+    if (!m_anim_started) {
+        m_anim_player.set_anim(&YetiAnim, now);
+        m_anim_started = true;
+        m_anim_chrome_drawn = false;
     }
 
+    const int x = (Display::WIDTH - YetiAnim.w) / 2;
+    const int y = 88 - YetiAnim.h / 2 + 30;
+
+    if (!m_anim_chrome_drawn) {
+        m_display.clear();
+        m_display.draw_text_centered(8, "YETI", Display::FontSize::MEDIUM, TFT_CYAN);
+        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+        const SpritePixel* f0 = m_anim_player.current_frame_data();
+        if (f0 != nullptr) {
+            m_display.fill_rect(x, y, YetiAnim.w, YetiAnim.h, TFT_BLACK);
+            m_display.draw_sprite_transparent(x, y, YetiAnim.w, YetiAnim.h, f0, kTransparent);
+        }
+        char buf[24];
+        snprintf(buf, sizeof(buf), "frame %u/%u", m_anim_player.current_frame() + 1, YetiAnim.frames);
+        m_display.draw_text_centered(kCounterY, buf, Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.flush();
+        m_anim_chrome_drawn = true;
+        m_anim_last_frame = m_anim_player.current_frame();
+        return;
+    }
+
+    if (!m_anim_player.tick(now)) return; // frame unchanged → zero SPI
+    const uint8_t fr = m_anim_player.current_frame();
+    if (fr == m_anim_last_frame) return;
+    m_anim_last_frame = fr;
+
+    const SpritePixel* f = m_anim_player.current_frame_data();
+    if (f == nullptr) return;
+    // Erase keeps old opaque pixels from leaving trails behind transparent ones.
+    m_display.fill_rect(x, y, YetiAnim.w, YetiAnim.h, TFT_BLACK);
+    m_display.draw_sprite_transparent(x, y, YetiAnim.w, YetiAnim.h, f, kTransparent);
+    m_display.flush_window(x, y, YetiAnim.w, YetiAnim.h);
+
+    // Counter strip uses a full-width window so push_window() takes the
+    // no-staging fast path (w == WIDTH).
+    m_display.fill_rect(0, kCounterY, Display::WIDTH, kCounterH, TFT_BLACK);
     char buf[24];
-    snprintf(buf, sizeof(buf), "frame %u/%u", s_player.current_frame() + 1, YetiAnim.frames);
-    m_display.draw_text_centered(190, buf, Display::FontSize::SMALL, TFT_GRAY);
-    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+    snprintf(buf, sizeof(buf), "frame %u/%u", fr + 1, YetiAnim.frames);
+    m_display.draw_text_centered(kCounterY, buf, Display::FontSize::SMALL, TFT_GRAY);
+    m_display.flush_window(0, kCounterY, Display::WIDTH, kCounterH);
 }
 
 // ─── Setup wizard renderer ────────────────────────────────
@@ -871,11 +929,20 @@ void UIManager::run() {
         }
 
         // Redraw only when state actually changed (screen/data/button). The idle
-        // clock requests a frame on each minute tick; ANIM_TEST renders every tick.
+        // clock requests a frame on each minute tick; ANIM_TEST is polled every
+        // tick but render_anim_test() is a no-op (zero SPI) unless tick() advanced.
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
             need_render = true;
+        } else if (!m_setup_needed && m_current_screen == UIScreen::MENU_MAIN) {
+            // Throttled menu animation: full flush costs ~115ms @8MHz SPI,
+            // so cap cursor bounce at ~4fps instead of every 100ms tick.
+            uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now_ms - m_menu_anim_last_ms >= 250) {
+                m_menu_anim_last_ms = now_ms;
+                need_render = true;
+            }
         } else if (!m_setup_needed && m_current_screen == UIScreen::IDLE_CLOCK) {
             time_t now = time(nullptr);
             struct tm ti{};

@@ -7,6 +7,7 @@
 // ============================================================
 
 #include "../Display.hpp"
+#include "SpritePlayer.hpp"
 #include "../../events/Events.hpp"
 #include "../../balance/BalanceMonitor.hpp"
 #include <atomic>
@@ -119,6 +120,14 @@ private:
     uint32_t    m_connecting_dots_ms{0};
     uint8_t     m_connecting_dots{0};
     uint8_t     m_menu_index{0};
+    // Menu cursor animation throttle (full flush ~115ms @8MHz, so ~4fps max).
+    uint32_t    m_menu_anim_last_ms{0};
+
+    // ANIM_TEST player (was function-static; reset on entry in set_screen()).
+    SpritePlayer m_anim_player;
+    bool        m_anim_started{false};
+    bool        m_anim_chrome_drawn{false};
+    uint8_t     m_anim_last_frame{255};
 
     void render_clock();
     void render_weather();

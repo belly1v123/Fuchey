@@ -450,16 +450,23 @@ void St7789::push_window(int x, int y, int w, int h) {
     if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
     if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
     constexpr int BAND_ROWS = 60;
+    // Staging buffer sized for the largest real window (Yeti sprite: 96px
+    // wide → 60*96*2 = 11,520 B .bss) instead of a full-width band
+    // (60*240*2 = 28,800 B). Static DRAM is DMA-capable on S3, so this is
+    // safe for spi_device_transmit. Wider-than-sprite windows fall back to
+    // row-by-row transfers below (more transactions, zero extra RAM).
+    constexpr int kStagingMaxW = 96;
     for (int y0 = y; y0 < y + h; y0 += BAND_ROWS) {
         int y1 = y0 + BAND_ROWS - 1;
         if (y1 > y + h - 1) y1 = y + h - 1;
-        set_window(x, y0, x + w - 1, y1);
         if (w == DisplayConfig::WIDTH) {
+            set_window(x, y0, x + w - 1, y1);
             push_pixels(reinterpret_cast<const uint8_t*>(
                             m_fb + static_cast<size_t>(y0) * DisplayConfig::WIDTH + static_cast<size_t>(x)),
                         static_cast<size_t>(y1 - y0 + 1) * static_cast<size_t>(w) * sizeof(uint16_t));
-        } else {
-            static uint8_t s_line[60 * 240 * 2];
+        } else if (w <= kStagingMaxW) {
+            set_window(x, y0, x + w - 1, y1);
+            static uint8_t s_line[60 * 96 * 2];
             uint8_t* q = s_line;
             for (int r = y0; r <= y1; ++r) {
                 const uint8_t* src = reinterpret_cast<const uint8_t*>(
@@ -468,6 +475,15 @@ void St7789::push_window(int x, int y, int w, int h) {
                 q += static_cast<size_t>(w) * sizeof(uint16_t);
             }
             push_pixels(s_line, static_cast<size_t>(y1 - y0 + 1) * static_cast<size_t>(w) * sizeof(uint16_t));
+        } else {
+            // Wide partial window: each row slice is contiguous in the
+            // framebuffer, so send it directly with no staging copy.
+            for (int r = y0; r <= y1; ++r) {
+                set_window(x, r, x + w - 1, r);
+                push_pixels(reinterpret_cast<const uint8_t*>(
+                                m_fb + static_cast<size_t>(r) * DisplayConfig::WIDTH + static_cast<size_t>(x)),
+                            static_cast<size_t>(w) * sizeof(uint16_t));
+            }
         }
     }
 }
