@@ -9,7 +9,11 @@
 #include "YetiAnim.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
+#include "PassBlurTop.hpp"
+#include "esp_heap_caps.h"
 #include "FreeSansBold9pt7b.h"
+#include "PoppinsRegular9pt7b.h"
+#include "PoppinsBold9pt7b.h"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
@@ -33,6 +37,50 @@ static constexpr const char* TAG = "UIManager";
 inline constexpr Color TFT_CYAN   = 0x07FF;
 inline constexpr Color TFT_GRAY   = 0x8410;
 inline constexpr Color TFT_ORANGE = 0xFD20;
+inline constexpr Color TFT_SILVER = 0xC618; // light gray body text
+inline constexpr Color TFT_NAVY   = 0x10A2; // dark command-pill fill
+
+namespace {
+// ─── Setup-screen GFX helpers (Poppins mix, all size 1) ────
+void gfx_centered(Display& d, int y, std::string_view t,
+                  const GFXfont* f, Color c) {
+    int w = 0, h = 0;
+    d.gfx_text_bounds(t, f, 1, &w, &h);
+    d.draw_gfx_text((Display::WIDTH - w) / 2, y, t, f, 1, c);
+}
+
+// Centered command pill: cyan-on-navy by default, auto-measured + padded.
+void command_pill(Display& d, int y, std::string_view t,
+                  const GFXfont* f, Color fg, Color bg = TFT_NAVY) {
+    int w = 0, h = 0;
+    d.gfx_text_bounds(t, f, 1, &w, &h);
+    constexpr int kPadX = 8, kPadTop = 5, kPadBot = 5;
+    const int px = (Display::WIDTH - w) / 2 - kPadX;
+    d.fill_rect(px, y - kPadTop, w + 2 * kPadX, h + kPadTop + kPadBot, bg);
+    d.draw_gfx_text((Display::WIDTH - w) / 2, y, t, f, 1, fg);
+}
+
+// Trim text with "..." until it fits max_w (for user data like SSIDs).
+std::string fit_gfx(Display& d, std::string_view t,
+                    const GFXfont* f, int max_w) {
+    int w = 0, h = 0;
+    d.gfx_text_bounds(t, f, 1, &w, &h);
+    if (w <= max_w) return std::string(t);
+    std::string head(t);
+    while (!head.empty()) {
+        head.pop_back();
+        std::string cand = head + "...";
+        d.gfx_text_bounds(cand, f, 1, &w, &h);
+        if (w <= max_w) return cand;
+    }
+    return "...";
+}
+
+void setup_header(Display& d) {
+    gfx_centered(d, 8, "First Boot Setup", &PoppinsBold9pt7b, Colors::WHITE);
+    d.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+}
+} // namespace
 
 UIManager::UIManager(Display& display) : m_display(display) {}
 
@@ -745,7 +793,6 @@ void UIManager::render_home() {
     static constexpr int kTimeY = 12;
     static constexpr int kDateX = 52,  kDateY = 55, kDateSize = 2;
     static constexpr int kMarginX = 8, kPillPad = 10;
-    static constexpr int kBlurR = 3, kBlurKeep = 220; // frosted band: r=3, ~86%
     static constexpr Color kTransparent = 0xF81F;
     static constexpr Color kClock = 0xFFE0; // yellow
 
@@ -795,9 +842,13 @@ void UIManager::render_home() {
     const int pw = pr - px, ph = pb - py;
 
     if (!m_home_chrome) {
+        // Frosted pill comes from a pre-blurred asset band (PassBlurTop covers
+        // y 0..100) — deterministic on every boot, no heap or pixel math here.
+        ESP_LOGI(TAG, "HOME chrome: pill=(%d,%d %dx%d) free_blk=%u",
+                 px, py, pw, ph,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         m_display.draw_sprite(0, 0, PassDesign.w, PassDesign.h, PassDesign.data);
-        m_display.draw_blurred_crop(px, py, PassDesign.w, px, py, pw, ph,
-                                    PassDesign.data, kBlurR, kBlurKeep);
+        m_display.draw_sprite_crop(px, py, PassBlurTop.w, px, py, pw, ph, PassBlurTop.data);
         m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
         m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
         const SpritePixel* f0 = m_home_yeti.current_frame_data();
@@ -822,8 +873,7 @@ void UIManager::render_home() {
         const int rb = std::max(m_home_ty + m_home_th, py + ph);
         const int rw = rr - rx, rh = rb - ry;
         m_display.draw_sprite_crop(rx, ry, PassDesign.w, rx, ry, rw, rh, PassDesign.data);
-        m_display.draw_blurred_crop(px, py, PassDesign.w, px, py, pw, ph,
-                                    PassDesign.data, kBlurR, kBlurKeep);
+        m_display.draw_sprite_crop(px, py, PassBlurTop.w, px, py, pw, ph, PassBlurTop.data);
         m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
         m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
         m_display.flush_window(rx, ry, rw, rh);
@@ -845,51 +895,63 @@ void UIManager::render_home() {
     m_display.flush_window(kYetiX, kYetiY, YetiAnim.w, YetiAnim.h);
 }
 
-// ─── Setup wizard renderer ────────────────────────────────
+// ─── Setup wizard renderer (Poppins mix, all FreeSans-free) ───
 void UIManager::render_setup() {
     switch (m_setup_stage) {
 
         case SetupStage::WIFI_PROMPT:
             // Step 1: Ask for WiFi
-            m_display.draw_text_centered(8, "SETUP", Display::FontSize::MEDIUM);
-            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-            m_display.draw_text_centered(56, "Step 1: WiFi", Display::FontSize::MEDIUM, TFT_ORANGE);
-            m_display.draw_text_centered(104, "Type in serial:", Display::FontSize::SMALL, TFT_GRAY);
-            m_display.draw_text_centered(132, "w SSID PASS", Display::FontSize::MEDIUM, TFT_CYAN);
+            setup_header(m_display);
+            gfx_centered(m_display, 46, "Step 1", &PoppinsBold9pt7b, TFT_ORANGE);
+            gfx_centered(m_display, 72, "Connect to WiFi", &PoppinsBold9pt7b, Colors::WHITE);
+            gfx_centered(m_display, 104, "Go to serial monitor", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 130, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 158, "type:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 182, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::WIFI_CONNECTING: {
             // Static screen: full-screen redraws are slow on SPI, so no
             // animated dots here — repaint happens on stage change only.
-            m_display.draw_text_centered(8, "CONNECTING", Display::FontSize::MEDIUM, TFT_ORANGE);
-            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+            setup_header(m_display);
+            gfx_centered(m_display, 52, "Connecting...", &PoppinsBold9pt7b, Colors::WHITE);
 
-            // Truncate SSID to fit
-            char ssid_buf[24];
-            snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", m_connecting_ssid.c_str());
-            m_display.draw_text_centered(72, ssid_buf, Display::FontSize::MEDIUM);
+            // SSID is user data: trim with "..." so wide names can't overflow.
+            command_pill(m_display, 84,
+                         fit_gfx(m_display, m_connecting_ssid, &PoppinsRegular9pt7b,
+                                 Display::WIDTH - 32),
+                         &PoppinsRegular9pt7b, Colors::WHITE);
 
-            m_display.draw_text_centered(124, "Waiting for IP...", Display::FontSize::SMALL, TFT_GRAY);
+            gfx_centered(m_display, 124, "Waiting for IP...", &PoppinsRegular9pt7b, TFT_GRAY);
 
             // Static empty progress bar (frame only)
-            m_display.draw_progress_bar(20, 180, 200, 16, 0);
+            m_display.draw_progress_bar(20, 180, 200, 16, 0, TFT_CYAN);
+            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
         }
 
         case SetupStage::WALLET_PROMPT:
-            m_display.draw_text_centered(8, "SETUP", Display::FontSize::MEDIUM);
-            m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-            m_display.draw_text_centered(48, "WiFi: OK", Display::FontSize::MEDIUM, Colors::GREEN);
-            m_display.draw_text_centered(84, "Step 2: Wallet", Display::FontSize::MEDIUM, TFT_ORANGE);
-            m_display.draw_text_centered(128, "wallet_create", Display::FontSize::MEDIUM, TFT_CYAN);
-            m_display.draw_text_centered(158, "wallet_import", Display::FontSize::MEDIUM, TFT_CYAN);
-            m_display.draw_text_centered(188, "<mnemonic / key>", Display::FontSize::SMALL, TFT_GRAY);
+            setup_header(m_display);
+            gfx_centered(m_display, 44, "WiFi: OK", &PoppinsBold9pt7b, Colors::GREEN);
+            gfx_centered(m_display, 72, "Step 2", &PoppinsBold9pt7b, TFT_ORANGE);
+            gfx_centered(m_display, 96, "Create Your Wallet", &PoppinsBold9pt7b, Colors::WHITE);
+            command_pill(m_display, 126, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
+            command_pill(m_display, 154, "wallet_import <key>", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 186, "<mnemonic / key>", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 2 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::DONE:
         default:
-            m_display.draw_text_centered(96, "Done!", Display::FontSize::LARGE, Colors::GREEN);
-            m_display.draw_text_centered(150, "Starting...", Display::FontSize::MEDIUM, TFT_GRAY);
+            // size-2 hero: measure then draw centered manually
+            {
+                int w = 0, h = 0;
+                m_display.gfx_text_bounds("Done!", &PoppinsBold9pt7b, 2, &w, &h);
+                m_display.draw_gfx_text((Display::WIDTH - w) / 2, 96,
+                                        "Done!", &PoppinsBold9pt7b, 2, Colors::GREEN);
+            }
+            gfx_centered(m_display, 140, "Opening home...", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
     }
 }

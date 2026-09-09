@@ -22,8 +22,8 @@ struct GFXglyph {
     int8_t   xOffset, yOffset;
 };
 struct GFXfont {
-    uint8_t*  bitmap;
-    GFXglyph* glyph;
+    const uint8_t*  bitmap;
+    const GFXglyph* glyph;
     uint8_t   first, last, yAdvance;
 };
 
