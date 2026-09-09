@@ -31,7 +31,8 @@ enum class UIScreen {
     TX_FAIL,
     CHAT_VIEW,
     BALANCE_VIEW,
-    ANIM_TEST
+    ANIM_TEST,
+    FAIR_PASS
 };
 
 // Setup wizard stages (first-boot only)
@@ -141,6 +142,7 @@ private:
     void render_balance();
     void render_chat();
     void render_anim_test();
+    void render_fair_pass();
     void render_setup();
 
     void cycle_idle_screen();

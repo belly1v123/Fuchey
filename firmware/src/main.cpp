@@ -433,6 +433,8 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    q                          MENU double-press (show QR)");
         ESP_LOGI(CTAG, "    m / select                 SELECT press (choose option)");
         ESP_LOGI(CTAG, "    b / 2                      BACK button");
+        ESP_LOGI(CTAG, "    anim                       Yeti animation test screen");
+        ESP_LOGI(CTAG, "    pass                       Worlds Fair banner screen");
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
 
@@ -624,6 +626,11 @@ extern "C" void app_main(void) {
                 } else if (strcmp(cmd, "anim") == 0) {
                     ESP_LOGI(CTAG, "[UI] Switching to ANIM_TEST screen");
                     s_ui.set_screen(Fuchey::UIScreen::ANIM_TEST);
+
+                // ── pass ──────────────────────────────────────
+                } else if (strcmp(cmd, "pass") == 0) {
+                    ESP_LOGI(CTAG, "[UI] Switching to FAIR_PASS screen");
+                    s_ui.set_screen(Fuchey::UIScreen::FAIR_PASS);
 
                 // ── balance ───────────────────────────────────
                 } else if (strcmp(cmd, "balance") == 0) {

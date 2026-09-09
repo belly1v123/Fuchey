@@ -7,6 +7,7 @@
 #include "Animations.hpp"
 #include "SpritePlayer.hpp"
 #include "YetiAnim.hpp"
+#include "FairPass.hpp"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
@@ -305,6 +306,7 @@ void UIManager::render() {
         case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
         case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
+        case UIScreen::FAIR_PASS:    render_fair_pass();   break;
     }
 
     m_display.flush();
@@ -708,6 +710,13 @@ void UIManager::render_anim_test() {
     m_display.flush_window(0, kCounterY, Display::WIDTH, kCounterH);
 }
 
+// ─── Worlds Fair banner (static full-screen image) ──────────
+// render() clear()s + flush()es around us; one full flush (~115ms @8MHz)
+// is fine for a static image.
+void UIManager::render_fair_pass() {
+    m_display.draw_sprite(0, 0, FairPass.w, FairPass.h, FairPass.data);
+}
+
 // ─── Setup wizard renderer ────────────────────────────────
 void UIManager::render_setup() {
     switch (m_setup_stage) {
@@ -873,6 +882,11 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::ANIM_TEST) {
                 if (btn.id == ButtonId::BACK) {
                     ESP_LOGI(TAG, "Screen: ANIM_TEST -> MENU_MAIN");
+                    set_screen(UIScreen::MENU_MAIN);
+                }
+            } else if (m_current_screen == UIScreen::FAIR_PASS) {
+                if (btn.id == ButtonId::BACK) {
+                    ESP_LOGI(TAG, "Screen: FAIR_PASS -> MENU_MAIN");
                     set_screen(UIScreen::MENU_MAIN);
                 }
             } else if (m_current_screen == UIScreen::TX_SUCCESS ||
