@@ -62,10 +62,10 @@ static Fuchey::Display        s_display;
 static Fuchey::UIManager      s_ui(s_display);
 static Fuchey::LedIndicator   s_led_indicator;
 static Fuchey::Buzzer         s_buzzer;
-static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_CONFIRM,
-                                        Fuchey::Buttons::PIN_MENU,
-                                        Fuchey::Buttons::PIN_SELECT,
-                                        Fuchey::Buttons::PIN_BACK,
+static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_B1_TX_BACK,
+                                        Fuchey::Buttons::PIN_B2_MENU_SELECT,
+                                        Fuchey::Buttons::PIN_B3_PREV,
+                                        Fuchey::Buttons::PIN_B4_NEXT,
                                         Fuchey::Buttons::DEBOUNCE_MS,
                                         Fuchey::Buttons::LONG_PRESS_MS);
 Fuchey::WalletCore            s_wallet_core;
@@ -298,9 +298,9 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "[!!] Button Driver initialization failed");
     } else {
         ESP_LOGI(TAG, "[OK] Button driver initialized "
-                      "(CONFIRM=GPIO%d, MENU=GPIO%d, SELECT=GPIO%d, BACK=GPIO%d)",
-                 Fuchey::Buttons::PIN_CONFIRM, Fuchey::Buttons::PIN_MENU,
-                 Fuchey::Buttons::PIN_SELECT, Fuchey::Buttons::PIN_BACK);
+                      "(B1_TX_BACK=GPIO%d, B2_MENU_SELECT=GPIO%d, B3_PREV=GPIO%d, B4_NEXT=GPIO%d)",
+                 Fuchey::Buttons::PIN_B1_TX_BACK, Fuchey::Buttons::PIN_B2_MENU_SELECT,
+                 Fuchey::Buttons::PIN_B3_PREV, Fuchey::Buttons::PIN_B4_NEXT);
     }
 
     if (!s_display.init()) {
@@ -426,13 +426,14 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    wallet_info                Show current address");
         ESP_LOGI(CTAG, "    wallet_export              Export private key (DANGER)");
         ESP_LOGI(CTAG, "    p                          Force SOL price fetch");
-        ESP_LOGI(CTAG, "    c / 1                      CONFIRM press (tx accept)");
-        ESP_LOGI(CTAG, "    x / 3                      CONFIRM double-press (tx reject)");
-        ESP_LOGI(CTAG, "    l                          CONFIRM long-press (tx reject)");
-        ESP_LOGI(CTAG, "    n / next                   MENU press (open menu / next)");
-        ESP_LOGI(CTAG, "    q                          MENU double-press (show QR)");
-        ESP_LOGI(CTAG, "    m / select                 SELECT press (choose option)");
-        ESP_LOGI(CTAG, "    b / 2                      BACK button");
+        ESP_LOGI(CTAG, "    c / 1                      B1 press (TX accept, else Back)");
+        ESP_LOGI(CTAG, "    x / 3                      B1 double-press (tx reject)");
+        ESP_LOGI(CTAG, "    l                          B1 long-press (tx reject)");
+        ESP_LOGI(CTAG, "    n / menu                   B2 press (open menu / select)");
+        ESP_LOGI(CTAG, "    m / select                 B2 press (alias: choose option)");
+        ESP_LOGI(CTAG, "    j / prev                   B3 press (previous item)");
+        ESP_LOGI(CTAG, "    k / next                   B4 press (next item)");
+        ESP_LOGI(CTAG, "    b / 2                      B1 press (alias: Back)");
         ESP_LOGI(CTAG, "    anim                       Yeti animation test screen");
         ESP_LOGI(CTAG, "    pass                       Worlds Fair banner screen");
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
@@ -497,71 +498,72 @@ extern "C" void app_main(void) {
                     continue;
                 }
 
-                // ── CONFIRM / SELECT button ────────────────────
+                // ── B1 (TX confirm / Back) ───────────────────────
                 if ((cmd[0] == 'c' || cmd[0] == '1') && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] CONFIRM press (tx accept)");
+                    ESP_LOGI(CTAG, "[INPUT] B1 press (tx accept / back)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::CONFIRM,
+                        .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
-                // ── CONFIRM double-press (tx reject) ───────────
+                // ── B1 double-press (tx reject) ────────────────
                 } else if ((cmd[0] == 'x' || cmd[0] == '3') && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] CONFIRM double-press (tx reject)");
+                    ESP_LOGI(CTAG, "[INPUT] B1 double-press (tx reject)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::CONFIRM,
+                        .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
-                // ── CONFIRM long-press (tx reject) ─────────────
+                // ── B1 long-press (tx reject) ──────────────────
                 } else if (cmd[0] == 'l' && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] CONFIRM long-press (tx reject)");
+                    ESP_LOGI(CTAG, "[INPUT] B1 long-press (tx reject)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::CONFIRM,
+                        .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::LONG_PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
-                // ── MENU button (open menu / next) ─────────────
-                } else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
-                    ESP_LOGI(CTAG, "[INPUT] MENU press (open menu / next)");
+                // ── B2 (open menu / select) ────────────────────
+                } else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "menu") == 0 ||
+                           (cmd[0] == 'm' && len == 1) || strcmp(cmd, "select") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] B2 press (open menu / select)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::MENU,
+                        .id = Fuchey::ButtonId::B2_MENU_SELECT,
                         .event = Fuchey::ButtonEvent::PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
-                // ── MENU double-press (show QR) ────────────────
-                } else if (strcmp(cmd, "q") == 0) {
-                    ESP_LOGI(CTAG, "[INPUT] MENU double-press (show QR)");
+                // ── B3 (previous) ──────────────────────────────
+                } else if (strcmp(cmd, "j") == 0 || strcmp(cmd, "prev") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] B3 press (previous)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::MENU,
-                        .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
-                        .timestamp_ms = 0
-                    };
-                    xQueueSend(::g_button_queue_ref, &state, 0);
-
-                // ── SELECT button (choose option) ──────────────
-                } else if ((cmd[0] == 'm' && len == 1) || strcmp(cmd, "select") == 0) {
-                    ESP_LOGI(CTAG, "[INPUT] SELECT press (choose option)");
-                    Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::SELECT,
+                        .id = Fuchey::ButtonId::B3_PREV,
                         .event = Fuchey::ButtonEvent::PRESS,
                         .timestamp_ms = 0
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
-                // ── BACK button ───────────────────────────────
+                // ── B4 (next) ──────────────────────────────────
+                } else if (strcmp(cmd, "k") == 0 || strcmp(cmd, "next") == 0) {
+                    ESP_LOGI(CTAG, "[INPUT] B4 press (next)");
+                    Fuchey::ButtonState state{
+                        .id = Fuchey::ButtonId::B4_NEXT,
+                        .event = Fuchey::ButtonEvent::PRESS,
+                        .timestamp_ms = 0
+                    };
+                    xQueueSend(::g_button_queue_ref, &state, 0);
+
+                // ── B1 alias (Back) ────────────────────────────
                 } else if ((cmd[0] == 'b' || cmd[0] == '2') && len == 1) {
-                    ESP_LOGI(CTAG, "[INPUT] BACK");
+                    ESP_LOGI(CTAG, "[INPUT] B1 (Back)");
                     Fuchey::ButtonState state{
-                        .id = Fuchey::ButtonId::BACK,
+                        .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::PRESS,
                         .timestamp_ms = 0
                     };
@@ -879,11 +881,11 @@ extern "C" void app_main(void) {
                     ESP_LOGW(CTAG, "==================================================");
                     ESP_LOGW(CTAG, "[Wallet] EXPORT PRIVATE KEY");
                     ESP_LOGW(CTAG, "  DANGER: Anyone with this key can steal your funds.");
-                    ESP_LOGW(CTAG, "  Press CONFIRM on the device within 10s to print it,");
+                    ESP_LOGW(CTAG, "  Press B1 on the device within 10s to print it,");
                     ESP_LOGW(CTAG, "  or double/long press to cancel.");
                     ESP_LOGW(CTAG, "==================================================");
 
-                    // Arm the confirm screen so the physical CONFIRM button is accepted
+                    // Arm the confirm screen so the physical B1 button is accepted
                     Fuchey::Events::Event req{};
                     req.type = Fuchey::Events::EventType::TX_REQUEST;
                     req.data.tx.amount_cents = 0;
@@ -1644,8 +1646,11 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  airdrop [amount]         Request Devnet SOL airdrop");
                     ESP_LOGI(CTAG, "  weather                  Fetch weather & geolocation");
                     ESP_LOGI(CTAG, "  p                        Fetch SOL price");
-                    ESP_LOGI(CTAG, "  c / 1                    CONFIRM button");
-                    ESP_LOGI(CTAG, "  b / 2                    BACK button");
+                    ESP_LOGI(CTAG, "  c / 1                    B1 button (TX confirm / Back)");
+                    ESP_LOGI(CTAG, "  n / menu                 B2 button (open / select)");
+                    ESP_LOGI(CTAG, "  j / prev                 B3 button (previous)");
+                    ESP_LOGI(CTAG, "  k / next                 B4 button (next)");
+                    ESP_LOGI(CTAG, "  b / 2                    B1 button (alias: Back)");
 
                 } else {
                     ESP_LOGW(CTAG, "Unknown command: '%s'  (type 'h' for help)", cmd);

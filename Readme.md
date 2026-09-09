@@ -43,17 +43,19 @@ Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a mod
 | TFT DC      | 16   | plain I/O, no conflict |
 | TFT RST     | 6    | plain I/O |
 | TFT BL      | —    | tied to 3V3 on module, firmware does not drive it (`PIN_BL = -1`) |
-| TX button   | 4    | transaction accept/reject |
-| Menu button | 10   | menu / next, double-press = wallet QR |
-| Select      | 17   | confirm highlighted menu option |
-| Back        | 13   | go back |
+| B1 TX/Back  | 4    | TX confirm only during TX_CONFIRM (1x=accept, 2x/hold=reject); elsewhere hierarchical Back |
+| B2 Menu/Sel | 10   | open menu / select highlighted icon (Wallet hub → Balance/QR via B2) |
+| B3 Prev     | 17   | previous icon (menu carousel + Wallet hub tab) |
+| B4 Next     | 13   | next icon (menu carousel + Wallet hub tab) |
 | Buzzer      | 40   | active 5V via NPN low-side, parked LOW at boot (silent) |
 | RGB LED     | 48   | onboard WS2812 (DevKitC-1) |
 
-- GPIO4 (TX): single press = accept transaction · double press or hold = reject
-- GPIO10 (Menu): single press = open menu / next option · double press = show wallet QR
-- GPIO17 (Select): confirm the highlighted menu option
-- GPIO13 (Back): go back
+- GPIO4 (B1): in TX_CONFIRM single press = accept · double press or hold = reject; elsewhere Back (QR/Balance → Wallet hub → Menu → Home, one level per press)
+- GPIO10 (B2): open menu / select focused icon (Wallet hub → Balance/QR via B2)
+- GPIO17 (B3): previous icon in menu carousel / Balance-vs-QR focus in Wallet hub (ignored elsewhere — B1 back first)
+- GPIO13 (B4): next icon in menu carousel / Balance-vs-QR focus in Wallet hub (ignored elsewhere — B1 back first)
+- Menu is an icon carousel (Wallet Info · Pomodoro · Badge → pass); View Balance + QR + SOL Price live under Wallet Info
+- Idle cycle is Home ↔ Weather only (SOL price moved into Wallet Info)
 
 ## Quick Start
 

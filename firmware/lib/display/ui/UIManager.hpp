@@ -31,6 +31,8 @@ enum class UIScreen {
     TX_FAIL,
     CHAT_VIEW,
     BALANCE_VIEW,
+    POMODORO_VIEW,
+    BADGE_VIEW,
     ANIM_TEST,
     FAIR_PASS,
     HOME
@@ -121,6 +123,14 @@ private:
     uint32_t    m_connecting_dots_ms{0};
     uint8_t     m_connecting_dots{0};
     uint8_t     m_menu_index{0};
+    // Horizontal carousel slide state (MENU_MAIN): previous index + animation
+    // start so the new icon visibly enters from the right (B4) or left (B3).
+    int8_t      m_menu_prev_index{-1};
+    uint32_t    m_menu_slide_start_ms{0};
+    int8_t      m_menu_slide_dir{1};
+    // Wallet Info hub sub-tab: View Balance (0), Receive QR (1), SOL Price (2).
+    // B3/B4 flips the tab, B2 opens it, B1 goes back.
+    uint8_t     m_wallet_tab{0};
     // Menu cursor animation throttle (full flush ~115ms @8MHz, so ~4fps max).
     uint32_t    m_menu_anim_last_ms{0};
 
@@ -150,6 +160,8 @@ private:
     void render_tx_result();
     void render_balance();
     void render_chat();
+    void render_pomodoro();
+    void render_badge();
     void render_anim_test();
     void render_fair_pass();
     void render_home();
@@ -158,6 +170,11 @@ private:
     void cycle_idle_screen();
     void approve_transaction();
     void reject_transaction();
+    void go_back();
+    void open_menu_index(uint8_t index);
+    void open_wallet_tab(uint8_t tab);
+    void step_wallet_tab(int8_t dir);
+    void step_menu(int8_t dir);
 
     static constexpr const char* TAG = "UIManager";
 };

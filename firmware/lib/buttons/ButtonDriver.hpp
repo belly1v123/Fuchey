@@ -17,10 +17,15 @@ namespace Fuchey {
 
 // ─── Button IDs ───────────────────────────────────────────
 enum class ButtonId : uint8_t {
-    CONFIRM = 0,  // GPIO4 — transaction accept/reject only
-    MENU    = 1,  // GPIO5 — menu / next / double = QR
-    SELECT  = 2,  // GPIO6 — menu confirm / select
-    BACK    = 3,  // GPIO7 — back
+    B1_TX_BACK    = 0,  // GPIO4 — TX confirm (TX_CONFIRM only), else Back
+    B2_MENU_SELECT = 1, // GPIO10 — open menu / select highlighted item
+    B3_PREV       = 2,  // GPIO17 — previous item (menu / sub-screen carousel)
+    B4_NEXT       = 3,  // GPIO13 — next item (menu / sub-screen carousel)
+    // Back-compat aliases (deprecated)
+    CONFIRM = B1_TX_BACK,
+    MENU    = B2_MENU_SELECT,
+    SELECT  = B3_PREV,
+    BACK    = B4_NEXT,
 };
 
 // ─── Button Event Types ───────────────────────────────────
@@ -42,8 +47,9 @@ class ButtonDriver {
 public:
     static constexpr int NUM_BUTTONS = 4;
 
-    // pin_confirm, pin_menu, pin_select, pin_back: GPIO numbers (active-low, internal pull-up)
-    ButtonDriver(int pin_confirm, int pin_menu, int pin_select, int pin_back,
+    // pin_b1..pin_b4: GPIO numbers (active-low, internal pull-up)
+    // B1=TX confirm/Back, B2=menu/select, B3=prev, B4=next
+    ButtonDriver(int pin_b1, int pin_b2, int pin_b3, int pin_b4,
                  uint32_t debounce_ms = 50,
                  uint32_t long_press_ms = 1000);
     ~ButtonDriver();

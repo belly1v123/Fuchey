@@ -15,17 +15,17 @@ namespace Fuchey {
 
 static constexpr const char* TAG = "ButtonDriver";
 
-ButtonDriver::ButtonDriver(int pin_confirm, int pin_menu, int pin_select, int pin_back,
+ButtonDriver::ButtonDriver(int pin_b1, int pin_b2, int pin_b3, int pin_b4,
                            uint32_t debounce_ms, uint32_t long_press_ms)
     : m_debounce_ms(debounce_ms), m_long_press_ms(long_press_ms) {
-    m_buttons[0].pin = pin_confirm;
-    m_buttons[0].id  = ButtonId::CONFIRM;
-    m_buttons[1].pin = pin_menu;
-    m_buttons[1].id  = ButtonId::MENU;
-    m_buttons[2].pin = pin_select;
-    m_buttons[2].id  = ButtonId::SELECT;
-    m_buttons[3].pin = pin_back;
-    m_buttons[3].id  = ButtonId::BACK;
+    m_buttons[0].pin = pin_b1;
+    m_buttons[0].id  = ButtonId::B1_TX_BACK;
+    m_buttons[1].pin = pin_b2;
+    m_buttons[1].id  = ButtonId::B2_MENU_SELECT;
+    m_buttons[2].pin = pin_b3;
+    m_buttons[2].id  = ButtonId::B3_PREV;
+    m_buttons[3].pin = pin_b4;
+    m_buttons[3].id  = ButtonId::B4_NEXT;
 }
 
 ButtonDriver::~ButtonDriver() {

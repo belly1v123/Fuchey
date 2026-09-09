@@ -31,12 +31,20 @@ namespace DisplayConfig {
 
 // ─── Buttons ──────────────────────────────────────────────
 namespace Buttons {
-    // GPIO4 is the dedicated transaction button (single=accept, double=reject).
-    // GPIO5/6/7 are menu & QR navigation only.
-    inline constexpr int     PIN_CONFIRM   = 4;   // GPIO4 (Transaction accept/reject)
-    inline constexpr int     PIN_MENU      = 10;  // GPIO10 (Menu / Next / double = QR)
-    inline constexpr int     PIN_SELECT    = 17;  // GPIO17 (Menu confirm / select)
-    inline constexpr int     PIN_BACK      = 13;  // GPIO13 (Back)
+    // B1 (GPIO4): TX confirm only during TX_CONFIRM (single=accept,
+    // double/long=reject); elsewhere acts as hierarchical Back.
+    // B2 (GPIO10): open menu / select highlighted item.
+    // B3 (GPIO17): previous item in menu / sub-screen carousel.
+    // B4 (GPIO13): next item in menu / sub-screen carousel.
+    inline constexpr int     PIN_B1_TX_BACK    = 4;   // GPIO4 (TX confirm / Back)
+    inline constexpr int     PIN_B2_MENU_SELECT = 10; // GPIO10 (Menu open / select)
+    inline constexpr int     PIN_B3_PREV       = 17;  // GPIO17 (Prev)
+    inline constexpr int     PIN_B4_NEXT       = 13;  // GPIO13 (Next)
+    // Back-compat aliases (deprecated, prefer PIN_Bx_* above)
+    inline constexpr int     PIN_CONFIRM = PIN_B1_TX_BACK;
+    inline constexpr int     PIN_MENU    = PIN_B2_MENU_SELECT;
+    inline constexpr int     PIN_SELECT  = PIN_B3_PREV;
+    inline constexpr int     PIN_BACK    = PIN_B4_NEXT;
     inline constexpr uint32_t DEBOUNCE_MS  = 50;
     inline constexpr uint32_t LONG_PRESS_MS = 1000;  // hold = decline transaction
 }

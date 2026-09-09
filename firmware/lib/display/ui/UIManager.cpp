@@ -10,6 +10,16 @@
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
+#include "WalletInfoIcon.hpp"
+#include "ViewBalanceIcon.hpp"
+#include "QrIcon.hpp"
+#include "SolPriceIcon.hpp"
+#include "PomodoroIcon.hpp"
+#include "BadgeIcon.hpp"
+#include "BalanceSolIcon.hpp"
+#include "BalanceUsdcIcon.hpp"
+#include "FreeSans9pt7b.h"
+#include "FreeMonoBold12pt7b.h"
 #include "esp_heap_caps.h"
 #include "FreeSansBold9pt7b.h"
 #include "PoppinsRegular9pt7b.h"
@@ -94,6 +104,8 @@ void UIManager::set_screen(UIScreen screen) {
     m_current_screen = screen;
     if (screen == UIScreen::MENU_MAIN) {
         m_menu_anim_last_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        // No in-flight slide when (re-)entering the menu.
+        m_menu_prev_index = -1;
     }
     if (screen == UIScreen::ANIM_TEST) {
         // Restart animation from frame 0 on every entry.
@@ -118,8 +130,8 @@ void UIManager::cycle_idle_screen() {
         m_last_idle_cycle_ms = now;
         switch (m_current_screen) {
             case UIScreen::HOME:         set_screen(UIScreen::IDLE_WEATHER); break;
-            case UIScreen::IDLE_WEATHER: set_screen(UIScreen::IDLE_PRICE);   break;
-            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::HOME);         break;
+            case UIScreen::IDLE_WEATHER: set_screen(UIScreen::HOME);         break;
+            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::HOME);         break; // hub submenu now; park on HOME if stranded
             case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME);         break; // retired from cycle; park on HOME
             default: break; // Stay on active wallet/menu screens
         }
@@ -263,6 +275,101 @@ void UIManager::reject_transaction() {
     set_screen(UIScreen::HOME);
 }
 
+// ─── Hierarchical Back (B1 outside TX_CONFIRM) ─────────────
+// WALLET_QR / BALANCE_VIEW / IDLE_PRICE (wallet subs) -> WALLET_INFO hub
+// (one level); hub and all other sub-screens -> MENU_MAIN;
+// MENU_MAIN -> HOME. Idle/TX screens: no-op.
+void UIManager::go_back() {
+    switch (m_current_screen) {
+        case UIScreen::WALLET_QR:
+        case UIScreen::BALANCE_VIEW:
+        case UIScreen::IDLE_PRICE:
+            ESP_LOGI(TAG, "Screen: wallet sub -> WALLET_INFO hub");
+            set_screen(UIScreen::WALLET_INFO);
+            break;
+        case UIScreen::WALLET_INFO:
+        case UIScreen::CHAT_VIEW:
+        case UIScreen::POMODORO_VIEW:
+        case UIScreen::BADGE_VIEW:
+        case UIScreen::FAIR_PASS:
+        case UIScreen::ANIM_TEST:
+            ESP_LOGI(TAG, "Screen: sub -> MENU_MAIN");
+            set_screen(UIScreen::MENU_MAIN);
+            break;
+        case UIScreen::MENU_MAIN:
+            ESP_LOGI(TAG, "Screen: MENU_MAIN -> HOME");
+            set_screen(UIScreen::HOME);
+            break;
+        case UIScreen::TX_SUCCESS:
+        case UIScreen::TX_FAIL:
+            ESP_LOGI(TAG, "Screen: TX result -> HOME");
+            set_screen(UIScreen::HOME);
+            break;
+        default:
+            break;
+    }
+}
+
+// ─── Menu helpers ──────────────────────────────────────────
+// Main menu (horizontal icon carousel, 3 entries):
+//   0 = Wallet Info (hub)  1 = Pomodoro  2 = Badge (opens the pass)
+// View Balance and QR live under the Wallet Info hub, not top-level.
+void UIManager::open_menu_index(uint8_t index) {
+    m_menu_index = index % 3;
+    m_menu_prev_index = -1; // direct open: no slide animation
+    if (m_menu_index == 0) {
+        ESP_LOGI(TAG, "Screen: WALLET_INFO hub");
+        m_wallet_tab = 0;
+        set_screen(UIScreen::WALLET_INFO);
+    } else if (m_menu_index == 1) {
+        ESP_LOGI(TAG, "Screen: POMODORO_VIEW");
+        set_screen(UIScreen::POMODORO_VIEW);
+    } else {
+        ESP_LOGI(TAG, "Screen: FAIR_PASS (via Badge)");
+        set_screen(UIScreen::FAIR_PASS);
+    }
+}
+
+// Wallet Info hub sub-tabs: 0 = View Balance, 1 = Receive QR, 2 = SOL Price.
+void UIManager::open_wallet_tab(uint8_t tab) {
+    m_wallet_tab = tab % 3;
+    if (m_wallet_tab == 0) {
+        ESP_LOGI(TAG, "Screen: WALLET_INFO hub -> BALANCE_VIEW");
+        m_bal_fetched = false;
+        m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        set_screen(UIScreen::BALANCE_VIEW);
+    } else if (m_wallet_tab == 1) {
+        ESP_LOGI(TAG, "Screen: WALLET_INFO hub -> WALLET_QR");
+        set_screen(UIScreen::WALLET_QR);
+    } else {
+        ESP_LOGI(TAG, "Screen: WALLET_INFO hub -> IDLE_PRICE");
+        set_screen(UIScreen::IDLE_PRICE);
+    }
+}
+
+void UIManager::step_wallet_tab(int8_t dir) {
+    // Hub-only: flip the focused tab and stay in the hub. Content screens
+    // (Balance / QR / Price) deliberately do NOT flip — go back first.
+    if (m_current_screen != UIScreen::WALLET_INFO) return;
+    static constexpr const char* kNames[3] = {"Balance", "QR", "SOL Price"};
+    m_wallet_tab = static_cast<uint8_t>((m_wallet_tab + dir + 3) % 3);
+    ESP_LOGI(TAG, "[Wallet] hub tab -> %s", kNames[m_wallet_tab]);
+    request_redraw();
+}
+
+void UIManager::step_menu(int8_t dir) {
+    int idx = static_cast<int>(m_menu_index);
+    idx = (idx + dir + 3) % 3;
+    ESP_LOGI(TAG, "[Menu] %s -> index: %d", dir > 0 ? "Next" : "Prev", idx);
+    if (m_current_screen == UIScreen::MENU_MAIN) {
+        m_menu_index = static_cast<uint8_t>(idx);
+        m_menu_prev_index = -1; // carousel is static; no slide animation
+    } else {
+        // In a sub-screen: carousel-jump directly to prev/next destination.
+        open_menu_index(static_cast<uint8_t>(idx));
+    }
+}
+
 // ─── Setup wizard ─────────────────────────────────────────
 void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
     m_setup_needed = wifi_missing || wallet_missing;
@@ -369,6 +476,8 @@ void UIManager::render() {
         case UIScreen::TX_FAIL:      render_tx_result();   break;
         case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
+        case UIScreen::POMODORO_VIEW: render_pomodoro();   break;
+        case UIScreen::BADGE_VIEW:    render_badge();      break;
         case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
         case UIScreen::HOME:         break; // handled by early-return above (self-flushing)
         case UIScreen::FAIR_PASS:    render_fair_pass();   break;
@@ -447,37 +556,81 @@ void UIManager::render_message() {
 }
 
 // ─── Menu / Wallet / Chat screens ─────────────────────────
+// Main menu: horizontal icon carousel. One 96x96 icon is focused (centered,
+// name below it); B4/next slides the next icon in from the right, B3/prev
+// from the left. Entries without a PNG asset get a navy monogram tile.
 void UIManager::render_menu() {
+    static constexpr Color kTransparent = 0xF81F;
+    static constexpr int kIcon = 96;
+    static constexpr int kIconY = 52;
+    static constexpr int kFocusX = (Display::WIDTH - kIcon) / 2; // 72;
+
+    struct MenuEntry {
+        const char* label;
+        const SpritePixel* icon; // nullptr -> monogram tile
+        const char* mono;        // tile text when icon == nullptr
+    };
+    static const MenuEntry kItems[3] = {
+        {"Wallet Info",  WalletInfoIcon_data, nullptr},
+        {"Pomodoro",     PomodoroIcon_data,   nullptr},
+        {"Badge",        BadgeIcon_data,      nullptr},
+    };
+
+    auto draw_entry = [&](int x, uint8_t idx) {
+        const MenuEntry& e = kItems[idx % 3];
+        if (e.icon != nullptr) {
+            m_display.draw_sprite_transparent(x, kIconY, kIcon, kIcon, e.icon, kTransparent);
+        } else {
+            m_display.fill_rect(x, kIconY, kIcon, kIcon, TFT_NAVY);
+            m_display.draw_rect(x, kIconY, kIcon, kIcon, TFT_GRAY);
+            const int mlen = static_cast<int>(strlen(e.mono));
+            m_display.draw_text(x + (kIcon - mlen * 12) / 2, kIconY + 40, e.mono,
+                                Display::FontSize::MEDIUM, TFT_CYAN);
+        }
+        // Name below the icon, clipped to the visible strip.
+        const int cx = x + kIcon / 2;
+        const int half = 110;
+        const int x0 = std::max(0, cx - half);
+        const int x1 = std::min(Display::WIDTH, cx + half);
+        if (x1 > x0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%s", e.label);
+            // Center manually so off-screen entries slide out cleanly.
+            const int len = static_cast<int>(strlen(buf));
+            const int tx = cx - (len * 12) / 2; // MEDIUM ~= 12px/char
+            m_display.draw_text(std::max(x0, std::min(tx, x1)), kIconY + kIcon + 12,
+                                buf, Display::FontSize::MEDIUM, Colors::WHITE);
+        }
+    };
+
     m_display.draw_text_centered(8, "MENU", Display::FontSize::MEDIUM);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
-    // Animated selection cursor: bouncing ">" next to the active row.
-    // Time-based (no extra state); run() re-renders MENU_MAIN at ~4fps.
-    // Triangle wave over 4 x 250ms steps: dx = 0,3,6,3 px.
-    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    const int step = static_cast<int>((now / 250u) % 4u);
-    const int dx = (step == 1 || step == 3) ? 3 : (step == 2 ? 6 : 0);
+    // Focused icon is static and centered — no slide offset, so it never
+    // shifts or jitters on button presses. Direction is shown by < / >.
+    if (m_menu_prev_index >= 0) m_menu_prev_index = -1;
+    draw_entry(kFocusX, m_menu_index);
 
-    static constexpr const char* kItems[5] = {
-        "Wallet Info", "AI Assistant", "SOL Price", "View Balance", "Pass"
-    };
-    for (int i = 0; i < 5; ++i) {
-        int y = 52 + i * 34;
-        if (i == m_menu_index) {
-            // Inverted highlight bar for the selected row
-            m_display.fill_rect(12, y - 5, Display::WIDTH - 24, 26, Colors::WHITE);
-            m_display.draw_text(14 + dx, y, ">", Display::FontSize::MEDIUM, Colors::BLACK);
-            m_display.draw_text(32, y, kItems[i], Display::FontSize::MEDIUM, Colors::BLACK);
-        } else {
-            m_display.draw_text(32, y, kItems[i], Display::FontSize::MEDIUM, TFT_GRAY);
-        }
-    }
+    // Side arrows (carousel wraps, so both are always live).
+    m_display.draw_text(6, kIconY + 36, "<", Display::FontSize::LARGE, TFT_GRAY);
+    m_display.draw_text(Display::WIDTH - 24, kIconY + 36, ">", Display::FontSize::LARGE, TFT_GRAY);
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "MENU:next  SEL:ok  BACK:back", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B2:ok B3:< B4:> B1:back", Display::FontSize::SMALL, TFT_GRAY);
 }
 
+// Wallet Info hub: three sub-functions, one focused at a time.
+//   [0] View Balance (ViewBalanceIcon + "View Balance" below it)
+//   [1] Receive QR   (framed "QR" tile + "QR" below it)
+//   [2] SOL Price    (SolPriceIcon + "SOL Price" below it)
+// B3/B4 flips the focused tab, B2 opens it, B1 goes back to the menu.
 void UIManager::render_wallet_info() {
+    static constexpr Color kTransparent = 0xF81F;
+    static constexpr int kIcon = 96;
+    static constexpr int kIconY = 52;
+    static constexpr int kFocusX = (Display::WIDTH - kIcon) / 2; // 72
+    static constexpr const char* kNames[3] = {"View Balance", "Receive QR", "SOL Price"};
+
     m_display.draw_text_centered(8, "WALLET", Display::FontSize::MEDIUM);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
@@ -490,37 +643,35 @@ void UIManager::render_wallet_info() {
         }
     }
 
-    if (!m_wallet_address.empty()) {
-        // 44-char base58 address in 3 centered MEDIUM lines of 15 chars
-        // (15 x 12px = 180px — fits with margins)
-        static constexpr size_t CHUNK = 15;
-        const char* p   = m_wallet_address.c_str();
-        size_t      len = m_wallet_address.size();
-
-        char line1[CHUNK + 1] = {};
-        char line2[CHUNK + 1] = {};
-        char line3[CHUNK + 1] = {};
-
-        size_t l1 = (len >= CHUNK)        ? CHUNK : len;
-        size_t l2 = (len >= CHUNK * 2)    ? CHUNK : (len > CHUNK ? len - CHUNK : 0);
-        size_t l3 = (len >  CHUNK * 2)    ? len - CHUNK * 2 : 0;
-        if (l3 > CHUNK) l3 = CHUNK;
-
-        strncpy(line1, p,              l1); line1[l1] = '\0';
-        strncpy(line2, p + CHUNK,      l2); line2[l2] = '\0';
-        strncpy(line3, p + CHUNK * 2,  l3); line3[l3] = '\0';
-
-        m_display.draw_text_centered(48, "address", Display::FontSize::SMALL, TFT_GRAY);
-        m_display.draw_text_centered(72, line1, Display::FontSize::MEDIUM);
-        if (l2) m_display.draw_text_centered(100, line2, Display::FontSize::MEDIUM);
-        if (l3) m_display.draw_text_centered(128, line3, Display::FontSize::MEDIUM);
-        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+    const uint8_t tab = m_wallet_tab % 3;
+    if (tab == 0) {
+        m_display.draw_sprite_transparent(kFocusX, kIconY, kIcon, kIcon,
+                                          ViewBalanceIcon_data, kTransparent);
+    } else if (tab == 1) {
+        m_display.draw_sprite_transparent(kFocusX, kIconY, kIcon, kIcon,
+                                          QrIcon_data, kTransparent);
     } else {
-        m_display.draw_text_centered(100, "No wallet setup", Display::FontSize::MEDIUM);
-        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_sprite_transparent(kFocusX, kIconY, kIcon, kIcon,
+                                          SolPriceIcon_data, kTransparent);
     }
+    m_display.draw_text_centered(kIconY + kIcon + 12, kNames[tab],
+                                 Display::FontSize::MEDIUM, Colors::WHITE);
+
+    // Side arrows (hub wraps across the 3 tabs, so both are always live).
+    m_display.draw_text(6, kIconY + 36, "<", Display::FontSize::LARGE, TFT_GRAY);
+    m_display.draw_text(Display::WIDTH - 24, kIconY + 36, ">", Display::FontSize::LARGE, TFT_GRAY);
+
+    // Truncated address reminder (first 4 ... last 4), gray.
+    if (!m_wallet_address.empty() && m_wallet_address.size() > 12) {
+        char trunc[16];
+        snprintf(trunc, sizeof(trunc), "%.4s...%.4s",
+                 m_wallet_address.c_str(),
+                 m_wallet_address.c_str() + m_wallet_address.size() - 4);
+        m_display.draw_text_centered(192, trunc, Display::FontSize::SMALL, TFT_GRAY);
+    }
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B3:< B4:> B2:open B1:back", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_wallet_qr() {
@@ -538,7 +689,7 @@ void UIManager::render_wallet_qr() {
         m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
         m_display.draw_text_centered(100, "No wallet", Display::FontSize::MEDIUM);
         m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_text_centered(222, "B1:hub", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
@@ -565,7 +716,7 @@ void UIManager::render_wallet_qr() {
         m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
         m_display.draw_text_centered(100, "QR gen failed", Display::FontSize::MEDIUM);
         m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_text_centered(222, "B1:hub", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
@@ -581,7 +732,7 @@ void UIManager::render_wallet_qr() {
     int y_off = (Display::HEIGHT - total) / 2;
 
     // Quiet zone: clear margin around the code
-    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1:hub", Display::FontSize::SMALL, TFT_GRAY);
 
     // Draw QR modules
     for (int row = 0; row < qr_size; row++) {
@@ -605,7 +756,7 @@ void UIManager::render_tx_confirm() {
         m_display.draw_text_centered(124, m_tx_description.c_str(), Display::FontSize::MEDIUM, TFT_CYAN);
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "1x CONFIRM:send  2x/hold:no", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 1x:send 2x/hold:no", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_tx_result() {
@@ -647,8 +798,10 @@ void UIManager::render_tx_result() {
 }
 
 void UIManager::render_balance() {
-    m_display.draw_text_centered(8, "BALANCE", Display::FontSize::MEDIUM);
-    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    static constexpr Color kTransparent = 0xF81F;
+
+    // Hero title, left-aligned like the mock, drawn once for every state.
+    m_display.draw_gfx_text(22, 2, "BALANCE", &FreeMonoBold12pt7b, 2, 0x53FE);
 
     if (!m_balance_monitor) {
         m_display.draw_text_centered(100, "No balance service", Display::FontSize::MEDIUM);
@@ -666,7 +819,7 @@ void UIManager::render_balance() {
     if (m_wallet_address.empty()) {
         m_display.draw_text_centered(100, "No wallet setup", Display::FontSize::MEDIUM);
         m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_text_centered(222, "B1:back", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
@@ -676,17 +829,45 @@ void UIManager::render_balance() {
         return;
     }
 
-    char buf[32];
-    m_display.draw_text_centered(52, "SOL", Display::FontSize::SMALL, TFT_GRAY);
-    snprintf(buf, sizeof(buf), "%.4f", m_bal_sol);
-    m_display.draw_text_centered(66, buf, Display::FontSize::LARGE);
+    // Lopaka "BALANCE" hero layout on the dark theme: large coin artwork
+    // bleeding off the left edge, FreeMono title, FreeSans labels, and the
+    // live on-chain balances at 6 decimals (no placeholders anywhere).
+    char sol_buf[24], usdc_buf[24];
+    snprintf(sol_buf, sizeof(sol_buf), "%.5f", m_bal_sol);
+    snprintf(usdc_buf, sizeof(usdc_buf), "%.5f", m_bal_usdc);
 
-    m_display.draw_text_centered(122, "USDC", Display::FontSize::SMALL, TFT_GRAY);
-    snprintf(buf, sizeof(buf), "$%.2f", m_bal_usdc);
-    m_display.draw_text_centered(136, buf, Display::FontSize::MEDIUM, Colors::GREEN);
+    // Coin artwork first — mock sizes/positions (77px SOL at (8,48),
+    // 81px USDC at (6,132)); rows shifted up ~5/18px vs the mock so the
+    // 81px USDC art clears the 214 footer divider (mock has no footer).
+    m_display.draw_sprite_transparent(8, 48, 77, 77, BalanceSolIcon_data, kTransparent);
+    m_display.draw_sprite_transparent(6, 132, 81, 81, BalanceUsdcIcon_data, kTransparent);
+
+    // Value renderer: size 2 right-aligned to x=236; only whale-sized
+    // values that still overflow shrink to size 1 (right-aligned too).
+    auto draw_fit_value = [&](const char* txt, int x, int y) {
+        int vw = 0, vh = 0;
+        m_display.gfx_text_bounds(txt, &FreeSans9pt7b, 2, &vw, &vh);
+        int size = 2, vx = x;
+        if (vx + vw > Display::WIDTH - 4) vx = Display::WIDTH - 4 - vw;
+        if (vx < 0) {
+            size = 1;
+            m_display.gfx_text_bounds(txt, &FreeSans9pt7b, 1, &vw, &vh);
+            vx = Display::WIDTH - 4 - vw;
+            if (vx < 0) vx = 0;
+        }
+        m_display.draw_gfx_text(vx, y, txt, &FreeSans9pt7b, size, Colors::GREEN);
+    };
+
+    // SOL label + live value, always the same size as USDC.
+    m_display.draw_gfx_text(89, 67, "SOL", &FreeSans9pt7b, 1, 0xF4E0);
+    draw_fit_value(sol_buf, 86, 85);
+
+    // USDC label + live value.
+    m_display.draw_gfx_text(89, 149, "USDC", &FreeSans9pt7b, 1, 0x12B6);
+    draw_fit_value(usdc_buf, 88, 167);
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1:hub", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_chat() {
@@ -711,7 +892,34 @@ void UIManager::render_chat() {
     }
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// ─── Pomodoro / Badge placeholders ──────────────────────────
+// Menu icons exist (PomodoroIcon / BadgeIcon); feature screens land here.
+// Centered 96x96 icon + name below it, same visual language as the menu.
+void UIManager::render_pomodoro() {
+    static constexpr Color kTransparent = 0xF81F;
+    m_display.draw_text_centered(8, "POMODORO", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_sprite_transparent((Display::WIDTH - 96) / 2, 52, 96, 96,
+                                      PomodoroIcon_data, kTransparent);
+    m_display.draw_text_centered(160, "Pomodoro", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(186, "Coming soon", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+void UIManager::render_badge() {
+    static constexpr Color kTransparent = 0xF81F;
+    m_display.draw_text_centered(8, "BADGE", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_sprite_transparent((Display::WIDTH - 96) / 2, 52, 96, 96,
+                                      BadgeIcon_data, kTransparent);
+    m_display.draw_text_centered(160, "Badge", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(186, "Coming soon", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 // ─── Animation test ───────────────────────────────────────
@@ -747,7 +955,7 @@ void UIManager::render_anim_test() {
         snprintf(buf, sizeof(buf), "frame %u/%u", m_anim_player.current_frame() + 1, YetiAnim.frames);
         m_display.draw_text_centered(kCounterY, buf, Display::FontSize::SMALL, TFT_GRAY);
         m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "BACK:menu", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
         m_display.flush();
         m_anim_chrome_drawn = true;
         m_anim_last_frame = m_anim_player.current_frame();
@@ -978,9 +1186,9 @@ void UIManager::run() {
             xQueueReceive(Events::g_button_queue, &btn, pdMS_TO_TICKS(10)) == pdTRUE) {
 
             ESP_LOGI(TAG, "[BTN] id=%s event=%s",
-                     btn.id == ButtonId::CONFIRM ? "CONFIRM" :
-                     btn.id == ButtonId::MENU    ? "MENU" :
-                     btn.id == ButtonId::SELECT  ? "SELECT" : "BACK",
+                     btn.id == ButtonId::B1_TX_BACK ? "B1_TX_BACK" :
+                     btn.id == ButtonId::B2_MENU_SELECT ? "B2_MENU_SELECT" :
+                     btn.id == ButtonId::B3_PREV ? "B3_PREV" : "B4_NEXT",
                      btn.event == ButtonEvent::PRESS        ? "PRESS" :
                      btn.event == ButtonEvent::DOUBLE_PRESS ? "DOUBLE_PRESS" :
                      btn.event == ButtonEvent::LONG_PRESS   ? "LONG_PRESS" : "RELEASE");
@@ -988,28 +1196,11 @@ void UIManager::run() {
             // Reset idle cycle timer on any button activity
             m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 
-            // ── Global MENU button handling ───────────────────
-            // MENU: single press opens the menu (or NEXT inside the menu);
-            //       double press shows the Wallet QR anywhere (except during TX).
-            if (btn.id == ButtonId::MENU &&
-                m_current_screen != UIScreen::TX_CONFIRM) {
-                if (btn.event == ButtonEvent::DOUBLE_PRESS) {
-                    ESP_LOGI(TAG, "[Menu] Double press -> showing Wallet QR");
-                    set_screen(UIScreen::WALLET_QR);
-                } else if (btn.event == ButtonEvent::PRESS) {
-                    if (m_current_screen == UIScreen::MENU_MAIN) {
-                        m_menu_index = (m_menu_index + 1) % 5;
-                        ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
-                    } else {
-                        ESP_LOGI(TAG, "[Menu] Opening main menu");
-                        set_screen(UIScreen::MENU_MAIN);
-                    }
-                }
-            } else if (m_current_screen == UIScreen::TX_CONFIRM) {
-                // Only the transaction button (CONFIRM) matters here.
-                // Single tap = accept (deferred until no double/long follows),
-                // double press or long press = reject.
-                if (btn.id == ButtonId::CONFIRM) {
+            // ── TX_CONFIRM: B1 exclusive ───────────────────────
+            // B1 single tap = accept (deferred until no double/long follows),
+            // B1 double/long = reject. B2/B3/B4 ignored here.
+            if (m_current_screen == UIScreen::TX_CONFIRM) {
+                if (btn.id == ButtonId::B1_TX_BACK) {
                     if (btn.event == ButtonEvent::PRESS) {
                         m_tx_press_start_ms = btn.timestamp_ms;
                         m_tx_pending_accept = false;
@@ -1023,70 +1214,68 @@ void UIManager::run() {
                         reject_transaction();
                     }
                 }
-            } else if (m_current_screen == UIScreen::MENU_MAIN) {
-                // SELECT option (SELECT button / 'm' / 'select' serial command)
-                if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::SELECT) {
-                    if (m_menu_index == 0) {
-                        ESP_LOGI(TAG, "Screen: WALLET_INFO");
-                        set_screen(UIScreen::WALLET_INFO);
-                    } else if (m_menu_index == 1) {
-                        ESP_LOGI(TAG, "Screen: CHAT_VIEW");
-                        set_screen(UIScreen::CHAT_VIEW);
-                    } else if (m_menu_index == 2) {
-                        ESP_LOGI(TAG, "Screen: IDLE_PRICE");
-                        set_screen(UIScreen::IDLE_PRICE);
-                    } else if (m_menu_index == 3) {
-                        ESP_LOGI(TAG, "Screen: BALANCE_VIEW");
-                        m_bal_fetched = false;
-                        m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                        set_screen(UIScreen::BALANCE_VIEW);
-                    } else if (m_menu_index == 4) {
-                        ESP_LOGI(TAG, "Screen: FAIR_PASS");
-                        set_screen(UIScreen::FAIR_PASS);
-                    }
-                } else if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: MENU_MAIN -> HOME");
-                    set_screen(UIScreen::HOME);
-                }
-            } else if (m_current_screen == UIScreen::WALLET_INFO) {
-                if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: WALLET_INFO -> MENU_MAIN");
+            } else if (btn.id == ButtonId::B1_TX_BACK) {
+                // ── B1 = hierarchical Back everywhere else ─────
+                if (btn.event == ButtonEvent::PRESS) go_back();
+            } else if (btn.id == ButtonId::B2_MENU_SELECT) {
+                // ── B2 = open menu / select ────────────────────
+                if (btn.event != ButtonEvent::PRESS) {
+                    // ignore RELEASE/DOUBLE/LONG on B2
+                } else if (m_current_screen == UIScreen::MENU_MAIN) {
+                    open_menu_index(m_menu_index);
+                } else if (m_current_screen == UIScreen::WALLET_INFO) {
+                    // Hub: B2 opens the focused sub-tab (Balance / QR).
+                    open_wallet_tab(m_wallet_tab);
+                } else if (m_current_screen == UIScreen::WALLET_QR ||
+                           m_current_screen == UIScreen::CHAT_VIEW ||
+                           m_current_screen == UIScreen::IDLE_PRICE ||
+                           m_current_screen == UIScreen::BALANCE_VIEW ||
+                           m_current_screen == UIScreen::POMODORO_VIEW ||
+                           m_current_screen == UIScreen::BADGE_VIEW ||
+                           m_current_screen == UIScreen::FAIR_PASS ||
+                           m_current_screen == UIScreen::ANIM_TEST) {
+                    // In a sub-screen B2 re-opens the menu (no-op if already there)
+                    ESP_LOGI(TAG, "[Menu] B2 -> opening main menu");
                     set_screen(UIScreen::MENU_MAIN);
-                } else if (btn.event == ButtonEvent::PRESS && btn.id == ButtonId::SELECT) {
-                    ESP_LOGI(TAG, "Screen: WALLET_INFO -> WALLET_QR");
-                    set_screen(UIScreen::WALLET_QR);
-                }
-            } else if (m_current_screen == UIScreen::WALLET_QR) {
-                // Any single press returns to the main menu
-                if (btn.event == ButtonEvent::PRESS) {
-                    ESP_LOGI(TAG, "Screen: WALLET_QR -> MENU_MAIN");
-                    set_screen(UIScreen::MENU_MAIN);
-                }
-            } else if (m_current_screen == UIScreen::CHAT_VIEW) {
-                if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: Returning to MENU_MAIN from CHAT_VIEW");
-                    set_screen(UIScreen::MENU_MAIN);
-                }
-            } else if (m_current_screen == UIScreen::BALANCE_VIEW) {
-                if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: BALANCE_VIEW -> MENU_MAIN");
-                    set_screen(UIScreen::MENU_MAIN);
-                }
-            } else if (m_current_screen == UIScreen::ANIM_TEST) {
-                if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: ANIM_TEST -> MENU_MAIN");
-                    set_screen(UIScreen::MENU_MAIN);
-                }
-            } else if (m_current_screen == UIScreen::FAIR_PASS) {
-                if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: FAIR_PASS -> MENU_MAIN");
-                    set_screen(UIScreen::MENU_MAIN);
-                }
-            } else if (m_current_screen == UIScreen::TX_SUCCESS ||
-                       m_current_screen == UIScreen::TX_FAIL) {
-                if (btn.event == ButtonEvent::PRESS) {
+                } else if (m_current_screen == UIScreen::TX_SUCCESS ||
+                           m_current_screen == UIScreen::TX_FAIL) {
                     ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
                     set_screen(UIScreen::HOME);
+                } else {
+                    ESP_LOGI(TAG, "[Menu] Opening main menu");
+                    set_screen(UIScreen::MENU_MAIN);
+                }
+            } else if (btn.id == ButtonId::B3_PREV) {
+                // ── B3 = previous ──────────────────────────────
+                // Only MENU_MAIN (icon carousel) and the WALLET_INFO hub
+                // (Balance/QR focus) respond. Content screens ignore B3 —
+                // press B1 to go back first.
+                if (btn.event == ButtonEvent::PRESS) {
+                    if (m_current_screen == UIScreen::MENU_MAIN) {
+                        step_menu(-1);
+                    } else if (m_current_screen == UIScreen::WALLET_INFO) {
+                        step_wallet_tab(-1);
+                    } else if (m_current_screen == UIScreen::TX_SUCCESS ||
+                               m_current_screen == UIScreen::TX_FAIL) {
+                        ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
+                        set_screen(UIScreen::HOME);
+                    }
+                }
+            } else if (btn.id == ButtonId::B4_NEXT) {
+                // ── B4 = next ──────────────────────────────────
+                // Only MENU_MAIN (icon carousel) and the WALLET_INFO hub
+                // (Balance/QR focus) respond. Content screens ignore B4 —
+                // press B1 to go back first.
+                if (btn.event == ButtonEvent::PRESS) {
+                    if (m_current_screen == UIScreen::MENU_MAIN) {
+                        step_menu(+1);
+                    } else if (m_current_screen == UIScreen::WALLET_INFO) {
+                        step_wallet_tab(+1);
+                    } else if (m_current_screen == UIScreen::TX_SUCCESS ||
+                               m_current_screen == UIScreen::TX_FAIL) {
+                        ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
+                        set_screen(UIScreen::HOME);
+                    }
                 }
             }
         }
@@ -1120,11 +1309,18 @@ void UIManager::run() {
         } else if (m_current_screen == UIScreen::BALANCE_VIEW) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (now - m_bal_fetch_start_ms >= 15000) {
-                ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> MENU_MAIN");
-                set_screen(UIScreen::MENU_MAIN);
+                ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> WALLET_INFO hub");
+                set_screen(UIScreen::WALLET_INFO);
+            }
+        } else if (m_current_screen == UIScreen::IDLE_PRICE) {
+            // SOL Price now lives under the Wallet hub (not the idle cycle).
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_last_idle_cycle_ms >= 15000) {
+                ESP_LOGI(TAG, "Screen: IDLE_PRICE timeout -> WALLET_INFO hub");
+                set_screen(UIScreen::WALLET_INFO);
             }
         } else if (!m_setup_needed) {
-            // Cycle ambient idle screens (Home -> Weather -> Price -> Home)
+            // Cycle ambient idle screens (Home <-> Weather)
             cycle_idle_screen();
         }
 
@@ -1144,14 +1340,6 @@ void UIManager::run() {
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
             need_render = true;
-        } else if (!m_setup_needed && m_current_screen == UIScreen::MENU_MAIN) {
-            // Throttled menu animation: full flush costs ~115ms @8MHz SPI,
-            // so cap cursor bounce at ~4fps instead of every 100ms tick.
-            uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            if (now_ms - m_menu_anim_last_ms >= 250) {
-                m_menu_anim_last_ms = now_ms;
-                need_render = true;
-            }
         }
 
         if (need_render) {

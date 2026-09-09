@@ -210,8 +210,8 @@ bool WalletManager::wait_for_confirmation(const TxRequest& req,
         if (::g_button_queue_ref &&
             xQueueReceive(::g_button_queue_ref, &btn, wait) == pdTRUE) {
 
-            // Only the transaction button (CONFIRM) authorizes or rejects.
-            if (btn.id != ButtonId::CONFIRM) continue;
+            // Only B1 authorizes or rejects (TX_CONFIRM exclusive).
+            if (btn.id != ButtonId::B1_TX_BACK) continue;
 
             if (btn.event == ButtonEvent::PRESS) {
                 press_start_ms = btn.timestamp_ms;
