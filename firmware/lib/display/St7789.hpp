@@ -13,6 +13,20 @@
 
 namespace Fuchey {
 
+// ── Adafruit-GFX-compatible bitmap font (e.g. FreeSansBold9pt7b) ──
+// Layout matches Adafruit_GFX.h exactly so stock font headers work.
+struct GFXglyph {
+    uint16_t bitmapOffset;
+    uint8_t  width, height;
+    uint8_t  xAdvance;
+    int8_t   xOffset, yOffset;
+};
+struct GFXfont {
+    uint8_t*  bitmap;
+    GFXglyph* glyph;
+    uint8_t   first, last, yAdvance;
+};
+
 class St7789 {
 public:
     St7789() = default;
@@ -43,6 +57,14 @@ public:
     void draw_text_scaled(int x, int y, std::string_view text, int scale, uint16_t color);
     int  text_width(std::string_view text, FontSize size) const;
 
+    // ── GFX bitmap-font text (transparent bg; caller prepares background) ─
+    // y is the TOP of the string (top-aligned via min-yOffset scan).
+    void draw_gfx_text(int x, int y, std::string_view text,
+                       const GFXfont* font, int size, uint16_t color);
+    // Tight pixel bounds of the string at the given size.
+    void gfx_text_bounds(std::string_view text, const GFXfont* font, int size,
+                         int* w_out, int* h_out) const;
+
     // ── Bitmap (1-bpp, row-major, MSB-first, byte-padded) ─
     void draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16_t fg);
 
@@ -56,6 +78,12 @@ public:
     // Used to restore background regions under animated overlays.
     void draw_rgb565_subimage(int x, int y, int srcW, int sx, int sy,
                               int w, int h, const uint16_t* data);
+    // Same crop blit, but box-blurred (radius px) and dimmed (keep/256
+    // brightness) for frosted-glass panels. Transient heap working copy,
+    // freed before return; falls back to a sharp restore on alloc failure.
+    void blit_blurred_subimage(int x, int y, int srcW, int sx, int sy,
+                               int w, int h, const uint16_t* data,
+                               int radius, uint8_t keep = 220);
 
     // Pushes only window (x,y,w,h). Faster than push_frame() for sprites.
     void push_window(int x, int y, int w, int h);

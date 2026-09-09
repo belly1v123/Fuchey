@@ -9,6 +9,7 @@
 #include "YetiAnim.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
+#include "FreeSansBold9pt7b.h"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
@@ -70,8 +71,8 @@ void UIManager::cycle_idle_screen() {
         switch (m_current_screen) {
             case UIScreen::HOME:         set_screen(UIScreen::IDLE_WEATHER); break;
             case UIScreen::IDLE_WEATHER: set_screen(UIScreen::IDLE_PRICE);   break;
-            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::IDLE_MESSAGE); break;
-            case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME);         break;
+            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::HOME);         break;
+            case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME);         break; // retired from cycle; park on HOME
             default: break; // Stay on active wallet/menu screens
         }
         // Note: set_screen() (not direct assignment) so per-screen entry
@@ -737,12 +738,14 @@ void UIManager::render_fair_pass() {
 // Self-flushing like ANIM_TEST, but the background is a photo: every overlay
 // redraw first restores its bg crop via draw_sprite_crop (a black clear would
 // leave a box), then draws, then flush_window()s only that region.
-// Clock is blocky yellow hero text straight on the sky (no pill), like the
-// lopaka mock — auto-fit scale, centered, unpadded hour ("1:16 PM").
+// Clock + date are FreeSansBold yellow hero text over a frosted pill —
+// auto-fit scale, centered time, lopaka-style date below ("09 Wed").
 void UIManager::render_home() {
     static constexpr int kYetiX = 111, kYetiY = 111;
     static constexpr int kTimeY = 12;
-    static constexpr int kMarginX = 8, kPad = 2;
+    static constexpr int kDateX = 52,  kDateY = 55, kDateSize = 2;
+    static constexpr int kMarginX = 8, kPillPad = 10;
+    static constexpr int kBlurR = 3, kBlurKeep = 220; // frosted band: r=3, ~86%
     static constexpr Color kTransparent = 0xF81F;
     static constexpr Color kClock = 0xFFE0; // yellow
 
@@ -766,21 +769,37 @@ void UIManager::render_home() {
     } else {
         snprintf(buf, sizeof(buf), "--:--");
     }
+    char dbuf[16];
+    if (synced) {
+        strftime(dbuf, sizeof(dbuf), "%d %a", &ti); // "09 Wed"
+    } else {
+        dbuf[0] = '\0';
+    }
     const int minute = synced ? ti.tm_hour * 60 + ti.tm_min : -1;
 
-    // Largest scale (6..3) that fits with side margins, then center.
-    const size_t n = strlen(buf);
-    int scale = 3, tw = 0;
-    for (scale = 6; scale >= 3; --scale) {
-        tw = static_cast<int>(n) * 6 * scale;
+    // Largest GFX size (3..2) that fits with side margins, then center.
+    // Measured: "1:16 PM" is 201x39 at size 3.
+    int scale = 2, tw = 0, th = 0;
+    for (scale = 3; scale >= 2; --scale) {
+        m_display.gfx_text_bounds(buf, &FreeSansBold9pt7b, scale, &tw, &th);
         if (tw <= Display::WIDTH - 2 * kMarginX) break;
     }
-    const int th = 8 * scale;
     const int tx = (Display::WIDTH - tw) / 2;
+    // Date pill joins the clock pill into one frosted band.
+    int dw = 0, dh = 0;
+    m_display.gfx_text_bounds(dbuf, &FreeSansBold9pt7b, kDateSize, &dw, &dh);
+    const int px = std::min(tx, kDateX) - kPillPad;
+    const int py = kTimeY - kPillPad;
+    const int pr = std::max(tx + tw, kDateX + dw) + kPillPad;
+    const int pb = std::max(kTimeY + th, kDateY + dh) + kPillPad;
+    const int pw = pr - px, ph = pb - py;
 
     if (!m_home_chrome) {
         m_display.draw_sprite(0, 0, PassDesign.w, PassDesign.h, PassDesign.data);
-        m_display.draw_text_scaled(tx, kTimeY, buf, scale, kClock);
+        m_display.draw_blurred_crop(px, py, PassDesign.w, px, py, pw, ph,
+                                    PassDesign.data, kBlurR, kBlurKeep);
+        m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
+        m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
         const SpritePixel* f0 = m_home_yeti.current_frame_data();
         if (f0 != nullptr) {
             m_display.draw_sprite_transparent(kYetiX, kYetiY,
@@ -790,23 +809,26 @@ void UIManager::render_home() {
         m_home_chrome = true;
         m_home_last_frame = m_home_yeti.current_frame();
         m_home_last_minute = minute;
-        m_home_tx = tx; m_home_ty = kTimeY; m_home_tw = tw; m_home_th = th;
+        m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         return;
     }
 
     if (minute != m_home_last_minute) {
-        // Union old + new text rects so shrunken strings leave no pixels.
-        const int rx = std::min(m_home_tx, tx);
-        const int ry = std::min(m_home_ty, kTimeY);
-        const int rr = std::max(m_home_tx + m_home_tw, tx + tw);
-        const int rb = std::max(m_home_ty + m_home_th, kTimeY + th);
-        const int rw = rr - rx + 2 * kPad, rh = rb - ry + 2 * kPad;
-        const int qx = rx - kPad, qy = ry - kPad;
-        m_display.draw_sprite_crop(qx, qy, PassDesign.w, qx, qy, rw, rh, PassDesign.data);
-        m_display.draw_text_scaled(tx, kTimeY, buf, scale, kClock);
-        m_display.flush_window(qx, qy, rw, rh);
+        // Union old + new frosted pills, sharp-restore it, then frost the
+        // new pill — shrunken strings leave no blurred remnants.
+        const int rx = std::min(m_home_tx, px);
+        const int ry = std::min(m_home_ty, py);
+        const int rr = std::max(m_home_tx + m_home_tw, px + pw);
+        const int rb = std::max(m_home_ty + m_home_th, py + ph);
+        const int rw = rr - rx, rh = rb - ry;
+        m_display.draw_sprite_crop(rx, ry, PassDesign.w, rx, ry, rw, rh, PassDesign.data);
+        m_display.draw_blurred_crop(px, py, PassDesign.w, px, py, pw, ph,
+                                    PassDesign.data, kBlurR, kBlurKeep);
+        m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
+        m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
+        m_display.flush_window(rx, ry, rw, rh);
         m_home_last_minute = minute;
-        m_home_tx = tx; m_home_ty = kTimeY; m_home_tw = tw; m_home_th = th;
+        m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
     }
 
     if (!m_home_yeti.tick(now)) return; // frame unchanged → zero SPI
@@ -1040,7 +1062,7 @@ void UIManager::run() {
                 set_screen(UIScreen::MENU_MAIN);
             }
         } else if (!m_setup_needed) {
-            // Cycle ambient idle screens (Home -> Weather -> Price -> Message -> Home)
+            // Cycle ambient idle screens (Home -> Weather -> Price -> Home)
             cycle_idle_screen();
         }
 

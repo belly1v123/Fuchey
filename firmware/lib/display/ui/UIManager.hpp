@@ -136,7 +136,7 @@ private:
     bool        m_home_chrome{false};
     uint8_t     m_home_last_frame{255};
     int         m_home_last_minute{-2};
-    // Last clock text rect (for union-restore when the string changes size).
+    // Last frosted clock pill rect (for union-restore when it changes size).
     int         m_home_tx{0}, m_home_ty{0}, m_home_tw{0}, m_home_th{0};
 
     void render_clock();

@@ -65,6 +65,11 @@ public:
     // Same with an arbitrary integer scale (for hero text bigger than LARGE).
     void draw_text_scaled(int x, int y, std::string_view text,
                           int scale, Color c = TFT_WHITE);
+    // GFX bitmap-font text (transparent bg; y = top of string).
+    void draw_gfx_text(int x, int y, std::string_view text,
+                       const GFXfont* font, int size, Color c = TFT_WHITE);
+    void gfx_text_bounds(std::string_view text, const GFXfont* font, int size,
+                         int* w_out, int* h_out);
     void draw_text_centered(int y, std::string_view text,
                             FontSize size = FontSize::SMALL, Color c = TFT_WHITE);
 
@@ -79,6 +84,10 @@ public:
     // Blits a w*h crop taken at (sx,sy) out of a srcW-wide source image.
     void draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
                           int w, int h, const Color* data);
+    // Same crop blit, but box-blurred and dimmed (frosted-glass panel).
+    void draw_blurred_crop(int x, int y, int srcW, int sx, int sy,
+                           int w, int h, const Color* data,
+                           int radius, uint8_t keep = 220);
 
     // Progress bar
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent,

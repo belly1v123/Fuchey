@@ -56,6 +56,16 @@ void Display::draw_text_scaled(int x, int y, std::string_view text, int scale, C
     m_lcd.draw_text_scaled(x, y, text, scale, c);
 }
 
+void Display::draw_gfx_text(int x, int y, std::string_view text,
+                            const GFXfont* font, int size, Color c) {
+    m_lcd.draw_gfx_text(x, y, text, font, size, c);
+}
+
+void Display::gfx_text_bounds(std::string_view text, const GFXfont* font, int size,
+                              int* w_out, int* h_out) {
+    m_lcd.gfx_text_bounds(text, font, size, w_out, h_out);
+}
+
 void Display::draw_text_centered(int y, std::string_view text, FontSize size, Color c) {
     auto fs = static_cast<St7789::FontSize>(static_cast<int>(size));
     int w = m_lcd.text_width(text, fs);
@@ -81,6 +91,12 @@ void Display::draw_sprite_transparent(int x, int y, int w, int h, const Color* d
 void Display::draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
                                int w, int h, const Color* data) {
     m_lcd.draw_rgb565_subimage(x, y, srcW, sx, sy, w, h, data);
+}
+
+void Display::draw_blurred_crop(int x, int y, int srcW, int sx, int sy,
+                                int w, int h, const Color* data,
+                                int radius, uint8_t keep) {
+    m_lcd.blit_blurred_subimage(x, y, srcW, sx, sy, w, h, data, radius, keep);
 }
 
 void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, Color c) {

@@ -384,6 +384,73 @@ int St7789::text_width(std::string_view text, FontSize size) const {
     return static_cast<int>(text.size()) * 6 * static_cast<int>(size);
 }
 
+// ─── GFX bitmap-font text (Adafruit drawChar logic, transparent bg) ──
+const GFXglyph* gfx_glyph_for(const GFXfont* font, char ch) {
+    uint8_t c = static_cast<uint8_t>(ch);
+    if (c < font->first || c > font->last) c = '?';
+    return &font->glyph[c - font->first];
+}
+
+void St7789::gfx_text_bounds(std::string_view text, const GFXfont* font, int size,
+                             int* w_out, int* h_out) const {
+    int w = 0, top = 0, bottom = 0;
+    bool any = false;
+    if (font && size > 0) {
+        for (char ch : text) {
+            const GFXglyph* g = gfx_glyph_for(font, ch);
+            w += static_cast<int>(g->xAdvance) * size;
+            if (g->height == 0) continue;
+            if (!any || g->yOffset < top) top = g->yOffset;
+            const int bot = static_cast<int>(g->yOffset) + static_cast<int>(g->height);
+            if (!any || bot > bottom) bottom = bot;
+            any = true;
+        }
+    }
+    if (w_out) *w_out = w;
+    if (h_out) *h_out = any ? (bottom - top) * size : 0;
+}
+
+void St7789::draw_gfx_text(int x, int y, std::string_view text,
+                           const GFXfont* font, int size, uint16_t color) {
+    if (!m_fb || !font || size <= 0) return;
+    int tw = 0, th = 0;
+    gfx_text_bounds(text, font, size, &tw, &th);
+    if (tw <= 0 || th <= 0) return;
+    // Top-align: baseline sits -minTop below y.
+    int8_t top = 0;
+    bool any = false;
+    for (char ch : text) {
+        const GFXglyph* g = gfx_glyph_for(font, ch);
+        if (g->height == 0) continue;
+        if (!any || g->yOffset < top) top = g->yOffset;
+        any = true;
+    }
+    const int baseline = y - static_cast<int>(top) * size;
+    int xpos = x;
+    for (char ch : text) {
+        const GFXglyph* g = gfx_glyph_for(font, ch);
+        const uint8_t w = g->width, h = g->height;
+        const int xo = g->xOffset, yo = g->yOffset;
+        uint16_t bo = g->bitmapOffset;
+        uint8_t bits = 0, bit = 0;
+        for (int yy = 0; yy < h; ++yy) {
+            for (int xx = 0; xx < w; ++xx) {
+                if ((bit++ & 7) == 0) bits = font->bitmap[bo++];
+                if (bits & 0x80) {
+                    if (size == 1) {
+                        put_px(xpos + xo + xx, baseline + yo + yy, color);
+                    } else {
+                        fill_rect(xpos + (xo + xx) * size, baseline + (yo + yy) * size,
+                                  size, size, color);
+                    }
+                }
+                bits <<= 1;
+            }
+        }
+        xpos += static_cast<int>(g->xAdvance) * size;
+    }
+}
+
 // ─── Bitmap ────────────────────────────────────────────────
 void St7789::draw_bitmap(int x, int y, int w, int h, const uint8_t* mask, uint16_t fg) {
     const int bytes_per_row = (w + 7) / 8;
@@ -466,6 +533,67 @@ void St7789::draw_rgb565_subimage(int x, int y, int srcW, int sx, int sy,
             dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
         }
     }
+}
+
+void St7789::blit_blurred_subimage(int x, int y, int srcW, int sx, int sy,
+                                   int w, int h, const uint16_t* data,
+                                   int radius, uint8_t keep) {
+    if (!m_fb || !data || w <= 0 || h <= 0 || srcW <= 0) return;
+    if (radius < 0) radius = 0;
+    if (radius > 8) radius = 8;
+    if (x < 0) { w += x; sx -= x; x = 0; }
+    if (y < 0) { h += y; sy -= y; y = 0; }
+    if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
+    if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
+    if (sx < 0) { w += sx; x -= sx; sx = 0; }
+    if (sy < 0) { h += sy; y -= sy; sy = 0; }
+    if (w > srcW - sx) w = srcW - sx;
+    if (w <= 0 || h <= 0) return;
+
+    const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+    uint16_t* tmp = static_cast<uint16_t*>(
+        heap_caps_malloc(n * sizeof(uint16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!tmp) {
+        draw_rgb565_subimage(x, y, srcW, sx, sy, w, h, data); // sharp fallback
+        return;
+    }
+    for (int row = 0; row < h; ++row) {
+        memcpy(tmp + static_cast<size_t>(row) * static_cast<size_t>(w),
+               data + static_cast<size_t>(sy + row) * static_cast<size_t>(srcW) + static_cast<size_t>(sx),
+               static_cast<size_t>(w) * sizeof(uint16_t));
+    }
+
+    // Single-pass 2D box blur from the snapshot; edge samples clamp.
+    // data/tmp are CPU-order RGB565; fb wants byte-swapped (see put_px).
+    const int d = 2 * radius + 1;
+    const int div = d * d;
+    for (int row = 0; row < h; ++row) {
+        uint16_t* dst = m_fb + static_cast<size_t>(y + row) * static_cast<size_t>(DisplayConfig::WIDTH) + static_cast<size_t>(x);
+        for (int col = 0; col < w; ++col) {
+            int rs = 0, gs = 0, bs = 0;
+            for (int ky = -radius; ky <= radius; ++ky) {
+                int sr = row + ky;
+                if (sr < 0) sr = 0;
+                if (sr > h - 1) sr = h - 1;
+                const uint16_t* srow = tmp + static_cast<size_t>(sr) * static_cast<size_t>(w);
+                for (int kx = -radius; kx <= radius; ++kx) {
+                    int sc = col + kx;
+                    if (sc < 0) sc = 0;
+                    if (sc > w - 1) sc = w - 1;
+                    const uint16_t c = srow[sc];
+                    rs += (c >> 11) & 0x1F;
+                    gs += (c >> 5) & 0x3F;
+                    bs += c & 0x1F;
+                }
+            }
+            const uint16_t c = static_cast<uint16_t>(
+                ((((rs / div) * keep / 256) & 0x1F) << 11) |
+                ((((gs / div) * keep / 256) & 0x3F) << 5) |
+                 (((bs / div) * keep / 256) & 0x1F));
+            dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
+        }
+    }
+    heap_caps_free(tmp);
 }
 
 void St7789::push_window(int x, int y, int w, int h) {
