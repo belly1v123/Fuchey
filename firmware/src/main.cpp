@@ -904,7 +904,7 @@ extern "C" void app_main(void) {
                             app_evt.type == Fuchey::Events::EventType::TX_APPROVED;
                     }
 
-                    s_ui.set_screen(Fuchey::UIScreen::IDLE_CLOCK);
+                    s_ui.set_screen(Fuchey::UIScreen::HOME);
 
                     if (!confirmed) {
                         ESP_LOGW(CTAG, "[Wallet] Export cancelled or timed out.");

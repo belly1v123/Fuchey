@@ -39,6 +39,8 @@ public:
     // ── Text (built-in 5x7 ASCII font, integer-scaled) ────
     enum class FontSize { SMALL = 1, MEDIUM = 2, LARGE = 3 };
     void draw_text(int x, int y, std::string_view text, FontSize size, uint16_t color);
+    // Same with an arbitrary integer scale (for hero text bigger than LARGE).
+    void draw_text_scaled(int x, int y, std::string_view text, int scale, uint16_t color);
     int  text_width(std::string_view text, FontSize size) const;
 
     // ── Bitmap (1-bpp, row-major, MSB-first, byte-padded) ─
@@ -50,6 +52,10 @@ public:
     // Same, but skips pixels matching transparent (color-key).
     void draw_rgb565_image_transparent(int x, int y, int w, int h,
                                        const uint16_t* data, uint16_t transparent);
+    // Blits a w*h crop taken at (sx,sy) out of a srcW-wide source image.
+    // Used to restore background regions under animated overlays.
+    void draw_rgb565_subimage(int x, int y, int srcW, int sx, int sy,
+                              int w, int h, const uint16_t* data);
 
     // Pushes only window (x,y,w,h). Faster than push_frame() for sprites.
     void push_window(int x, int y, int w, int h);

@@ -62,6 +62,9 @@ public:
     // Text rendering (built-in 5x7 font, scaled)
     void draw_text(int x, int y, std::string_view text,
                    FontSize size = FontSize::SMALL, Color c = TFT_WHITE);
+    // Same with an arbitrary integer scale (for hero text bigger than LARGE).
+    void draw_text_scaled(int x, int y, std::string_view text,
+                          int scale, Color c = TFT_WHITE);
     void draw_text_centered(int y, std::string_view text,
                             FontSize size = FontSize::SMALL, Color c = TFT_WHITE);
 
@@ -73,6 +76,9 @@ public:
     void draw_sprite(int x, int y, int w, int h, const Color* data);
     void draw_sprite_transparent(int x, int y, int w, int h, const Color* data,
                                  Color transparent);
+    // Blits a w*h crop taken at (sx,sy) out of a srcW-wide source image.
+    void draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
+                          int w, int h, const Color* data);
 
     // Progress bar
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent,

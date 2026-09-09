@@ -339,7 +339,10 @@ void St7789::draw_vline(int x, int y, int len, uint16_t c) { fill_rect(x, y, 1, 
 
 // ─── Text ──────────────────────────────────────────────────
 void St7789::draw_text(int x, int y, std::string_view text, FontSize size, uint16_t color) {
-    const int scale = static_cast<int>(size);
+    draw_text_scaled(x, y, text, static_cast<int>(size), color);
+}
+
+void St7789::draw_text_scaled(int x, int y, std::string_view text, int scale, uint16_t color) {
     if (scale <= 0) return;
 
     // glcdfont is column-major: each of the 5 bytes is one glyph
@@ -437,6 +440,29 @@ void St7789::draw_rgb565_image_transparent(int x, int y, int w, int h,
         for (int col = 0; col < w; ++col) {
             uint16_t c = src[col];
             if (c == transparent) continue;
+            dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
+        }
+    }
+}
+
+void St7789::draw_rgb565_subimage(int x, int y, int srcW, int sx, int sy,
+                                   int w, int h, const uint16_t* data) {
+    if (!m_fb || !data || w <= 0 || h <= 0 || srcW <= 0) return;
+    if (x >= DisplayConfig::WIDTH || y >= DisplayConfig::HEIGHT) return;
+    if (x + w <= 0 || y + h <= 0) return;
+    if (sx < 0) { w += sx; x -= sx; sx = 0; }
+    if (sy < 0) { h += sy; y -= sy; sy = 0; }
+    if (x < 0) { w += x; sx -= x; x = 0; }
+    if (y < 0) { h += y; sy -= y; y = 0; }
+    if (w > DisplayConfig::WIDTH - x)  w = DisplayConfig::WIDTH - x;
+    if (h > DisplayConfig::HEIGHT - y) h = DisplayConfig::HEIGHT - y;
+    if (w > srcW - sx) w = srcW - sx;
+    if (w <= 0 || h <= 0) return;
+    for (int row = 0; row < h; ++row) {
+        const uint16_t* src = data + static_cast<size_t>(sy + row) * static_cast<size_t>(srcW) + static_cast<size_t>(sx);
+        uint16_t* dst = m_fb + static_cast<size_t>(y + row) * static_cast<size_t>(DisplayConfig::WIDTH) + static_cast<size_t>(x);
+        for (int col = 0; col < w; ++col) {
+            uint16_t c = src[col];
             dst[col] = static_cast<uint16_t>((c >> 8) | (c << 8));
         }
     }

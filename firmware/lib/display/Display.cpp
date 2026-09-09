@@ -52,6 +52,10 @@ void Display::draw_text(int x, int y, std::string_view text, FontSize size, Colo
     m_lcd.draw_text(x, y, text, static_cast<St7789::FontSize>(static_cast<int>(size)), c);
 }
 
+void Display::draw_text_scaled(int x, int y, std::string_view text, int scale, Color c) {
+    m_lcd.draw_text_scaled(x, y, text, scale, c);
+}
+
 void Display::draw_text_centered(int y, std::string_view text, FontSize size, Color c) {
     auto fs = static_cast<St7789::FontSize>(static_cast<int>(size));
     int w = m_lcd.text_width(text, fs);
@@ -72,6 +76,11 @@ void Display::draw_sprite(int x, int y, int w, int h, const Color* data) {
 void Display::draw_sprite_transparent(int x, int y, int w, int h, const Color* data,
                                       Color transparent) {
     m_lcd.draw_rgb565_image_transparent(x, y, w, h, data, transparent);
+}
+
+void Display::draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
+                               int w, int h, const Color* data) {
+    m_lcd.draw_rgb565_subimage(x, y, srcW, sx, sy, w, h, data);
 }
 
 void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, Color c) {

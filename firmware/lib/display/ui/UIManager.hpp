@@ -32,7 +32,8 @@ enum class UIScreen {
     CHAT_VIEW,
     BALANCE_VIEW,
     ANIM_TEST,
-    FAIR_PASS
+    FAIR_PASS,
+    HOME
 };
 
 // Setup wizard stages (first-boot only)
@@ -68,7 +69,7 @@ public:
 
 private:
     Display& m_display;
-    UIScreen m_current_screen{UIScreen::IDLE_CLOCK};
+    UIScreen m_current_screen{UIScreen::HOME};
 
     // Ambient cached data
     float       m_weather_temp{-999.0f};
@@ -103,7 +104,6 @@ private:
     // for a frame. The counter is monotonic so cross-task requests are never lost.
     std::atomic<uint32_t> m_redraw_epoch{1};
     uint32_t              m_last_rendered_epoch{0};
-    int                   m_last_clock_minute{-1};
 
     void request_redraw() { m_redraw_epoch.fetch_add(1, std::memory_order_relaxed); }
 
@@ -130,6 +130,15 @@ private:
     bool        m_anim_chrome_drawn{false};
     uint8_t     m_anim_last_frame{255};
 
+    // HOME screen player (Pass_design bg + clock + animated Yeti overlay).
+    SpritePlayer m_home_yeti;
+    bool        m_home_started{false};
+    bool        m_home_chrome{false};
+    uint8_t     m_home_last_frame{255};
+    int         m_home_last_minute{-2};
+    // Last clock text rect (for union-restore when the string changes size).
+    int         m_home_tx{0}, m_home_ty{0}, m_home_tw{0}, m_home_th{0};
+
     void render_clock();
     void render_weather();
     void render_price();
@@ -143,6 +152,7 @@ private:
     void render_chat();
     void render_anim_test();
     void render_fair_pass();
+    void render_home();
     void render_setup();
 
     void cycle_idle_screen();

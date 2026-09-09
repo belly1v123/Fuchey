@@ -8,6 +8,7 @@
 #include "SpritePlayer.hpp"
 #include "YetiAnim.hpp"
 #include "FairPass.hpp"
+#include "PassDesign.hpp"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
@@ -51,6 +52,13 @@ void UIManager::set_screen(UIScreen screen) {
         m_anim_chrome_drawn = false;
         m_anim_last_frame = 255;
     }
+    if (screen == UIScreen::HOME) {
+        m_home_started = false;
+        m_home_chrome = false;
+        m_home_last_frame = 255;
+        m_home_last_minute = -2;
+        m_home_tx = m_home_ty = m_home_tw = m_home_th = 0;
+    }
     request_redraw();
 }
 
@@ -60,12 +68,15 @@ void UIManager::cycle_idle_screen() {
     if (now - m_last_idle_cycle_ms >= Timing::IDLE_SCREEN_CYCLE_MS) {
         m_last_idle_cycle_ms = now;
         switch (m_current_screen) {
-            case UIScreen::IDLE_CLOCK:   m_current_screen = UIScreen::IDLE_WEATHER; break;
-            case UIScreen::IDLE_WEATHER: m_current_screen = UIScreen::IDLE_PRICE;   break;
-            case UIScreen::IDLE_PRICE:   m_current_screen = UIScreen::IDLE_MESSAGE; break;
-            case UIScreen::IDLE_MESSAGE: m_current_screen = UIScreen::IDLE_CLOCK;   break;
+            case UIScreen::HOME:         set_screen(UIScreen::IDLE_WEATHER); break;
+            case UIScreen::IDLE_WEATHER: set_screen(UIScreen::IDLE_PRICE);   break;
+            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::IDLE_MESSAGE); break;
+            case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME);         break;
             default: break; // Stay on active wallet/menu screens
         }
+        // Note: set_screen() (not direct assignment) so per-screen entry
+        // state resets — e.g. HOME must fully repaint its background chrome
+        // instead of resuming incremental window flushes over a stale frame.
         request_redraw();
     }
 }
@@ -189,7 +200,7 @@ void UIManager::approve_transaction() {
     tx_evt.data.tx.amount_cents = m_tx_amount_cents;
     Events::post(Events::g_wallet_queue, tx_evt);
     if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
-    set_screen(UIScreen::IDLE_CLOCK);
+    set_screen(UIScreen::HOME);
 }
 
 void UIManager::reject_transaction() {
@@ -200,7 +211,7 @@ void UIManager::reject_transaction() {
     tx_evt.type = Events::EventType::TX_REJECTED;
     Events::post(Events::g_wallet_queue, tx_evt);
     if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
-    set_screen(UIScreen::IDLE_CLOCK);
+    set_screen(UIScreen::HOME);
 }
 
 // ─── Setup wizard ─────────────────────────────────────────
@@ -271,16 +282,20 @@ void UIManager::mark_wallet_configured(const char* address) {
         ESP_LOGI(TAG, "  Wallet: %s", m_wallet_address.c_str());
     }
     ESP_LOGI(TAG, "=================================================");
-    set_screen(UIScreen::IDLE_CLOCK);
+    set_screen(UIScreen::HOME);
 }
 
 // ─── Render dispatch ──────────────────────────────────────
 void UIManager::render() {
-    // ANIM_TEST is self-flushing (static chrome via full flush once, then
-    // 96x96 sprite/counter window flushes per changed frame). Keep it out
-    // of the clear()+full-flush path below.
+    // ANIM_TEST and HOME are self-flushing (static chrome via full flush
+    // once, then sprite/counter window flushes per changed frame). Keep them
+    // out of the clear()+full-flush path below.
     if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
         render_anim_test();
+        return;
+    }
+    if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
+        render_home();
         return;
     }
 
@@ -306,6 +321,7 @@ void UIManager::render() {
         case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
         case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
+        case UIScreen::HOME:         break; // handled by early-return above (self-flushing)
         case UIScreen::FAIR_PASS:    render_fair_pass();   break;
     }
 
@@ -393,10 +409,10 @@ void UIManager::render_menu() {
     const int step = static_cast<int>((now / 250u) % 4u);
     const int dx = (step == 1 || step == 3) ? 3 : (step == 2 ? 6 : 0);
 
-    static constexpr const char* kItems[4] = {
-        "Wallet Info", "AI Assistant", "SOL Price", "View Balance"
+    static constexpr const char* kItems[5] = {
+        "Wallet Info", "AI Assistant", "SOL Price", "View Balance", "Pass"
     };
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         int y = 52 + i * 34;
         if (i == m_menu_index) {
             // Inverted highlight bar for the selected row
@@ -717,6 +733,96 @@ void UIManager::render_fair_pass() {
     m_display.draw_sprite(0, 0, FairPass.w, FairPass.h, FairPass.data);
 }
 
+// ─── Home screen (Pass_design bg + live clock + animated Yeti) ─
+// Self-flushing like ANIM_TEST, but the background is a photo: every overlay
+// redraw first restores its bg crop via draw_sprite_crop (a black clear would
+// leave a box), then draws, then flush_window()s only that region.
+// Clock is blocky yellow hero text straight on the sky (no pill), like the
+// lopaka mock — auto-fit scale, centered, unpadded hour ("1:16 PM").
+void UIManager::render_home() {
+    static constexpr int kYetiX = 111, kYetiY = 111;
+    static constexpr int kTimeY = 12;
+    static constexpr int kMarginX = 8, kPad = 2;
+    static constexpr Color kTransparent = 0xF81F;
+    static constexpr Color kClock = 0xFFE0; // yellow
+
+    uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    if (!m_home_started) {
+        m_home_yeti.set_anim(&YetiAnim, now);
+        m_home_started = true;
+        m_home_chrome = false;
+    }
+
+    time_t t = time(nullptr);
+    struct tm ti{};
+    const bool synced = (t > 100000 && localtime_r(&t, &ti));
+
+    char buf[16];
+    if (synced) {
+        int h12 = ti.tm_hour % 12;
+        if (h12 == 0) h12 = 12;
+        snprintf(buf, sizeof(buf), "%d:%02d %s", h12, ti.tm_min,
+                 ti.tm_hour < 12 ? "AM" : "PM");
+    } else {
+        snprintf(buf, sizeof(buf), "--:--");
+    }
+    const int minute = synced ? ti.tm_hour * 60 + ti.tm_min : -1;
+
+    // Largest scale (6..3) that fits with side margins, then center.
+    const size_t n = strlen(buf);
+    int scale = 3, tw = 0;
+    for (scale = 6; scale >= 3; --scale) {
+        tw = static_cast<int>(n) * 6 * scale;
+        if (tw <= Display::WIDTH - 2 * kMarginX) break;
+    }
+    const int th = 8 * scale;
+    const int tx = (Display::WIDTH - tw) / 2;
+
+    if (!m_home_chrome) {
+        m_display.draw_sprite(0, 0, PassDesign.w, PassDesign.h, PassDesign.data);
+        m_display.draw_text_scaled(tx, kTimeY, buf, scale, kClock);
+        const SpritePixel* f0 = m_home_yeti.current_frame_data();
+        if (f0 != nullptr) {
+            m_display.draw_sprite_transparent(kYetiX, kYetiY,
+                YetiAnim.w, YetiAnim.h, f0, kTransparent);
+        }
+        m_display.flush();
+        m_home_chrome = true;
+        m_home_last_frame = m_home_yeti.current_frame();
+        m_home_last_minute = minute;
+        m_home_tx = tx; m_home_ty = kTimeY; m_home_tw = tw; m_home_th = th;
+        return;
+    }
+
+    if (minute != m_home_last_minute) {
+        // Union old + new text rects so shrunken strings leave no pixels.
+        const int rx = std::min(m_home_tx, tx);
+        const int ry = std::min(m_home_ty, kTimeY);
+        const int rr = std::max(m_home_tx + m_home_tw, tx + tw);
+        const int rb = std::max(m_home_ty + m_home_th, kTimeY + th);
+        const int rw = rr - rx + 2 * kPad, rh = rb - ry + 2 * kPad;
+        const int qx = rx - kPad, qy = ry - kPad;
+        m_display.draw_sprite_crop(qx, qy, PassDesign.w, qx, qy, rw, rh, PassDesign.data);
+        m_display.draw_text_scaled(tx, kTimeY, buf, scale, kClock);
+        m_display.flush_window(qx, qy, rw, rh);
+        m_home_last_minute = minute;
+        m_home_tx = tx; m_home_ty = kTimeY; m_home_tw = tw; m_home_th = th;
+    }
+
+    if (!m_home_yeti.tick(now)) return; // frame unchanged → zero SPI
+    const uint8_t fr = m_home_yeti.current_frame();
+    if (fr == m_home_last_frame) return;
+    m_home_last_frame = fr;
+
+    const SpritePixel* f = m_home_yeti.current_frame_data();
+    if (f == nullptr) return;
+    m_display.draw_sprite_crop(kYetiX, kYetiY, PassDesign.w,
+        kYetiX, kYetiY, YetiAnim.w, YetiAnim.h, PassDesign.data);
+    m_display.draw_sprite_transparent(kYetiX, kYetiY,
+        YetiAnim.w, YetiAnim.h, f, kTransparent);
+    m_display.flush_window(kYetiX, kYetiY, YetiAnim.w, YetiAnim.h);
+}
+
 // ─── Setup wizard renderer ────────────────────────────────
 void UIManager::render_setup() {
     switch (m_setup_stage) {
@@ -808,7 +914,7 @@ void UIManager::run() {
                     set_screen(UIScreen::WALLET_QR);
                 } else if (btn.event == ButtonEvent::PRESS) {
                     if (m_current_screen == UIScreen::MENU_MAIN) {
-                        m_menu_index = (m_menu_index + 1) % 4;
+                        m_menu_index = (m_menu_index + 1) % 5;
                         ESP_LOGI(TAG, "[Menu] Next option -> index: %d", m_menu_index);
                     } else {
                         ESP_LOGI(TAG, "[Menu] Opening main menu");
@@ -850,10 +956,13 @@ void UIManager::run() {
                         m_bal_fetched = false;
                         m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
                         set_screen(UIScreen::BALANCE_VIEW);
+                    } else if (m_menu_index == 4) {
+                        ESP_LOGI(TAG, "Screen: FAIR_PASS");
+                        set_screen(UIScreen::FAIR_PASS);
                     }
                 } else if (btn.id == ButtonId::BACK) {
-                    ESP_LOGI(TAG, "Screen: MENU_MAIN -> IDLE_CLOCK");
-                    set_screen(UIScreen::IDLE_CLOCK);
+                    ESP_LOGI(TAG, "Screen: MENU_MAIN -> HOME");
+                    set_screen(UIScreen::HOME);
                 }
             } else if (m_current_screen == UIScreen::WALLET_INFO) {
                 if (btn.id == ButtonId::BACK) {
@@ -893,7 +1002,7 @@ void UIManager::run() {
                        m_current_screen == UIScreen::TX_FAIL) {
                 if (btn.event == ButtonEvent::PRESS) {
                     ESP_LOGI(TAG, "Screen: TX result -> returning to idle");
-                    set_screen(UIScreen::IDLE_CLOCK);
+                    set_screen(UIScreen::HOME);
                 }
             }
         }
@@ -914,7 +1023,7 @@ void UIManager::run() {
             m_current_screen == UIScreen::TX_FAIL) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (now - m_tx_result_start_ms >= 4000) {
-                set_screen(UIScreen::IDLE_CLOCK);
+                set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::MENU_MAIN ||
             m_current_screen == UIScreen::WALLET_INFO ||
@@ -922,7 +1031,7 @@ void UIManager::run() {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (now - m_last_idle_cycle_ms >= 15000) {
                 ESP_LOGI(TAG, "[Menu] Timeout after 15s inactivity -> Returning to Idle Cycle");
-                set_screen(UIScreen::IDLE_CLOCK);
+                set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::BALANCE_VIEW) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -931,7 +1040,7 @@ void UIManager::run() {
                 set_screen(UIScreen::MENU_MAIN);
             }
         } else if (!m_setup_needed) {
-            // Cycle ambient idle screens (Clock -> Weather -> Price -> Message -> Clock)
+            // Cycle ambient idle screens (Home -> Weather -> Price -> Message -> Home)
             cycle_idle_screen();
         }
 
@@ -942,12 +1051,14 @@ void UIManager::run() {
             request_redraw();
         }
 
-        // Redraw only when state actually changed (screen/data/button). The idle
-        // clock requests a frame on each minute tick; ANIM_TEST is polled every
-        // tick but render_anim_test() is a no-op (zero SPI) unless tick() advanced.
+        // Redraw only when state actually changed (screen/data/button).
+        // ANIM_TEST and HOME are polled every tick but no-op (zero SPI)
+        // unless the frame/minute advanced.
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
+            need_render = true;
+        } else if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::MENU_MAIN) {
             // Throttled menu animation: full flush costs ~115ms @8MHz SPI,
@@ -957,17 +1068,6 @@ void UIManager::run() {
                 m_menu_anim_last_ms = now_ms;
                 need_render = true;
             }
-        } else if (!m_setup_needed && m_current_screen == UIScreen::IDLE_CLOCK) {
-            time_t now = time(nullptr);
-            struct tm ti{};
-            int minute = -1;
-            if (now > 100000 && localtime_r(&now, &ti)) minute = ti.tm_hour * 60 + ti.tm_min;
-            if (minute != m_last_clock_minute) {
-                need_render = true;
-                m_last_clock_minute = minute;
-            }
-        } else {
-            m_last_clock_minute = -1;
         }
 
         if (need_render) {
