@@ -123,6 +123,12 @@ void UIManager::set_screen(UIScreen screen) {
         // No in-flight slide when (re-)entering the menu.
         m_menu_prev_index = -1;
     }
+    if (screen == UIScreen::POMODORO_VIEW) {
+        // Fresh setup session on every entry; countdown/buzzer state resets.
+        m_pomo.reset();
+        m_pomo_holding = false;
+        m_pomo_last_sec = UINT32_MAX;
+    }
     if (screen == UIScreen::ANIM_TEST) {
         // Restart animation from frame 0 on every entry.
         m_anim_started = false;
@@ -385,6 +391,123 @@ void UIManager::step_menu(int8_t dir) {
     } else {
         // In a sub-screen: carousel-jump directly to prev/next destination.
         open_menu_index(static_cast<uint8_t>(idx));
+    }
+}
+
+// ─── Pomodoro input + tick ─────────────────────────────────
+// Button contract: time phases: B3 (left) = +sec, B4 (right) = +min;
+// SetLoops: B4 = +1 loop, B3 = -1 loop; B2 = confirm, B1 = back.
+// B3/B4 auto-repeat while held (setup phases only).
+void UIManager::handle_pomodoro_button(const ButtonState& btn) {
+    using Phase = PomodoroTimer::Phase;
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    const Phase phase = m_pomo.phase();
+
+    if (btn.id == ButtonId::B3_PREV || btn.id == ButtonId::B4_NEXT) {
+        const bool is_right = (btn.id == ButtonId::B4_NEXT);
+        if (btn.event == ButtonEvent::PRESS) {
+            if (phase == Phase::SetWork || phase == Phase::SetBreak) {
+                if (is_right) m_pomo.adjust_min(); else m_pomo.adjust_sec();
+            } else if (phase == Phase::SetLoops) {
+                m_pomo.adjust_loops(is_right ? +1 : -1);
+            } else {
+                return; // Ready/Done/running/paused ignore B3/B4
+            }
+            // Arm hold-to-repeat; RELEASE disarms (LONG_PRESS ignored so the
+            // repeat keeps running while still held).
+            m_pomo_holding = true;
+            m_pomo_hold_id = btn.id;
+            m_pomo_hold_start_ms = now;
+            m_pomo_next_repeat_ms = now + Pomodoro::HOLD_REPEAT_START_MS;
+            m_last_idle_cycle_ms = now;
+            request_redraw();
+        } else if (btn.event == ButtonEvent::RELEASE) {
+            if (m_pomo_holding && m_pomo_hold_id == btn.id) m_pomo_holding = false;
+        }
+        return;
+    }
+
+    if (btn.id == ButtonId::B2_MENU_SELECT) {
+        if (btn.event != ButtonEvent::PRESS) return;
+        m_last_idle_cycle_ms = now;
+        m_pomo_holding = false;
+        switch (phase) {
+            case Phase::SetWork:
+            case Phase::SetBreak:
+            case Phase::SetLoops:
+                m_pomo.confirm();
+                break;
+            case Phase::Ready:
+                if (m_pomo.start(now)) {
+                    m_pomo_last_sec = UINT32_MAX;
+                    if (m_buzzer) m_buzz.start(now, *m_buzzer, 1, 120, 0); // start blip
+                }
+                break;
+            case Phase::RunWork:
+            case Phase::RunBreak:
+                m_pomo.pause(now);
+                break;
+            case Phase::Paused:
+                m_pomo.resume(now);
+                m_pomo_last_sec = UINT32_MAX;
+                break;
+            case Phase::Done:
+                m_pomo.cancel(); // Done -> Ready (settings kept)
+                break;
+        }
+        request_redraw();
+        return;
+    }
+
+    if (btn.id == ButtonId::B1_TX_BACK) {
+        if (btn.event != ButtonEvent::PRESS) return;
+        m_last_idle_cycle_ms = now;
+        m_pomo_holding = false;
+        if (phase == Phase::RunWork || phase == Phase::RunBreak ||
+            phase == Phase::Paused) {
+            m_pomo.cancel(); // stop run, keep settings
+            if (m_buzzer) m_buzz.stop(*m_buzzer);
+        } else if (phase == Phase::Done) {
+            go_back(); // Done -> MENU_MAIN
+        } else if (!m_pomo.back()) {
+            go_back(); // SetWork -> MENU_MAIN
+        }
+        request_redraw();
+        return;
+    }
+}
+
+// pomo_tick(): countdown + hold-repeat + per-second redraw.
+// Called from run() while POMODORO_VIEW is open. Never blocks.
+void UIManager::pomo_tick(uint32_t now_ms) {
+    using Phase = PomodoroTimer::Phase;
+    if (m_pomo_holding && m_pomo.is_setup()) {
+        if (static_cast<int32_t>(now_ms - m_pomo_next_repeat_ms) >= 0) {
+            const bool is_right = (m_pomo_hold_id == ButtonId::B4_NEXT);
+            const auto phase = m_pomo.phase();
+            if (phase == Phase::SetLoops) {
+                m_pomo.adjust_loops(is_right ? +1 : -1);
+            } else if (phase == Phase::SetWork || phase == Phase::SetBreak) {
+                if (is_right) m_pomo.adjust_min(); else m_pomo.adjust_sec();
+            } else {
+                m_pomo_holding = false; // Ready: nothing to repeat
+            }
+            m_pomo_next_repeat_ms = now_ms + Pomodoro::HOLD_REPEAT_RATE_MS;
+            m_last_idle_cycle_ms = now_ms;
+            request_redraw();
+        }
+    }
+    if (m_pomo.is_running()) {
+        auto ev = m_pomo.tick(now_ms);
+        if (ev != PomodoroTimer::TickEvent::None && m_buzzer) {
+            m_buzz.start(now_ms, *m_buzzer,
+                         Pomodoro::ALERT_BEEPS, Pomodoro::ALERT_ON_MS, Pomodoro::ALERT_OFF_MS);
+        }
+    }
+    const uint32_t sec = now_ms / 1000;
+    if (sec != m_pomo_last_sec) {
+        m_pomo_last_sec = sec;
+        request_redraw(); // countdown digit + colon blink advance
     }
 }
 
@@ -913,19 +1036,124 @@ void UIManager::render_chat() {
     m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
-// ─── Pomodoro / Badge placeholders ──────────────────────────
-// Menu icons exist (PomodoroIcon / BadgeIcon); feature screens land here.
-// Centered 96x96 icon + name below it, same visual language as the menu.
+// ─── Pomodoro timer ─────────────────────────────────────────
+// Poppins hero time (Bold, auto-fit size 3->2) + Regular labels.
+// B3 (left) = +sec, B4 (right) = +min, B2 = confirm, B1 = back.
 void UIManager::render_pomodoro() {
-    static constexpr Color kTransparent = 0xF81F;
+    using Phase = PomodoroTimer::Phase;
+    const PomodoroSettings& s = m_pomo.settings();
+    const Phase phase = m_pomo.phase();
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    // Colon blinks at 1Hz — flips only when the second changes, so no
+    // extra redraws beyond the per-second pomo_tick() request.
+    const bool colon = ((now / 1000) % 2) == 0;
+
+    char hero[16]{};
+    char step[24]{};
+    char sub[40]{};
+    const char* footer = "B1:back";
+    Color hero_color = Colors::WHITE;
+    uint8_t pct = 0;
+    bool show_bar = false;
+
+    auto fmt = [](char* out, size_t n, uint8_t m, uint8_t sec, bool c) {
+        if (c) snprintf(out, n, "%02u:%02u", m, sec);
+        else   snprintf(out, n, "%02u %02u", m, sec);
+    };
+
+    switch (phase) {
+        case Phase::SetWork:
+            snprintf(step, sizeof(step), "SET WORK TIME");
+            fmt(hero, sizeof(hero), s.work_min, s.work_sec, colon);
+            sub[0] = '\0'; // no sub-line on work setup
+            footer = "B4:+min B3:+sec B2:ok";
+            break;
+        case Phase::SetBreak:
+            snprintf(step, sizeof(step), "SET BREAK TIME");
+            fmt(hero, sizeof(hero), s.brk_min, s.brk_sec, colon);
+            snprintf(sub, sizeof(sub), "00:00 = Skip Break");
+            footer = "B4:+min B3:+sec B2:ok";
+            break;
+        case Phase::SetLoops:
+            snprintf(step, sizeof(step), "SET LOOPS");
+            snprintf(hero, sizeof(hero), "x%u", s.loops);
+            sub[0] = '\0'; // summary lives on the Ready screen
+            footer = "B4:+ B3:- B2:ok";
+            break;
+        case Phase::Ready:
+            snprintf(step, sizeof(step), "READY?");
+            fmt(hero, sizeof(hero), s.work_min, s.work_sec, true);
+            snprintf(sub, sizeof(sub), "Break %02u:%02u - x%u",
+                     s.brk_min, s.brk_sec, s.loops);
+            footer = "B2:start B1:back";
+            break;
+        case Phase::RunWork:
+        case Phase::RunBreak: {
+            const bool work = (phase == Phase::RunWork);
+            const uint32_t total = work ? m_pomo.work_ms() : m_pomo.break_ms();
+            const uint32_t rem = m_pomo.remaining_ms();
+            snprintf(step, sizeof(step), "%s %u/%u",
+                     work ? "WORK" : "BREAK", m_pomo.loop_index(), s.loops);
+            fmt(hero, sizeof(hero),
+                static_cast<uint8_t>(rem / 60000),
+                static_cast<uint8_t>((rem / 1000) % 60), colon);
+            snprintf(sub, sizeof(sub), work ? "STAY FOCUSED" : "relax");
+            if (total > 0) pct = static_cast<uint8_t>(100 - (100 * rem / total));
+            show_bar = true;
+            hero_color = work ? Colors::WHITE : TFT_CYAN;
+            footer = "B2:pause B1:cancel";
+            break;
+        }
+        case Phase::Paused:
+            snprintf(step, sizeof(step), "PAUSED");
+            fmt(hero, sizeof(hero),
+                static_cast<uint8_t>(m_pomo.remaining_ms() / 60000),
+                static_cast<uint8_t>((m_pomo.remaining_ms() / 1000) % 60), true);
+            snprintf(sub, sizeof(sub), "%s %u/%u",
+                     m_pomo.paused_from() == Phase::RunWork ? "work" : "break",
+                     m_pomo.loop_index(), s.loops);
+            footer = "B2:resume B1:cancel";
+            break;
+        case Phase::Done:
+            snprintf(step, sizeof(step), "DONE!");
+            snprintf(hero, sizeof(hero), "x%u/%u", s.loops, s.loops);
+            snprintf(sub, sizeof(sub), "nice work");
+            hero_color = Colors::GREEN;
+            footer = "B2:again B1:menu";
+            break;
+    }
+
     m_display.draw_text_centered(8, "POMODORO", Display::FontSize::MEDIUM);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-    m_display.draw_sprite_transparent((Display::WIDTH - 96) / 2, 52, 96, 96,
-                                      PomodoroIcon_data, kTransparent);
-    m_display.draw_text_centered(160, "Pomodoro", Display::FontSize::MEDIUM);
-    m_display.draw_text_centered(186, "Coming soon", Display::FontSize::SMALL, TFT_GRAY);
+
+    gfx_centered(m_display, 42, step, &PoppinsBold9pt7b, TFT_ORANGE);
+
+    // Hero time: largest Poppins Bold size that fits with side margins.
+    int tw = 0, th = 0, hs = 3;
+    m_display.gfx_text_bounds(hero, &PoppinsBold9pt7b, hs, &tw, &th);
+    if (tw > Display::WIDTH - 16) {
+        hs = 2;
+        m_display.gfx_text_bounds(hero, &PoppinsBold9pt7b, hs, &tw, &th);
+    }
+    // Screens without a sub-line (SET WORK / SET LOOPS) center the hero
+    // vertically in the content area (y 30..214) instead of parking at y=72.
+    int hero_y = 72;
+    if (sub[0] == '\0') {
+        hero_y = 30 + (184 - th) / 2;
+    }
+    m_display.draw_gfx_text((Display::WIDTH - tw) / 2, hero_y,
+                            hero, &PoppinsBold9pt7b, hs, hero_color);
+
+    if (sub[0] != '\0') {
+        gfx_centered(m_display, 152, sub, &PoppinsRegular9pt7b, TFT_SILVER);
+    }
+    if (show_bar) {
+        m_display.draw_progress_bar(20, 176, 200, 14, pct,
+                                    hero_color == TFT_CYAN ? TFT_CYAN : TFT_ORANGE);
+    }
+
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, footer, Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_badge() {
@@ -1286,6 +1514,9 @@ void UIManager::run() {
                         reject_transaction();
                     }
                 }
+            } else if (m_current_screen == UIScreen::POMODORO_VIEW) {
+                // Pomodoro owns all four buttons while open.
+                handle_pomodoro_button(btn);
             } else if (btn.id == ButtonId::B1_TX_BACK) {
                 // ── B1 = hierarchical Back everywhere else ─────
                 if (btn.event == ButtonEvent::PRESS) go_back();
@@ -1302,7 +1533,6 @@ void UIManager::run() {
                            m_current_screen == UIScreen::CHAT_VIEW ||
                            m_current_screen == UIScreen::IDLE_PRICE ||
                            m_current_screen == UIScreen::BALANCE_VIEW ||
-                           m_current_screen == UIScreen::POMODORO_VIEW ||
                            m_current_screen == UIScreen::BADGE_VIEW ||
                            m_current_screen == UIScreen::FAIR_PASS ||
                            m_current_screen == UIScreen::ANIM_TEST) {
@@ -1355,6 +1585,15 @@ void UIManager::run() {
         // Any button activity can change what's on screen next tick
         request_redraw();
 
+        // Pomodoro countdown + hold-repeat while the view is open.
+        if (m_current_screen == UIScreen::POMODORO_VIEW) {
+            pomo_tick(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        }
+        // Buzzer pattern keeps sounding even if the user leaves the view.
+        if (m_buzzer && m_buzz.is_active()) {
+            m_buzz.tick(static_cast<uint32_t>(esp_timer_get_time() / 1000), *m_buzzer);
+        }
+
         // Deferred TX accept — a clean single tap was confirmed (no double/long press)
         if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -1390,6 +1629,17 @@ void UIManager::run() {
             if (now - m_last_idle_cycle_ms >= 15000) {
                 ESP_LOGI(TAG, "Screen: IDLE_PRICE timeout -> WALLET_INFO hub");
                 set_screen(UIScreen::WALLET_INFO);
+            }
+        } else if (m_current_screen == UIScreen::POMODORO_VIEW) {
+            // Setup screens idle back to the menu; a running/paused timer
+            // never times out.
+            if (m_pomo.is_setup() ||
+                m_pomo.phase() == PomodoroTimer::Phase::Done) {
+                uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                if (now - m_last_idle_cycle_ms >= Pomodoro::SETUP_TIMEOUT_MS) {
+                    ESP_LOGI(TAG, "Screen: POMODORO setup timeout -> MENU_MAIN");
+                    set_screen(UIScreen::MENU_MAIN);
+                }
             }
         } else if (!m_setup_needed) {
             // Cycle ambient idle screens (Home <-> Weather)

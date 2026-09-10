@@ -10,6 +10,9 @@
 #include "SpritePlayer.hpp"
 #include "../../events/Events.hpp"
 #include "../../balance/BalanceMonitor.hpp"
+#include "../../buttons/ButtonDriver.hpp"
+#include "../../buzzer/Buzzer.hpp"
+#include "../../pomodoro/PomodoroTimer.hpp"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -68,6 +71,7 @@ public:
 
     void set_balance_monitor(BalanceMonitor* bm) { m_balance_monitor = bm; }
     void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
+    void set_buzzer(Buzzer* buzzer)               { m_buzzer = buzzer; }
 
 private:
     Display& m_display;
@@ -99,6 +103,18 @@ private:
 
     // Transaction result RGB LED indicator
     LedIndicator*   m_led_indicator{nullptr};
+
+    // Pomodoro countdown (POMODORO_VIEW). Buzzer is optional — ticks are
+    // skipped silently when no buzzer is wired (e.g. unit tests).
+    Buzzer*         m_buzzer{nullptr};
+    BuzzerPattern   m_buzz{};
+    PomodoroTimer   m_pomo{};
+    uint32_t        m_pomo_last_sec{UINT32_MAX}; // per-second redraw tracking
+    // B3/B4 hold-to-repeat state (PRESS starts, RELEASE stops).
+    bool            m_pomo_holding{false};
+    ButtonId        m_pomo_hold_id{ButtonId::B3_PREV};
+    uint32_t        m_pomo_hold_start_ms{0};
+    uint32_t        m_pomo_next_repeat_ms{0};
 
     uint32_t    m_last_idle_cycle_ms{0};
 
@@ -175,6 +191,8 @@ private:
     void approve_transaction();
     void reject_transaction();
     void go_back();
+    void handle_pomodoro_button(const ButtonState& btn);
+    void pomo_tick(uint32_t now_ms);
     void open_menu_index(uint8_t index);
     void open_wallet_tab(uint8_t tab);
     void step_wallet_tab(int8_t dir);

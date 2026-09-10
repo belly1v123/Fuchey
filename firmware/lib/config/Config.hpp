@@ -125,6 +125,21 @@ namespace Timing {
     inline constexpr uint32_t DISPLAY_UPDATE_MS       = 100;    // 10 FPS UI refresh
 }
 
+// ─── Pomodoro ─────────────────────────────────────────────
+namespace Pomodoro {
+    inline constexpr uint8_t  MAX_MIN              = 60;   // 60:00 cap per phase
+    inline constexpr uint8_t  MAX_LOOPS            = 5;    // work+break pairs
+    inline constexpr uint8_t  DEFAULT_WORK_MIN     = 25;
+    inline constexpr uint8_t  DEFAULT_BREAK_MIN    = 5;
+    inline constexpr uint32_t HOLD_REPEAT_START_MS = 500;  // hold B3/B4 before auto-repeat
+    inline constexpr uint32_t HOLD_REPEAT_RATE_MS  = 120;  // repeat interval while held
+    inline constexpr uint32_t SETUP_TIMEOUT_MS     = 30000;// setup screens -> menu after 30s idle
+    // Finish alert: 4 x (ON 180ms / OFF 180ms) — active buzzer, timing only
+    inline constexpr uint8_t  ALERT_BEEPS          = 4;
+    inline constexpr uint32_t ALERT_ON_MS          = 180;
+    inline constexpr uint32_t ALERT_OFF_MS         = 180;
+}
+
 // ─── NVS Namespaces ───────────────────────────────────────
 namespace NVS {
     inline constexpr const char* WALLET_NS     = "fuchey_wallet";

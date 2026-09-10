@@ -410,6 +410,9 @@ extern "C" void app_main(void) {
     // Wire RGB LED indicator to UIManager for TX result feedback
     s_ui.set_led_indicator(&s_led_indicator);
 
+    // Wire buzzer to UIManager for Pomodoro finish alerts (non-blocking pattern)
+    s_ui.set_buzzer(&s_buzzer);
+
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {
         static constexpr const char* CTAG = "Console";
@@ -436,6 +439,7 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    b / 2                      B1 press (alias: Back)");
         ESP_LOGI(CTAG, "    anim                       Yeti animation test screen");
         ESP_LOGI(CTAG, "    pass                       Worlds Fair banner screen");
+        ESP_LOGI(CTAG, "    pomodoro                   Pomodoro timer screen");
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
 
@@ -633,6 +637,11 @@ extern "C" void app_main(void) {
                 } else if (strcmp(cmd, "pass") == 0) {
                     ESP_LOGI(CTAG, "[UI] Switching to FAIR_PASS screen");
                     s_ui.set_screen(Fuchey::UIScreen::FAIR_PASS);
+
+                // ── pomodoro ──────────────────────────────────
+                } else if (strcmp(cmd, "pomodoro") == 0) {
+                    ESP_LOGI(CTAG, "[UI] Switching to POMODORO_VIEW screen");
+                    s_ui.set_screen(Fuchey::UIScreen::POMODORO_VIEW);
 
                 // ── balance ───────────────────────────────────
                 } else if (strcmp(cmd, "balance") == 0) {
