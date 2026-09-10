@@ -75,6 +75,7 @@ private:
 
     // Ambient cached data
     float       m_weather_temp{-999.0f};
+    uint8_t     m_weather_code{255}; // WMO weathercode, 255 = unknown
     float       m_sol_price{-1.0f};
     std::string m_weather_city{"--"};
     std::string m_last_ai_response{"Hello! I am Fuchey."};
@@ -148,6 +149,9 @@ private:
     int         m_home_last_minute{-2};
     // Last frosted clock pill rect (for union-restore when it changes size).
     int         m_home_tx{0}, m_home_ty{0}, m_home_tw{0}, m_home_th{0};
+    // Last home weather readout (change detection for pill updates).
+    char        m_home_wbuf[16]{"-- C"};
+    uint8_t     m_home_wcode{255};
 
     void render_clock();
     void render_weather();

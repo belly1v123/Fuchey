@@ -10,6 +10,7 @@
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
+#include "WeatherIcons.hpp"
 #include "WalletInfoIcon.hpp"
 #include "ViewBalanceIcon.hpp"
 #include "QrIcon.hpp"
@@ -90,6 +91,21 @@ void setup_header(Display& d) {
     gfx_centered(d, 8, "First Boot Setup", &PoppinsBold9pt7b, Colors::WHITE);
     d.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 }
+
+// Open-Meteo weathercode -> home icon (34x32 XBM, null = no data yet).
+const uint8_t* home_weather_bits(uint8_t code) {
+    switch (code) {
+        case 0:
+        case 1:  return image_weather_sunny_bits;       // clear / mainly clear
+        case 2:  return image_weather_cloud_sunny_bits; // partly cloudy
+        case 3:
+        case 45:
+        case 48: return image_weather_cloud_bits;       // overcast / fog
+        default:
+            if (code > 99) return nullptr;              // 255 = unknown
+            return image_weather_rain_bits;             // drizzle / rain / snow / storm
+    }
+}
 } // namespace
 
 UIManager::UIManager(Display& display) : m_display(display) {}
@@ -129,10 +145,10 @@ void UIManager::cycle_idle_screen() {
     if (now - m_last_idle_cycle_ms >= Timing::IDLE_SCREEN_CYCLE_MS) {
         m_last_idle_cycle_ms = now;
         switch (m_current_screen) {
-            case UIScreen::HOME:         set_screen(UIScreen::IDLE_WEATHER); break;
-            case UIScreen::IDLE_WEATHER: set_screen(UIScreen::HOME);         break;
-            case UIScreen::IDLE_PRICE:   set_screen(UIScreen::HOME);         break; // hub submenu now; park on HOME if stranded
-            case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME);         break; // retired from cycle; park on HOME
+            case UIScreen::HOME:         break; // home is the only idle screen
+            case UIScreen::IDLE_WEATHER:
+            case UIScreen::IDLE_PRICE:
+            case UIScreen::IDLE_MESSAGE: set_screen(UIScreen::HOME); break; // retired; park on HOME
             default: break; // Stay on active wallet/menu screens
         }
         // Note: set_screen() (not direct assignment) so per-screen entry
@@ -153,8 +169,10 @@ void UIManager::process_event(const Events::Event& evt) {
 
         case Events::EventType::WEATHER_UPDATED:
             m_weather_temp = evt.data.weather.temp_celsius;
+            m_weather_code = evt.data.weather.weather_code;
             m_weather_city = evt.data.weather.city;
-            ESP_LOGI(TAG, "Weather updated: %.1f C in %s", m_weather_temp, m_weather_city.c_str());
+            ESP_LOGI(TAG, "Weather updated: %.1f C code %u in %s",
+                     m_weather_temp, m_weather_code, m_weather_city.c_str());
             break;
 
         case Events::EventType::PRICE_UPDATED:
@@ -631,7 +649,7 @@ void UIManager::render_wallet_info() {
     static constexpr int kFocusX = (Display::WIDTH - kIcon) / 2; // 72
     static constexpr const char* kNames[3] = {"View Balance", "Receive QR", "SOL Price"};
 
-    m_display.draw_text_centered(8, "WALLET", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(8, "Wallet Info", Display::FontSize::MEDIUM);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
     // Auto-fetch cached address via global pointer set in app_main()
@@ -990,19 +1008,24 @@ void UIManager::render_fair_pass() {
     m_display.draw_sprite(0, 0, FairPass.w, FairPass.h, FairPass.data);
 }
 
-// ─── Home screen (Pass_design bg + live clock + animated Yeti) ─
+// ─── Home screen (Pass_design bg + clock/date/weather + animated Yeti) ─
 // Self-flushing like ANIM_TEST, but the background is a photo: every overlay
 // redraw first restores its bg crop via draw_sprite_crop (a black clear would
 // leave a box), then draws, then flush_window()s only that region.
-// Clock + date are FreeSansBold yellow hero text over a frosted pill —
-// auto-fit scale, centered time, lopaka-style date below ("09 Wed").
+// Clock/date/weather live on ONE frosted band (pre-blurred PassBlurTop asset
+// covers y 0..130) so overlapping pads can't clobber each other.
 void UIManager::render_home() {
-    static constexpr int kYetiX = 111, kYetiY = 111;
-    static constexpr int kTimeY = 12;
-    static constexpr int kDateX = 52,  kDateY = 55, kDateSize = 2;
-    static constexpr int kMarginX = 8, kPillPad = 10;
+    // Exact lopaka placement: time (0,4) size 3, date (3,52) size 2,
+    // temp (3,87) size 2, icon 34x32 at (88,83), yeti 96x96 at (133,111).
+    // Frosted pill hugs the glyphs (pad 1), not a filled band.
+    static constexpr int kYetiX = 133, kYetiY = 111;
+    static constexpr int kTimeX = 0,   kTimeY = 4, kTimeScale = 3;
+    static constexpr int kDateX = 3,   kDateY = 52, kDateSize = 2;
+    static constexpr int kWx = 3,      kWy = 87, kWSize = 2;
+    static constexpr int kIx = 88,     kIy = 83;
     static constexpr Color kTransparent = 0xF81F;
-    static constexpr Color kClock = 0xFFE0; // yellow
+    static constexpr Color kClock = 0xFFE0;  // yellow
+    static constexpr Color kIconFg = 0xF680; // orange (lopaka)
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     if (!m_home_started) {
@@ -1032,33 +1055,78 @@ void UIManager::render_home() {
     }
     const int minute = synced ? ti.tm_hour * 60 + ti.tm_min : -1;
 
-    // Largest GFX size (3..2) that fits with side margins, then center.
-    // Measured: "1:16 PM" is 201x39 at size 3.
-    int scale = 2, tw = 0, th = 0;
-    for (scale = 3; scale >= 2; --scale) {
-        m_display.gfx_text_bounds(buf, &FreeSansBold9pt7b, scale, &tw, &th);
-        if (tw <= Display::WIDTH - 2 * kMarginX) break;
+    // Weather text + condition icon (dynamic).
+    char wbuf[16];
+    uint8_t wcode = 255;
+    const uint8_t* wbits = nullptr;
+    if (m_weather_temp < -100.0f) {
+        snprintf(wbuf, sizeof(wbuf), "-- C");
+    } else {
+        snprintf(wbuf, sizeof(wbuf), "%.0f C", static_cast<double>(m_weather_temp));
+        wcode = m_weather_code;
+        wbits = home_weather_bits(wcode);
     }
-    const int tx = (Display::WIDTH - tw) / 2;
-    // Date pill joins the clock pill into one frosted band.
-    int dw = 0, dh = 0;
+
+    // Fixed lopaka geometry: time size 3 left-aligned (even the widest
+    // "12:59 PM" fits from x=0), date/temp size 2 below it.
+    static constexpr int scale = kTimeScale;
+    int tw = 0, th = 0;
+    m_display.gfx_text_bounds(buf, &FreeSansBold9pt7b, scale, &tw, &th);
+    const int tx = kTimeX;
+    // Three tight frosted rows (time / date / weather) instead of one band,
+    // so empty space right of short rows stays sharp photo. The band bbox
+    // below is only the sharp-restore + SPI flush envelope.
+    int dw = 0, dh = 0, ww = 0, wh = 0;
     m_display.gfx_text_bounds(dbuf, &FreeSansBold9pt7b, kDateSize, &dw, &dh);
-    const int px = std::min(tx, kDateX) - kPillPad;
-    const int py = kTimeY - kPillPad;
-    const int pr = std::max(tx + tw, kDateX + dw) + kPillPad;
-    const int pb = std::max(kTimeY + th, kDateY + dh) + kPillPad;
+    m_display.gfx_text_bounds(wbuf, &FreeSansBold9pt7b, kWSize, &ww, &wh);
+    const int r1x = tx - 1, r1y = kTimeY - 1, r1w = tw + 2, r1h = th + 2;
+    const bool has_date = (dw > 0 && dh > 0);
+    const int r2x = kDateX - 1, r2y = kDateY - 1, r2w = dw + 2, r2h = dh + 2;
+    int qx0 = kWx, qy0 = kWy, qx1 = kWx + ww, qy1 = kWy + wh;
+    if (wbits != nullptr) {
+        qx0 = std::min(qx0, kIx); qy0 = std::min(qy0, kIy);
+        qx1 = std::max(qx1, kIx + kWeatherIconW);
+        qy1 = std::max(qy1, kIy + kWeatherIconH);
+    }
+    const int r3x = qx0 - 1, r3y = qy0 - 1;
+    const int r3w = (qx1 - qx0) + 2, r3h = (qy1 - qy0) + 2;
+    int px = r1x, py = r1y, pr = r1x + r1w, pb = r1y + r1h;
+    auto grow = [&](int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        px = std::min(px, x); py = std::min(py, y);
+        pr = std::max(pr, x + w); pb = std::max(pb, y + h);
+    };
+    if (has_date) grow(r2x, r2y, r2w, r2h);
+    grow(r3x, r3y, r3w, r3h);
     const int pw = pr - px, ph = pb - py;
+    auto frost_rows = [&]() {
+        m_display.draw_sprite_crop(r1x, r1y, PassBlurTop.w, r1x, r1y, r1w, r1h,
+                                   PassBlurTop.data);
+        if (has_date) {
+            m_display.draw_sprite_crop(r2x, r2y, PassBlurTop.w, r2x, r2y, r2w, r2h,
+                                       PassBlurTop.data);
+        }
+        m_display.draw_sprite_crop(r3x, r3y, PassBlurTop.w, r3x, r3y, r3w, r3h,
+                                   PassBlurTop.data);
+    };
+    auto draw_texts = [&]() {
+        m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
+        m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
+        m_display.draw_gfx_text(kWx, kWy, wbuf, &FreeSansBold9pt7b, kWSize, kClock);
+        if (wbits != nullptr) {
+            m_display.draw_bitmap(kIx, kIy, kWeatherIconW, kWeatherIconH, wbits, kIconFg);
+        }
+    };
 
     if (!m_home_chrome) {
-        // Frosted pill comes from a pre-blurred asset band (PassBlurTop covers
-        // y 0..100) — deterministic on every boot, no heap or pixel math here.
-        ESP_LOGI(TAG, "HOME chrome: pill=(%d,%d %dx%d) free_blk=%u",
+        // Frosted band comes from a pre-blurred asset (PassBlurTop covers
+        // y 0..130) — deterministic on every boot, no heap or pixel math here.
+        ESP_LOGI(TAG, "HOME chrome: band=(%d,%d %dx%d) free_blk=%u",
                  px, py, pw, ph,
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         m_display.draw_sprite(0, 0, PassDesign.w, PassDesign.h, PassDesign.data);
-        m_display.draw_sprite_crop(px, py, PassBlurTop.w, px, py, pw, ph, PassBlurTop.data);
-        m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
-        m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
+        frost_rows();
+        draw_texts();
         const SpritePixel* f0 = m_home_yeti.current_frame_data();
         if (f0 != nullptr) {
             m_display.draw_sprite_transparent(kYetiX, kYetiY,
@@ -1069,24 +1137,28 @@ void UIManager::render_home() {
         m_home_last_frame = m_home_yeti.current_frame();
         m_home_last_minute = minute;
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
+        snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
+        m_home_wcode = wcode;
         return;
     }
 
-    if (minute != m_home_last_minute) {
-        // Union old + new frosted pills, sharp-restore it, then frost the
-        // new pill — shrunken strings leave no blurred remnants.
+    if (minute != m_home_last_minute ||
+        strcmp(wbuf, m_home_wbuf) != 0 || wcode != m_home_wcode) {
+        // Union old + new frosted bands, sharp-restore it, then frost the
+        // new band — shrunken strings leave no blurred remnants.
         const int rx = std::min(m_home_tx, px);
         const int ry = std::min(m_home_ty, py);
         const int rr = std::max(m_home_tx + m_home_tw, px + pw);
         const int rb = std::max(m_home_ty + m_home_th, py + ph);
         const int rw = rr - rx, rh = rb - ry;
         m_display.draw_sprite_crop(rx, ry, PassDesign.w, rx, ry, rw, rh, PassDesign.data);
-        m_display.draw_sprite_crop(px, py, PassBlurTop.w, px, py, pw, ph, PassBlurTop.data);
-        m_display.draw_gfx_text(tx, kTimeY, buf, &FreeSansBold9pt7b, scale, kClock);
-        m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
+        frost_rows();
+        draw_texts();
         m_display.flush_window(rx, ry, rw, rh);
         m_home_last_minute = minute;
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
+        snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
+        m_home_wcode = wcode;
     }
 
     if (!m_home_yeti.tick(now)) return; // frame unchanged → zero SPI
