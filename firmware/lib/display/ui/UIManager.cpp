@@ -92,8 +92,8 @@ void setup_header(Display& d) {
     d.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 }
 
-// Open-Meteo weathercode -> home icon (34x32 XBM, null = no data yet).
-const uint8_t* home_weather_bits(uint8_t code) {
+// Open-Meteo weathercode -> home icon (30x32 RGB565, null = no data yet).
+const SpritePixel* home_weather_bits(uint8_t code) {
     switch (code) {
         case 0:
         case 1:  return image_weather_sunny_bits;       // clear / mainly clear
@@ -1243,17 +1243,16 @@ void UIManager::render_fair_pass() {
 // Clock/date/weather live on ONE frosted band (pre-blurred PassBlurTop asset
 // covers y 0..130) so overlapping pads can't clobber each other.
 void UIManager::render_home() {
-    // Exact lopaka placement: time (0,4) size 3, date (3,52) size 2,
-    // temp (3,87) size 2, icon 34x32 at (88,83), yeti 96x96 at (133,111).
+    // Exact lopaka placement: time (5,4) size 3, date (5,53) size 2,
+    // temp (5,88) size 2, icon 30x32 at (88,88), yeti 96x96 at (133,111).
     // Frosted pill hugs the glyphs (pad 1), not a filled band.
     static constexpr int kYetiX = 133, kYetiY = 111;
-    static constexpr int kTimeX = 0,   kTimeY = 4, kTimeScale = 3;
-    static constexpr int kDateX = 3,   kDateY = 52, kDateSize = 2;
-    static constexpr int kWx = 3,      kWy = 87, kWSize = 2;
-    static constexpr int kIx = 88,     kIy = 83;
+    static constexpr int kTimeX = 5,   kTimeY = 4, kTimeScale = 3;
+    static constexpr int kDateX = 5,   kDateY = 53, kDateSize = 2;
+    static constexpr int kWx = 5,      kWy = 88, kWSize = 2;
+    static constexpr int kIx = 88,     kIy = 88;
     static constexpr Color kTransparent = 0xF81F;
     static constexpr Color kClock = 0xFFE0;  // yellow
-    static constexpr Color kIconFg = 0xF680; // orange (lopaka)
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     if (!m_home_started) {
@@ -1286,7 +1285,7 @@ void UIManager::render_home() {
     // Weather text + condition icon (dynamic).
     char wbuf[16];
     uint8_t wcode = 255;
-    const uint8_t* wbits = nullptr;
+    const SpritePixel* wbits = nullptr;
     if (m_weather_temp < -100.0f) {
         snprintf(wbuf, sizeof(wbuf), "-- C");
     } else {
@@ -1342,7 +1341,8 @@ void UIManager::render_home() {
         m_display.draw_gfx_text(kDateX, kDateY, dbuf, &FreeSansBold9pt7b, kDateSize, kClock);
         m_display.draw_gfx_text(kWx, kWy, wbuf, &FreeSansBold9pt7b, kWSize, kClock);
         if (wbits != nullptr) {
-            m_display.draw_bitmap(kIx, kIy, kWeatherIconW, kWeatherIconH, wbits, kIconFg);
+            m_display.draw_sprite_transparent(kIx, kIy, kWeatherIconW, kWeatherIconH,
+                                              wbits, kWeatherTransparent);
         }
     };
 
