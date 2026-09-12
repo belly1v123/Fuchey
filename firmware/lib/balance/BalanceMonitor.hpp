@@ -17,6 +17,13 @@ public:
     BalanceMonitor& operator=(const BalanceMonitor&) = delete;
 
     void set_address(const std::string& addr) { m_wallet_addr = addr; }
+    // Re-point at a different network (RPC URL + USDC mint). Called after
+    // the NVS network load at boot and on every console `network` switch —
+    // the constructor snapshot alone would pin the monitor to devnet.
+    void set_network(const std::string& rpc_url, const std::string& usdc_mint) {
+        m_rpc_url = rpc_url;
+        m_usdc_mint = usdc_mint;
+    }
 
     bool fetch_balances(double& sol_out, double& usdc_out);
 

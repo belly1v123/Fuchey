@@ -15,6 +15,7 @@
 #include "ViewBalanceIcon.hpp"
 #include "QrIcon.hpp"
 #include "SolPriceIcon.hpp"
+#include "SolanaPixelArt.hpp"
 #include "PomodoroIcon.hpp"
 #include "BadgeIcon.hpp"
 #include "BalanceSolIcon.hpp"
@@ -23,11 +24,13 @@
 #include "FreeMonoBold12pt7b.h"
 #include "esp_heap_caps.h"
 #include "FreeSansBold9pt7b.h"
+#include "FreeSerifBold9pt7b.h"
 #include "PoppinsRegular9pt7b.h"
 #include "PoppinsBold9pt7b.h"
 #include "../../config/Config.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
+#include "../../price/PriceService.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "../../wallet/WalletCore.hpp"
@@ -110,6 +113,19 @@ const SpritePixel* home_weather_bits(uint8_t code) {
 
 UIManager::UIManager(Display& display) : m_display(display) {}
 
+void UIManager::set_price_service(PriceService* ps) {
+    m_price_service = ps;
+    if (m_price_service) {
+        // Non-blocking sync of the latest cached market data (no HTTP here;
+        // PriceService fetches on its own task). Until the first successful
+        // fetch, keep the -1 sentinel so the screen shows placeholders.
+        m_sol_price = m_price_service->has_data() ? m_price_service->get_sol_usd() : -1.0f;
+        m_sol_high_24h = m_price_service->get_high_24h();
+        m_sol_low_24h = m_price_service->get_low_24h();
+        m_sol_change_pct = m_price_service->get_change_pct_24h();
+    }
+}
+
 bool UIManager::init() {
     m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     ESP_LOGI(TAG, "UIManager initialized");
@@ -141,6 +157,21 @@ void UIManager::set_screen(UIScreen screen) {
         m_home_last_frame = 255;
         m_home_last_minute = -2;
         m_home_tx = m_home_ty = m_home_tw = m_home_th = 0;
+    }
+    if (screen == UIScreen::IDLE_PRICE && m_price_service) {
+        // Sync cached market data on entry (no blocking HTTP on UI task).
+        m_sol_price = m_price_service->has_data() ? m_price_service->get_sol_usd() : -1.0f;
+        m_sol_high_24h = m_price_service->get_high_24h();
+        m_sol_low_24h = m_price_service->get_low_24h();
+        m_sol_change_pct = m_price_service->get_change_pct_24h();
+        // Silently refresh in the background so the screen populates by
+        // itself (no serial `p` needed). Non-blocking: only wakes the price
+        // task. Throttled to one request per 15s against rapid re-entry.
+        const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (m_price_req_last_ms == 0 || now_ms - m_price_req_last_ms >= 15000) {
+            m_price_req_last_ms = now_ms;
+            m_price_service->request_update();
+        }
     }
     request_redraw();
 }
@@ -183,7 +214,27 @@ void UIManager::process_event(const Events::Event& evt) {
 
         case Events::EventType::PRICE_UPDATED:
             m_sol_price = evt.data.price.sol_usd;
-            ESP_LOGI(TAG, "SOL price updated: $%.2f", m_sol_price);
+            m_sol_high_24h = evt.data.price.high_24h;
+            m_sol_low_24h = evt.data.price.low_24h;
+            m_sol_change_pct = evt.data.price.change_pct_24h;
+            ESP_LOGI(TAG, "SOL price updated: $%.2f hi=%.2f lo=%.2f chg=%+.2f%%",
+                     m_sol_price, m_sol_high_24h, m_sol_low_24h, m_sol_change_pct);
+            if (m_current_screen == UIScreen::IDLE_PRICE) {
+                // Fresh data just landed while the user is reading it —
+                // restart the hub-timeout window so the screen isn't yanked
+                // away mid-read (console `p` doesn't count as button activity).
+                m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            }
+            break;
+
+        case Events::EventType::BALANCE_UPDATED:
+            m_bal_sol = evt.data.balance.sol;
+            m_bal_usdc = evt.data.balance.usdc;
+            m_bal_ok = evt.data.balance.ok;
+            m_bal_fetched = true;
+            m_bal_fetching = false;
+            ESP_LOGI(TAG, "Balance updated: %.4f SOL ($%.2f USDC) ok=%d",
+                     m_bal_sol, m_bal_usdc, m_bal_ok);
             break;
 
         case Events::EventType::AI_RESPONSE_READY:
@@ -360,6 +411,8 @@ void UIManager::open_wallet_tab(uint8_t tab) {
     if (m_wallet_tab == 0) {
         ESP_LOGI(TAG, "Screen: WALLET_INFO hub -> BALANCE_VIEW");
         m_bal_fetched = false;
+        m_bal_ok = false;
+        m_bal_fetching = false;
         m_bal_fetch_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
         set_screen(UIScreen::BALANCE_VIEW);
     } else if (m_wallet_tab == 1) {
@@ -674,18 +727,65 @@ void UIManager::render_weather() {
 }
 
 void UIManager::render_price() {
-    m_display.draw_text_centered(8, "SOLANA", Display::FontSize::MEDIUM);
-    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    // Lopaka SOL-price layout on the Fuchey dark theme. Positions match the
+    // reference (5,6 icon; values at size 2, labels at size 1); colors are
+    // remapped: labels SILVER, values WHITE, up GREEN / down RED.
+    static constexpr Color kTransparent = 0xF81F;
 
-    char buf[32];
+    // Solana pixel-art icon (60x60 at 5,0).
+    m_display.draw_sprite_transparent(5, 0, 60, 60, SolanaPixelArt_data, kTransparent);
+
+    const bool up = (m_sol_change_pct >= 0.0f);
+    const Color trend = up ? Colors::GREEN : Colors::RED;
+
+    char price_buf[24], high_buf[24], low_buf[24], chg_buf[16];
     if (m_sol_price < 0.0f) {
-        snprintf(buf, sizeof(buf), "$--.--");
+        snprintf(price_buf, sizeof(price_buf), "$--.--");
     } else {
-        snprintf(buf, sizeof(buf), "$%.2f", m_sol_price);
+        snprintf(price_buf, sizeof(price_buf), "$ %.2f", static_cast<double>(m_sol_price));
     }
-    m_display.draw_text_centered(82, buf, Display::FontSize::LARGE, Colors::YELLOW);
-    m_display.draw_text_centered(136, "SOL / USD", Display::FontSize::MEDIUM);
-    m_display.draw_text_centered(200, "binance", Display::FontSize::SMALL, TFT_GRAY);
+    if (m_sol_high_24h < 0.0f) {
+        snprintf(high_buf, sizeof(high_buf), "$--.--");
+    } else {
+        snprintf(high_buf, sizeof(high_buf), "$ %.2f", static_cast<double>(m_sol_high_24h));
+    }
+    if (m_sol_low_24h < 0.0f) {
+        snprintf(low_buf, sizeof(low_buf), "$--.--");
+    } else {
+        snprintf(low_buf, sizeof(low_buf), "$ %.2f", static_cast<double>(m_sol_low_24h));
+    }
+    if (m_sol_price < 0.0f && m_sol_high_24h < 0.0f) {
+        snprintf(chg_buf, sizeof(chg_buf), "--.--%%");
+    } else {
+        snprintf(chg_buf, sizeof(chg_buf), "%+.2f%%", static_cast<double>(m_sol_change_pct));
+    }
+
+    // Labels (FreeSans regular, size 1) + "24h Change" in FreeSerif Bold.
+    // Values in FreeSans Bold size 2; the % value uses FreeSans regular
+    // size 2 exactly like the Lopaka reference.
+    m_display.draw_gfx_text(76, 7, "Current Price", &FreeSans9pt7b, 1, TFT_SILVER);
+    m_display.draw_gfx_text(12, 68, "24h High", &FreeSans9pt7b, 1, TFT_SILVER);
+    m_display.draw_gfx_text(13, 124, "24h Low", &FreeSans9pt7b, 1, TFT_SILVER);
+    m_display.draw_gfx_text(14, 185, "24h Change", &FreeSerifBold9pt7b, 1, TFT_SILVER);
+
+    // Values (FreeSans Bold, size 2).
+    m_display.draw_gfx_text(76, 25, price_buf, &FreeSansBold9pt7b, 2, Colors::WHITE);
+    m_display.draw_gfx_text(11, 86, high_buf, &FreeSansBold9pt7b, 2, Colors::WHITE);
+    m_display.draw_gfx_text(12, 142, low_buf, &FreeSansBold9pt7b, 2, Colors::WHITE);
+    const bool chg_known = !(m_sol_price < 0.0f && m_sol_high_24h < 0.0f);
+    m_display.draw_gfx_text(14, 203, chg_buf, &FreeSans9pt7b, 2,
+                            chg_known ? trend : TFT_SILVER);
+
+    // Current-price trend triangle: green ▲ when up, inverted red ▼ on drop.
+    if (up) {
+        m_display.fill_triangle(195, 8, 201, 19, 189, 19, Colors::GREEN);
+    } else {
+        m_display.fill_triangle(189, 8, 201, 8, 195, 19, Colors::RED);
+    }
+    // 24h high marker: fixed green ▲.
+    m_display.fill_triangle(96, 69, 102, 81, 90, 81, Colors::GREEN);
+    // 24h low marker: fixed inverted red ▼.
+    m_display.fill_triangle(90, 125, 102, 125, 96, 137, Colors::RED);
 }
 
 void UIManager::render_message() {
@@ -965,8 +1065,32 @@ void UIManager::render_balance() {
     }
 
     if (!m_bal_fetched) {
-        // Static: full-screen redraws are slow on SPI, so no animated dots.
-        m_display.draw_text_centered(100, "Fetching...", Display::FontSize::MEDIUM, TFT_CYAN);
+        // Boot-style loading screen under the shared hero title: label +
+        // left-to-right sliding block (sawtooth wrap) at the ~4fps throttle
+        // below — progress is unknowable so it slides instead of filling.
+        int fw = 0, fh = 0;
+        m_display.gfx_text_bounds("Fetching...", &FreeSansBold9pt7b, 1, &fw, &fh);
+        m_display.draw_gfx_text((Display::WIDTH - fw) / 2, 150,
+                                "Fetching...", &FreeSansBold9pt7b, 1, TFT_CYAN);
+        static constexpr int kBarX = 20, kBarY = 196;
+        static constexpr int kBarW = Display::WIDTH - 40, kBarH = 16, kBlk = 40;
+        m_display.draw_rect(kBarX, kBarY, kBarW, kBarH, Colors::WHITE);
+        const uint32_t now =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        const int range = kBarW - 2 - kBlk;
+        // ~20px per 250ms frame => full sweep in ~2s, then wraps to the left.
+        const int pos = static_cast<int>(((now / 250u) * 20u) % static_cast<uint32_t>(range));
+        m_display.fill_rect(kBarX + 1 + pos, kBarY + 1, kBlk, kBarH - 2, TFT_CYAN);
+        return;
+    }
+
+    if (!m_bal_ok) {
+        m_display.draw_text_centered(8, "BALANCE", Display::FontSize::MEDIUM);
+        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(100, "Fetch failed", Display::FontSize::MEDIUM, Colors::RED);
+        m_display.draw_text_centered(140, "Check WiFi, go back", Display::FontSize::SMALL, TFT_GRAY);
+        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+        m_display.draw_text_centered(222, "B1:back", Display::FontSize::SMALL, TFT_GRAY);
         return;
     }
 
@@ -1469,6 +1593,33 @@ void UIManager::task_entry(void* arg) {
     static_cast<UIManager*>(arg)->run();
 }
 
+// One-shot worker: blocking HTTP stays off the UI task. Posts
+// BALANCE_UPDATED when done (even if the user already backed out —
+// the handler then only warms the cache).
+void UIManager::balance_fetch_entry(void* arg) {
+    auto* self = static_cast<UIManager*>(arg);
+    double sol = 0.0, usdc = 0.0;
+    bool ok = false;
+    if (self->m_balance_monitor) {
+        ok = self->m_balance_monitor->fetch_balances(sol, usdc);
+    }
+    Events::Event evt{};
+    evt.type = Events::EventType::BALANCE_UPDATED;
+    evt.data.balance.sol = sol;
+    evt.data.balance.usdc = usdc;
+    evt.data.balance.ok = ok;
+    Events::post(Events::g_ui_queue, evt);
+    vTaskDelete(nullptr);
+}
+
+void UIManager::start_balance_fetch() {
+    if (m_bal_fetching || m_balance_monitor == nullptr) return;
+    m_bal_fetching = true;
+    m_bal_anim_last_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    xTaskCreate(balance_fetch_entry, "bal_fetch", 8192, this,
+                tskIDLE_PRIORITY + 1, nullptr);
+}
+
 void UIManager::run() {
     ESP_LOGI(TAG, "UIManager task running on Core %d", xPortGetCoreID());
     Events::Event evt{};
@@ -1625,8 +1776,10 @@ void UIManager::run() {
             }
         } else if (m_current_screen == UIScreen::IDLE_PRICE) {
             // SOL Price now lives under the Wallet hub (not the idle cycle).
+            // 30s window (room to read price/high/low/change after a fetch
+            // lands); re-armed by fresh PRICE_UPDATED events above.
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            if (now - m_last_idle_cycle_ms >= 15000) {
+            if (now - m_last_idle_cycle_ms >= 30000) {
                 ESP_LOGI(TAG, "Screen: IDLE_PRICE timeout -> WALLET_INFO hub");
                 set_screen(UIScreen::WALLET_INFO);
             }
@@ -1646,11 +1799,10 @@ void UIManager::run() {
             cycle_idle_screen();
         }
 
-        // On-demand balance fetch (blocking, done before render)
-        if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched && m_balance_monitor) {
-            m_balance_monitor->fetch_balances(m_bal_sol, m_bal_usdc);
-            m_bal_fetched = true;
-            request_redraw();
+        // On-demand balance fetch (async worker; the UI keeps painting
+        // the loading screen while HTTP runs elsewhere).
+        if (m_current_screen == UIScreen::BALANCE_VIEW && !m_bal_fetched) {
+            start_balance_fetch();
         }
 
         // Redraw only when state actually changed (screen/data/button).
@@ -1662,6 +1814,14 @@ void UIManager::run() {
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
             need_render = true;
+        } else if (!m_setup_needed && m_current_screen == UIScreen::BALANCE_VIEW &&
+                   !m_bal_fetched) {
+            // Loading marquee: full flush costs ~115ms @8MHz SPI, cap at ~4fps.
+            uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now_ms - m_bal_anim_last_ms >= 250) {
+                m_bal_anim_last_ms = now_ms;
+                need_render = true;
+            }
         }
 
         if (need_render) {

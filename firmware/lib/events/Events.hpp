@@ -44,6 +44,7 @@ enum class EventType : uint32_t {
     // Ambient
     WEATHER_UPDATED      = 0x0040,
     PRICE_UPDATED        = 0x0041,
+    BALANCE_UPDATED      = 0x0042,
 
     // UI
     UI_BUTTON_CONFIRM    = 0x0050,
@@ -87,7 +88,17 @@ struct Event {
         // PRICE_UPDATED
         struct {
             float    sol_usd;
+            float    high_24h;
+            float    low_24h;
+            float    change_pct_24h;
         } price;
+
+        // BALANCE_UPDATED (posted by the balance fetch worker)
+        struct {
+            double   sol;
+            double   usdc;
+            bool     ok;
+        } balance;
 
         // UI
         struct {
@@ -120,6 +131,9 @@ inline constexpr EventBits_t BIT_TX_PENDING       = BIT4;
 inline constexpr EventBits_t BIT_AI_BUSY          = BIT5;
 inline constexpr EventBits_t BIT_WEATHER_OK       = BIT6;
 inline constexpr EventBits_t BIT_PRICE_OK         = BIT7;
+// Set by the UI to wake the PriceService task for an immediate fetch
+// (e.g. entering the SOL Price screen). Cleared on wake by the waiter.
+inline constexpr EventBits_t BIT_PRICE_FETCH_REQ  = BIT8;
 
 // ─── Helper: Post event to a queue (non-blocking) ─────────
 inline bool post(QueueHandle_t q, const Event& evt, TickType_t wait = 0) {

@@ -49,6 +49,8 @@ public:
     void draw_rect(int x, int y, int w, int h, uint16_t c);
     void draw_hline(int x, int y, int len, uint16_t c);
     void draw_vline(int x, int y, int len, uint16_t c);
+    // Filled triangle (scanline raster, framebuffer-only).
+    void fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c);
 
     // ── Text (built-in 5x7 ASCII font, integer-scaled) ────
     enum class FontSize { SMALL = 1, MEDIUM = 2, LARGE = 3 };

@@ -47,6 +47,10 @@ void Display::fill_rect(int x, int y, int w, int h, Color c) {
     m_lcd.fill_rect(x, y, w, h, c);
 }
 
+void Display::fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, Color c) {
+    m_lcd.fill_triangle(x0, y0, x1, y1, x2, y2, c);
+}
+
 // ─── Text ──────────────────────────────────────────────────
 void Display::draw_text(int x, int y, std::string_view text, FontSize size, Color c) {
     m_lcd.draw_text(x, y, text, static_cast<St7789::FontSize>(static_cast<int>(size)), c);

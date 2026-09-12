@@ -167,6 +167,9 @@ namespace API {
     // Binance — no API key, cert always in ESP-IDF bundle (DigiCert)
     inline constexpr const char* SOL_PRICE_URL =
         "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
+    // 24h ticker: lastPrice + highPrice + lowPrice + priceChangePercent
+    inline constexpr const char* SOL_PRICE_24H_URL =
+        "https://api.binance.com/api/v3/ticker/24hr?symbol=SOLUSDT";
 
     // Open-Meteo (no API key needed)
     inline constexpr const char* WEATHER_URL_FMT =

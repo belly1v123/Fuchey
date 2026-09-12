@@ -91,6 +91,13 @@ static const char* get_usdc_mint() {
 
 static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
 
+// Re-point network-dependent services at the current s_is_devnet selection.
+// The monitor snapshots its URL/mint at construction (devnet default, before
+// NVS loads), so it must be re-applied after the NVS load and on switches.
+static void apply_network_to_services() {
+    s_balance_monitor.set_network(get_rpc_url(), get_usdc_mint());
+}
+
 // ─── Helpers ──────────────────────────────────────────────
 
 // Check if string is a Solana hex private key: 32-byte seed or 64-byte seed+pubkey.
@@ -291,6 +298,7 @@ extern "C" void app_main(void) {
         }
     }
     ESP_LOGI(TAG, "[OK] Network configured: %s", s_is_devnet ? "Solana Devnet" : "Solana Mainnet-Beta");
+    apply_network_to_services();
 
     // Buttons before display: harmless either way now that the display
     // (8/9/5/16/6) shares no pins with the buttons (4/10/17/13).
@@ -406,6 +414,9 @@ extern "C" void app_main(void) {
 
     // Wire BalanceMonitor to UIManager for on-demand balance fetch
     s_ui.set_balance_monitor(&s_balance_monitor);
+
+    // Wire PriceService to UIManager for cached 24h market data (no HTTP on UI task)
+    s_ui.set_price_service(&s_price_service);
 
     // Wire RGB LED indicator to UIManager for TX result feedback
     s_ui.set_led_indicator(&s_led_indicator);
@@ -770,6 +781,7 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "[Network] Switched to Solana DEVNET");
                     ESP_LOGI(CTAG, "  RPC: %s", get_rpc_url());
                     ESP_LOGI(CTAG, "-------------------------------------------------");
+                    apply_network_to_services();
 
                 } else if (strcmp(cmd, "network mainnet") == 0) {
                     s_is_devnet = false;
@@ -782,6 +794,7 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "[Network] Switched to Solana MAINNET-BETA");
                     ESP_LOGI(CTAG, "  RPC: %s", get_rpc_url());
                     ESP_LOGI(CTAG, "-------------------------------------------------");
+                    apply_network_to_services();
 
                 // ── Devnet Airdrop ────────────────────────────
                 } else if (strncmp(cmd, "airdrop", 7) == 0) {

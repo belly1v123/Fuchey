@@ -20,6 +20,7 @@
 namespace Fuchey {
 
 class LedIndicator;
+class PriceService;
 
 enum class UIScreen {
     IDLE_CLOCK,
@@ -69,7 +70,11 @@ public:
     static void task_entry(void* arg);
     void run();
 
+    // One-shot balance fetch worker (keeps blocking HTTP off the UI task).
+    static void balance_fetch_entry(void* arg);
+    void start_balance_fetch();
     void set_balance_monitor(BalanceMonitor* bm) { m_balance_monitor = bm; }
+    void set_price_service(PriceService* ps);
     void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
     void set_buzzer(Buzzer* buzzer)               { m_buzzer = buzzer; }
 
@@ -81,6 +86,9 @@ private:
     float       m_weather_temp{-999.0f};
     uint8_t     m_weather_code{255}; // WMO weathercode, 255 = unknown
     float       m_sol_price{-1.0f};
+    float       m_sol_high_24h{-1.0f};
+    float       m_sol_low_24h{-1.0f};
+    float       m_sol_change_pct{0.0f};
     std::string m_weather_city{"--"};
     std::string m_last_ai_response{"Hello! I am Fuchey."};
     std::string m_tx_description{"Transfer 0.1 SOL"};
@@ -96,10 +104,17 @@ private:
 
     // Balance view
     BalanceMonitor* m_balance_monitor{nullptr};
+    // Price service (non-owning; syncs cached 24h market data on entry).
+    PriceService*   m_price_service{nullptr};
+    // Throttle for silent on-entry price fetches (first entry always fires).
+    uint32_t        m_price_req_last_ms{0};
     double          m_bal_sol{0.0};
     double          m_bal_usdc{0.0};
     bool            m_bal_fetched{false};
+    bool            m_bal_ok{false};
+    bool            m_bal_fetching{false};
     uint32_t        m_bal_fetch_start_ms{0};
+    uint32_t        m_bal_anim_last_ms{0};
 
     // Transaction result RGB LED indicator
     LedIndicator*   m_led_indicator{nullptr};

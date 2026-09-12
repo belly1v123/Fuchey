@@ -337,6 +337,30 @@ void St7789::draw_rect(int x, int y, int w, int h, uint16_t c) {
 void St7789::draw_hline(int x, int y, int len, uint16_t c) { fill_rect(x, y, len, 1, c); }
 void St7789::draw_vline(int x, int y, int len, uint16_t c) { fill_rect(x, y, 1, len, c); }
 
+void St7789::fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c) {
+    // Sort vertices by y (ascending).
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; t = x1; x1 = x2; x2 = t; }
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+    if (y0 == y2) return; // degenerate
+    auto edge_x = [](int xa, int ya, int xb, int yb, int y) -> int {
+        if (yb == ya) return xa;
+        return xa + (xb - xa) * (y - ya) / (yb - ya);
+    };
+    for (int y = y0; y <= y2; ++y) {
+        int xa, xb;
+        if (y <= y1) {
+            xa = edge_x(x0, y0, x1, y1, y);
+            xb = edge_x(x0, y0, x2, y2, y);
+        } else {
+            xa = edge_x(x1, y1, x2, y2, y);
+            xb = edge_x(x0, y0, x2, y2, y);
+        }
+        if (xa > xb) { int t = xa; xa = xb; xb = t; }
+        draw_hline(xa, y, xb - xa + 1, c);
+    }
+}
+
 // ─── Text ──────────────────────────────────────────────────
 void St7789::draw_text(int x, int y, std::string_view text, FontSize size, uint16_t color) {
     draw_text_scaled(x, y, text, static_cast<int>(size), color);

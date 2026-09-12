@@ -58,6 +58,8 @@ public:
     void draw_hline(int x, int y, int len, Color c = TFT_WHITE);
     void draw_rect(int x, int y, int w, int h, Color c = TFT_WHITE);
     void fill_rect(int x, int y, int w, int h, Color c = TFT_WHITE);
+    void fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
+                       Color c = TFT_WHITE);
 
     // Text rendering (built-in 5x7 font, scaled)
     void draw_text(int x, int y, std::string_view text,
