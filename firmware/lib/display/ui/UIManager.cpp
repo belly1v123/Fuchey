@@ -19,6 +19,7 @@
 #include "PomodoroIcon.hpp"
 #include "BadgeIcon.hpp"
 #include "BleHidIcon.hpp"
+#include "HidIcons.hpp"
 #include "BalanceSolIcon.hpp"
 #include "BalanceUsdcIcon.hpp"
 #include "FreeSans9pt7b.h"
@@ -138,6 +139,7 @@ void UIManager::set_screen(UIScreen screen) {
     // Stop BLE HID when leaving its screen (stop-on-exit: frees BT RAM,
     // avoids WiFi contention). Entering MENU_MAIN/HOME via go_back() lands here.
     if (m_current_screen == UIScreen::HID_REMOTE && screen != UIScreen::HID_REMOTE) {
+        m_hid_repeating = false; // no repeat stream survives screen change
         if (m_hid_started) {
             blehid_end();
             m_hid_started = false;
@@ -1313,46 +1315,97 @@ void UIManager::render_pomodoro() {
 // ─── BLE HID media remote (port of badge-hackgdl-2025 hid_device) ───
 // Media keys only: Vol Up / Vol Down / Play-Pause via consumer report.
 // B3/B4 moves cursor, B2 sends press+release, B1 stops BLE + back to menu.
+namespace {
+// Hold-to-repeat timing for the HID remote (mirrors Pomodoro hold-repeat):
+// first repeat after a short pause, then a steady stream while B2 is held.
+constexpr uint32_t HID_REPEAT_START_MS = 400;
+constexpr uint32_t HID_REPEAT_RATE_MS = 120;
+// Badge-style focus fill (bright HID blue, cf. badge-hackgdl-2025 HID screen).
+constexpr Color HID_FOCUS_BLUE = 0x033F;
+} // namespace
+
+// One press+release pair for a control row (badge sends true then false).
+void UIManager::hid_send_row(uint8_t row) {
+    if (row == 0) {
+        blehid_volume_up(true);
+        blehid_volume_up(false);
+        ESP_LOGI(TAG, "[HID] Vol Up sent (connected=%d)", blehid_is_connected());
+    } else if (row == 1) {
+        blehid_volume_down(true);
+        blehid_volume_down(false);
+        ESP_LOGI(TAG, "[HID] Vol Down sent (connected=%d)", blehid_is_connected());
+    } else {
+        blehid_play_pause(true);
+        blehid_play_pause(false);
+        ESP_LOGI(TAG, "[HID] Play/Pause sent (connected=%d)", blehid_is_connected());
+    }
+}
+
+// Repeat pump, called from run() while HID_REMOTE is open. Never blocks.
+void UIManager::hid_tick(uint32_t now_ms) {
+    if (!m_hid_repeating) {
+        return;
+    }
+    if (!blehid_is_connected()) {
+        // Link dropped mid-hold: stop quietly (RELEASE disarms the rest).
+        m_hid_repeating = false;
+        return;
+    }
+    if (static_cast<int32_t>(now_ms - m_hid_repeat_next_ms) >= 0) {
+        hid_send_row(m_hid_repeat_row);
+        m_hid_repeat_next_ms = now_ms + HID_REPEAT_RATE_MS;
+        m_last_idle_cycle_ms = now_ms; // a long hold is activity, not idle
+    }
+}
+
 void UIManager::handle_hid_button(const ButtonState& btn) {
+    // B2 release ends a hold-repeat stream.
+    if (btn.id == ButtonId::B2_MENU_SELECT && btn.event == ButtonEvent::RELEASE) {
+        m_hid_repeating = false;
+        return;
+    }
     if (btn.event != ButtonEvent::PRESS) {
         return;
     }
     m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     if (btn.id == ButtonId::B1_TX_BACK) {
+        m_hid_repeating = false;
         go_back(); // set_screen() stops BLE
         return;
     }
     if (btn.id == ButtonId::B3_PREV) {
+        m_hid_repeating = false;
         m_hid_index = static_cast<uint8_t>((m_hid_index + 3 - 1) % 3);
         request_redraw();
         return;
     }
     if (btn.id == ButtonId::B4_NEXT) {
+        m_hid_repeating = false;
         m_hid_index = static_cast<uint8_t>((m_hid_index + 1) % 3);
         request_redraw();
         return;
     }
     if (btn.id == ButtonId::B2_MENU_SELECT) {
-        // Badge sends press(true) then release(false) back-to-back.
-        if (m_hid_index == 0) {
-            blehid_volume_up(true);
-            blehid_volume_up(false);
-            ESP_LOGI(TAG, "[HID] Vol Up sent (connected=%d)", blehid_is_connected());
-        } else if (m_hid_index == 1) {
-            blehid_volume_down(true);
-            blehid_volume_down(false);
-            ESP_LOGI(TAG, "[HID] Vol Down sent (connected=%d)", blehid_is_connected());
-        } else {
-            blehid_play_pause(true);
-            blehid_play_pause(false);
-            ESP_LOGI(TAG, "[HID] Play/Pause sent (connected=%d)", blehid_is_connected());
-        }
+        hid_send_row(m_hid_index); // tap = single step (unchanged)
+        // Arm hold-to-repeat; RELEASE disarms (LONG_PRESS ignored so the
+        // stream keeps running while still held).
+        m_hid_repeating = true;
+        m_hid_repeat_row = m_hid_index;
+        m_hid_repeat_next_ms =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000) + HID_REPEAT_START_MS;
         request_redraw();
     }
 }
 
+// Badge-style layout (cf. badge-hackgdl-2025 HID screen photo):
+// title + device name + status dot/text, icon rows with a blue focus box,
+// button-hint footer. Icons: speaker masks (HidIcons.hpp), play/pause drawn
+// with primitives (triangle + twin bars).
 void UIManager::render_hid() {
     static constexpr const char* kRows[3] = {"Vol Up", "Vol Down", "Play/Pause"};
+    static constexpr int kBoxX = 16, kBoxW = Display::WIDTH - 32, kBoxH = 30;
+    static constexpr int kIconX = 28, kIconW = 20, kIconH = 16;
+    static constexpr int kTextX = 56;
     char name[24]{};
     blehid_get_device_name(name, sizeof(name));
 
@@ -1363,31 +1416,46 @@ void UIManager::render_hid() {
     snprintf(line, sizeof(line), "%s", name[0] ? name : "FUCHEY_HID");
     m_display.draw_text_centered(40, line, Display::FontSize::MEDIUM, TFT_CYAN);
 
+    // Status dot + text centered as one unit (SMALL = 6px/char).
     const bool connected = blehid_is_connected();
     m_hid_connected = connected;
-    m_display.draw_text_centered(64, connected ? "Connected" : "Waiting for pair...",
-                                 Display::FontSize::SMALL,
-                                 connected ? Colors::GREEN : TFT_ORANGE);
+    const char* st = connected ? "Connected" : "Waiting for pair...";
+    const Color st_color = connected ? Colors::GREEN : TFT_ORANGE;
+    const int st_w = 7 + 4 + static_cast<int>(strlen(st)) * 6;
+    const int st_x = (Display::WIDTH - st_w) / 2;
+    m_display.draw_bitmap(st_x, 62, 7, 7, HidIconDot, st_color);
+    m_display.draw_text(st_x + 11, 62, st, Display::FontSize::SMALL, st_color);
 
     for (int i = 0; i < 3; ++i) {
         const int y = 96 + i * 32;
         const bool focused = (m_hid_index == i);
         if (focused) {
-            m_display.fill_rect(20, y - 4, Display::WIDTH - 40, 26, TFT_NAVY);
-            m_display.draw_rect(20, y - 4, Display::WIDTH - 40, 26, TFT_CYAN);
+            m_display.fill_rect(kBoxX, y - 5, kBoxW, kBoxH, HID_FOCUS_BLUE);
         }
-        char row[24];
-        snprintf(row, sizeof(row), "%s %s", focused ? ">" : " ", kRows[i]);
-        m_display.draw_text(32, y, row, Display::FontSize::MEDIUM,
+        // Icon color: white on the blue focus box, per-row color otherwise
+        // (white / cyan / yellow, like the badge screen).
+        Color icon = Colors::WHITE;
+        if (!focused) {
+            icon = (i == 1) ? TFT_CYAN : (i == 2) ? Colors::YELLOW : Colors::WHITE;
+        }
+        const int iy = y + (kBoxH - 10 - kIconH) / 2 + 2;
+        if (i == 0) {
+            m_display.draw_bitmap(kIconX, iy, kIconW, kIconH, HidIconVolUp, icon);
+        } else if (i == 1) {
+            m_display.draw_bitmap(kIconX, iy, kIconW, kIconH, HidIconVolDown, icon);
+        } else {
+            // Play triangle + pause bars, yellow like the badge screen.
+            m_display.fill_triangle(kIconX, iy, kIconX, iy + kIconH - 1,
+                                    kIconX + 9, iy + (kIconH - 1) / 2, icon);
+            m_display.fill_rect(kIconX + 12, iy, 3, kIconH, icon);
+            m_display.fill_rect(kIconX + 17, iy, 3, kIconH, icon);
+        }
+        m_display.draw_text(kTextX, y, kRows[i], Display::FontSize::MEDIUM,
                             focused ? Colors::WHITE : TFT_SILVER);
-    }
-    if (!connected) {
-        m_display.draw_text_centered(192, "Pair from phone/laptop",
-                                     Display::FontSize::SMALL, TFT_GRAY);
     }
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "B2:send B3/B4:move B1:back",
+    m_display.draw_text_centered(222, "B2:Select B3/B4:Nav B1:Back",
                                  Display::FontSize::SMALL, TFT_GRAY);
 }
 
@@ -1856,6 +1924,7 @@ void UIManager::run() {
         }
         // HID connection poll: badge used a callback to flip menus; Fuchey
         // polls (no cross-task lifetime issues) and redraws on change.
+        // Hold-to-repeat pump runs on the same tick.
         if (m_current_screen == UIScreen::HID_REMOTE) {
             const bool connected = blehid_is_connected();
             if (connected != m_hid_connected) {
@@ -1863,6 +1932,7 @@ void UIManager::run() {
                 ESP_LOGI(TAG, "[HID] %s", connected ? "connected" : "disconnected");
                 request_redraw();
             }
+            hid_tick(static_cast<uint32_t>(esp_timer_get_time() / 1000));
         }
         // Buzzer pattern keeps sounding even if the user leaves the view.
         if (m_buzzer && m_buzz.is_active()) {

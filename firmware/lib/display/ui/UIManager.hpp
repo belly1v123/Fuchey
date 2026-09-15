@@ -172,6 +172,10 @@ private:
     bool m_hid_started{false};
     bool m_hid_connected{false};
     uint8_t m_hid_index{0};
+    // Hold-B2-to-repeat state (PRESS arms, RELEASE disarms; see hid_tick).
+    bool m_hid_repeating{false};
+    uint8_t m_hid_repeat_row{0};
+    uint32_t m_hid_repeat_next_ms{0};
 
     // ANIM_TEST player (was function-static; reset on entry in set_screen()).
     SpritePlayer m_anim_player;
@@ -216,6 +220,8 @@ private:
     void go_back();
     void handle_pomodoro_button(const ButtonState& btn);
     void handle_hid_button(const ButtonState& btn);
+    void hid_send_row(uint8_t row);
+    void hid_tick(uint32_t now_ms);
     void pomo_tick(uint32_t now_ms);
     void open_menu_index(uint8_t index);
     void open_wallet_tab(uint8_t tab);
