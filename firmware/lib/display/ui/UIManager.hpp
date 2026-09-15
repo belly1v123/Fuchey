@@ -39,6 +39,7 @@ enum class UIScreen {
     BADGE_VIEW,
     ANIM_TEST,
     FAIR_PASS,
+    HID_REMOTE,
     HOME
 };
 
@@ -166,6 +167,12 @@ private:
     // Menu cursor animation throttle (full flush ~115ms @8MHz, so ~4fps max).
     uint32_t    m_menu_anim_last_ms{0};
 
+    // BLE HID remote (HID_REMOTE). Untrusted: media keys only, no wallet access.
+    // BT stack starts on screen entry, fully deinit on exit (see set_screen).
+    bool m_hid_started{false};
+    bool m_hid_connected{false};
+    uint8_t m_hid_index{0};
+
     // ANIM_TEST player (was function-static; reset on entry in set_screen()).
     SpritePlayer m_anim_player;
     bool        m_anim_started{false};
@@ -196,6 +203,7 @@ private:
     void render_balance();
     void render_chat();
     void render_pomodoro();
+    void render_hid();
     void render_badge();
     void render_anim_test();
     void render_fair_pass();
@@ -207,6 +215,7 @@ private:
     void reject_transaction();
     void go_back();
     void handle_pomodoro_button(const ButtonState& btn);
+    void handle_hid_button(const ButtonState& btn);
     void pomo_tick(uint32_t now_ms);
     void open_menu_index(uint8_t index);
     void open_wallet_tab(uint8_t tab);

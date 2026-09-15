@@ -18,6 +18,7 @@
 #include "SolanaPixelArt.hpp"
 #include "PomodoroIcon.hpp"
 #include "BadgeIcon.hpp"
+#include "BleHidIcon.hpp"
 #include "BalanceSolIcon.hpp"
 #include "BalanceUsdcIcon.hpp"
 #include "FreeSans9pt7b.h"
@@ -34,6 +35,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "../../wallet/WalletCore.hpp"
+#include "blehid_remote.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -133,7 +135,28 @@ bool UIManager::init() {
 }
 
 void UIManager::set_screen(UIScreen screen) {
+    // Stop BLE HID when leaving its screen (stop-on-exit: frees BT RAM,
+    // avoids WiFi contention). Entering MENU_MAIN/HOME via go_back() lands here.
+    if (m_current_screen == UIScreen::HID_REMOTE && screen != UIScreen::HID_REMOTE) {
+        if (m_hid_started) {
+            blehid_end();
+            m_hid_started = false;
+        }
+        m_hid_connected = false;
+    }
     m_current_screen = screen;
+    if (screen == UIScreen::HID_REMOTE) {
+        m_hid_index = 0;
+        m_hid_connected = blehid_is_connected();
+        if (!m_hid_started) {
+            m_hid_started = blehid_begin();
+            if (!m_hid_started) {
+                ESP_LOGE(TAG, "[HID] BT init failed — staying on menu");
+                set_screen(UIScreen::MENU_MAIN);
+                return;
+            }
+        }
+    }
     if (screen == UIScreen::MENU_MAIN) {
         m_menu_anim_last_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
         // No in-flight slide when (re-)entering the menu.
@@ -365,6 +388,7 @@ void UIManager::go_back() {
         case UIScreen::WALLET_INFO:
         case UIScreen::CHAT_VIEW:
         case UIScreen::POMODORO_VIEW:
+        case UIScreen::HID_REMOTE:
         case UIScreen::BADGE_VIEW:
         case UIScreen::FAIR_PASS:
         case UIScreen::ANIM_TEST:
@@ -386,11 +410,12 @@ void UIManager::go_back() {
 }
 
 // ─── Menu helpers ──────────────────────────────────────────
-// Main menu (horizontal icon carousel, 3 entries):
+// Main menu (horizontal icon carousel, 4 entries):
 //   0 = Wallet Info (hub)  1 = Pomodoro  2 = Badge (opens the pass)
+//   3 = Media Remote (BLE HID)
 // View Balance and QR live under the Wallet Info hub, not top-level.
 void UIManager::open_menu_index(uint8_t index) {
-    m_menu_index = index % 3;
+    m_menu_index = index % 4;
     m_menu_prev_index = -1; // direct open: no slide animation
     if (m_menu_index == 0) {
         ESP_LOGI(TAG, "Screen: WALLET_INFO hub");
@@ -399,9 +424,12 @@ void UIManager::open_menu_index(uint8_t index) {
     } else if (m_menu_index == 1) {
         ESP_LOGI(TAG, "Screen: POMODORO_VIEW");
         set_screen(UIScreen::POMODORO_VIEW);
-    } else {
+    } else if (m_menu_index == 2) {
         ESP_LOGI(TAG, "Screen: FAIR_PASS (via Badge)");
         set_screen(UIScreen::FAIR_PASS);
+    } else {
+        ESP_LOGI(TAG, "Screen: HID_REMOTE (BLE media)");
+        set_screen(UIScreen::HID_REMOTE);
     }
 }
 
@@ -436,7 +464,7 @@ void UIManager::step_wallet_tab(int8_t dir) {
 
 void UIManager::step_menu(int8_t dir) {
     int idx = static_cast<int>(m_menu_index);
-    idx = (idx + dir + 3) % 3;
+    idx = (idx + dir + 4) % 4;
     ESP_LOGI(TAG, "[Menu] %s -> index: %d", dir > 0 ? "Next" : "Prev", idx);
     if (m_current_screen == UIScreen::MENU_MAIN) {
         m_menu_index = static_cast<uint8_t>(idx);
@@ -671,6 +699,7 @@ void UIManager::render() {
         case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
         case UIScreen::POMODORO_VIEW: render_pomodoro();   break;
+        case UIScreen::HID_REMOTE:    render_hid();         break;
         case UIScreen::BADGE_VIEW:    render_badge();      break;
         case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
         case UIScreen::HOME:         break; // handled by early-return above (self-flushing)
@@ -811,14 +840,15 @@ void UIManager::render_menu() {
         const SpritePixel* icon; // nullptr -> monogram tile
         const char* mono;        // tile text when icon == nullptr
     };
-    static const MenuEntry kItems[3] = {
+    static const MenuEntry kItems[4] = {
         {"Wallet Info",  WalletInfoIcon_data, nullptr},
         {"Pomodoro",     PomodoroIcon_data,   nullptr},
         {"Badge",        BadgeIcon_data,      nullptr},
+        {"Media Remote", BleHidIcon_data,      nullptr},
     };
 
     auto draw_entry = [&](int x, uint8_t idx) {
-        const MenuEntry& e = kItems[idx % 3];
+        const MenuEntry& e = kItems[idx % 4];
         if (e.icon != nullptr) {
             m_display.draw_sprite_transparent(x, kIconY, kIcon, kIcon, e.icon, kTransparent);
         } else {
@@ -1280,6 +1310,87 @@ void UIManager::render_pomodoro() {
     m_display.draw_text_centered(222, footer, Display::FontSize::SMALL, TFT_GRAY);
 }
 
+// ─── BLE HID media remote (port of badge-hackgdl-2025 hid_device) ───
+// Media keys only: Vol Up / Vol Down / Play-Pause via consumer report.
+// B3/B4 moves cursor, B2 sends press+release, B1 stops BLE + back to menu.
+void UIManager::handle_hid_button(const ButtonState& btn) {
+    if (btn.event != ButtonEvent::PRESS) {
+        return;
+    }
+    m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    if (btn.id == ButtonId::B1_TX_BACK) {
+        go_back(); // set_screen() stops BLE
+        return;
+    }
+    if (btn.id == ButtonId::B3_PREV) {
+        m_hid_index = static_cast<uint8_t>((m_hid_index + 3 - 1) % 3);
+        request_redraw();
+        return;
+    }
+    if (btn.id == ButtonId::B4_NEXT) {
+        m_hid_index = static_cast<uint8_t>((m_hid_index + 1) % 3);
+        request_redraw();
+        return;
+    }
+    if (btn.id == ButtonId::B2_MENU_SELECT) {
+        // Badge sends press(true) then release(false) back-to-back.
+        if (m_hid_index == 0) {
+            blehid_volume_up(true);
+            blehid_volume_up(false);
+            ESP_LOGI(TAG, "[HID] Vol Up sent (connected=%d)", blehid_is_connected());
+        } else if (m_hid_index == 1) {
+            blehid_volume_down(true);
+            blehid_volume_down(false);
+            ESP_LOGI(TAG, "[HID] Vol Down sent (connected=%d)", blehid_is_connected());
+        } else {
+            blehid_play_pause(true);
+            blehid_play_pause(false);
+            ESP_LOGI(TAG, "[HID] Play/Pause sent (connected=%d)", blehid_is_connected());
+        }
+        request_redraw();
+    }
+}
+
+void UIManager::render_hid() {
+    static constexpr const char* kRows[3] = {"Vol Up", "Vol Down", "Play/Pause"};
+    char name[24]{};
+    blehid_get_device_name(name, sizeof(name));
+
+    m_display.draw_text_centered(8, "MEDIA REMOTE", Display::FontSize::MEDIUM);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+
+    char line[40];
+    snprintf(line, sizeof(line), "%s", name[0] ? name : "FUCHEY_HID");
+    m_display.draw_text_centered(40, line, Display::FontSize::MEDIUM, TFT_CYAN);
+
+    const bool connected = blehid_is_connected();
+    m_hid_connected = connected;
+    m_display.draw_text_centered(64, connected ? "Connected" : "Waiting for pair...",
+                                 Display::FontSize::SMALL,
+                                 connected ? Colors::GREEN : TFT_ORANGE);
+
+    for (int i = 0; i < 3; ++i) {
+        const int y = 96 + i * 32;
+        const bool focused = (m_hid_index == i);
+        if (focused) {
+            m_display.fill_rect(20, y - 4, Display::WIDTH - 40, 26, TFT_NAVY);
+            m_display.draw_rect(20, y - 4, Display::WIDTH - 40, 26, TFT_CYAN);
+        }
+        char row[24];
+        snprintf(row, sizeof(row), "%s %s", focused ? ">" : " ", kRows[i]);
+        m_display.draw_text(32, y, row, Display::FontSize::MEDIUM,
+                            focused ? Colors::WHITE : TFT_SILVER);
+    }
+    if (!connected) {
+        m_display.draw_text_centered(192, "Pair from phone/laptop",
+                                     Display::FontSize::SMALL, TFT_GRAY);
+    }
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B2:send B3/B4:move B1:back",
+                                 Display::FontSize::SMALL, TFT_GRAY);
+}
+
 void UIManager::render_badge() {
     static constexpr Color kTransparent = 0xF81F;
     m_display.draw_text_centered(8, "BADGE", Display::FontSize::MEDIUM);
@@ -1668,6 +1779,9 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::POMODORO_VIEW) {
                 // Pomodoro owns all four buttons while open.
                 handle_pomodoro_button(btn);
+            } else if (m_current_screen == UIScreen::HID_REMOTE) {
+                // HID remote owns all four buttons while open.
+                handle_hid_button(btn);
             } else if (btn.id == ButtonId::B1_TX_BACK) {
                 // ── B1 = hierarchical Back everywhere else ─────
                 if (btn.event == ButtonEvent::PRESS) go_back();
@@ -1740,6 +1854,16 @@ void UIManager::run() {
         if (m_current_screen == UIScreen::POMODORO_VIEW) {
             pomo_tick(static_cast<uint32_t>(esp_timer_get_time() / 1000));
         }
+        // HID connection poll: badge used a callback to flip menus; Fuchey
+        // polls (no cross-task lifetime issues) and redraws on change.
+        if (m_current_screen == UIScreen::HID_REMOTE) {
+            const bool connected = blehid_is_connected();
+            if (connected != m_hid_connected) {
+                m_hid_connected = connected;
+                ESP_LOGI(TAG, "[HID] %s", connected ? "connected" : "disconnected");
+                request_redraw();
+            }
+        }
         // Buzzer pattern keeps sounding even if the user leaves the view.
         if (m_buzzer && m_buzz.is_active()) {
             m_buzz.tick(static_cast<uint32_t>(esp_timer_get_time() / 1000), *m_buzzer);
@@ -1793,6 +1917,14 @@ void UIManager::run() {
                     ESP_LOGI(TAG, "Screen: POMODORO setup timeout -> MENU_MAIN");
                     set_screen(UIScreen::MENU_MAIN);
                 }
+            }
+        } else if (m_current_screen == UIScreen::HID_REMOTE) {
+            // 60s idle stops BLE (set_screen deinit) and returns to menu.
+            // Generous window so phone/laptop pairing can complete.
+            uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (now - m_last_idle_cycle_ms >= 60000) {
+                ESP_LOGI(TAG, "Screen: HID_REMOTE timeout -> MENU_MAIN");
+                set_screen(UIScreen::MENU_MAIN);
             }
         } else if (!m_setup_needed) {
             // Cycle ambient idle screens (Home <-> Weather)
