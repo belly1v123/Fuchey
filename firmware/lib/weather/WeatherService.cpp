@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 #include <cstdio>
+#include <cstring>
 
 namespace Fuchey {
 
@@ -100,34 +101,84 @@ void WeatherService::task_entry(void* arg) {
 }
 
 void WeatherService::geolocate() {
-    // ipapi.co: free, HTTPS, no API key required
-    auto resp = m_wifi.get("https://ipapi.co/json/");
-    if (!resp.success) {
-        ESP_LOGW(TAG, "Geolocation request failed, using default: %s", m_city_name.c_str());
+    // Try providers in order. HTTP first: no TLS cert bundle needed,
+    // works around "No matching trusted root" seen with ipapi.co HTTPS.
+    static constexpr const char* kProviders[] = {
+        API::GEOLOCATION_URL_PRIMARY,
+        API::GEOLOCATION_URL_FALLBACK1,
+        API::GEOLOCATION_URL_FALLBACK2,
+        API::GEOLOCATION_URL_FALLBACK3,
+    };
+
+    for (const char* url : kProviders) {
+        auto resp = m_wifi.get(url);
+        if (!resp.success) {
+            ESP_LOGW(TAG, "Geolocation via %s failed (HTTP %d), trying next",
+                     url, resp.status_code);
+            continue;
+        }
+
+        cJSON* root = cJSON_Parse(resp.body.c_str());
+        if (!root) {
+            ESP_LOGW(TAG, "Geolocation JSON parse failed for %s, trying next", url);
+            continue;
+        }
+
+        // city is common across providers
+        cJSON* city = cJSON_GetObjectItem(root, "city");
+        // ip-api.com uses lat/lon; ipapi.co & ipwho.is use latitude/longitude
+        cJSON* lat = cJSON_GetObjectItem(root, "lat");
+        if (!lat || !cJSON_IsNumber(lat)) lat = cJSON_GetObjectItem(root, "latitude");
+        cJSON* lon = cJSON_GetObjectItem(root, "lon");
+        if (!lon || !cJSON_IsNumber(lon)) lon = cJSON_GetObjectItem(root, "longitude");
+
+        // Respect provider status flags so error payloads aren't mistaken
+        // for a location (e.g. ip-api {"status":"fail"}, ipwho {"success":false})
+        bool status_ok = true;
+        cJSON* status = cJSON_GetObjectItem(root, "status");
+        if (cJSON_IsString(status) && std::strcmp(status->valuestring, "success") != 0) {
+            status_ok = false;
+            cJSON* msg = cJSON_GetObjectItem(root, "message");
+            ESP_LOGW(TAG, "Geolocation provider %s returned status=%s%s%s", url,
+                     status->valuestring,
+                     (msg && cJSON_IsString(msg)) ? ": " : "",
+                     (msg && cJSON_IsString(msg)) ? msg->valuestring : "");
+        }
+        cJSON* success = cJSON_GetObjectItem(root, "success");
+        if (cJSON_IsBool(success) && !cJSON_IsTrue(success)) status_ok = false;
+
+        if (status_ok && city && cJSON_IsString(city) &&
+            lat && cJSON_IsNumber(lat) && lon && cJSON_IsNumber(lon)) {
+            set_location(city->valuestring,
+                         static_cast<float>(lat->valuedouble),
+                         static_cast<float>(lon->valuedouble));
+            ESP_LOGI(TAG, "Geolocated via %s: %s (%.4f, %.4f)",
+                     url, city->valuestring, lat->valuedouble, lon->valuedouble);
+            cJSON_Delete(root);
+            save_config();
+            return;
+        }
+
+        ESP_LOGW(TAG, "Geolocation fields missing from %s, trying next", url);
+        cJSON_Delete(root);
+    }
+
+    ESP_LOGW(TAG, "All geolocation providers failed, using default: %s", m_city_name.c_str());
+}
+
+void WeatherService::save_config() {
+    Storage::Handle cfg(NVS::CONFIG_NS, NVS_READWRITE);
+    if (!cfg.is_open()) {
+        ESP_LOGW(TAG, "Cannot persist location: NVS not open");
         return;
     }
-
-    cJSON* root = cJSON_Parse(resp.body.c_str());
-    if (!root) {
-        ESP_LOGW(TAG, "Geolocation JSON parse failed, using default: %s", m_city_name.c_str());
-        return;
-    }
-
-    cJSON* city = cJSON_GetObjectItem(root, "city");
-    cJSON* lat  = cJSON_GetObjectItem(root, "latitude");   // ipapi.co uses "latitude"
-    cJSON* lon  = cJSON_GetObjectItem(root, "longitude");  // ipapi.co uses "longitude"
-
-    if (city && cJSON_IsString(city) && lat && cJSON_IsNumber(lat) && lon && cJSON_IsNumber(lon)) {
-        set_location(city->valuestring,
-                     static_cast<float>(lat->valuedouble),
-                     static_cast<float>(lon->valuedouble));
-        ESP_LOGI(TAG, "Geolocated: %s (%.4f, %.4f)",
-                 city->valuestring, lat->valuedouble, lon->valuedouble);
-    } else {
-        ESP_LOGW(TAG, "Geolocation fields missing, using default: %s", m_city_name.c_str());
-    }
-
-    cJSON_Delete(root);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", m_lat);
+    cfg.set_str(NVS::KEY_WEATHER_CITY, m_city_name.c_str());
+    cfg.set_str(NVS::KEY_WEATHER_LAT, buf);
+    snprintf(buf, sizeof(buf), "%.4f", m_lon);
+    cfg.set_str(NVS::KEY_WEATHER_LON, buf);
+    cfg.commit();
 }
 
 void WeatherService::run() {
