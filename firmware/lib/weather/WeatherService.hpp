@@ -23,6 +23,7 @@ public:
     void geolocate();
 
     void load_config();
+    void save_config();
 
     static void task_entry(void* arg);
     void run();

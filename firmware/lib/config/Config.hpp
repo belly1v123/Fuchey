@@ -176,6 +176,23 @@ namespace API {
         "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
         "&current_weather=true&temperature_unit=celsius";
 
+    // IP Geolocation — tried in order. Plain-HTTP first on purpose:
+    // ipapi.co over HTTPS fails TLS verification on some ESP-IDF cert
+    // bundles ("No matching trusted root"), while these HTTP endpoints
+    // need no cert at all. Location data is non-sensitive.
+    // Schemas:
+    //   ip-api.com : {"status":"success","city":"..","lat":..,"lon":..}
+    //   ipapi.co   : {"city":"..","latitude":..,"longitude":..}
+    //   ipwho.is   : {"success":true,"city":"..","latitude":..,"longitude":..}
+    inline constexpr const char* GEOLOCATION_URL_PRIMARY =
+        "http://ip-api.com/json/?fields=status,message,city,lat,lon";
+    inline constexpr const char* GEOLOCATION_URL_FALLBACK1 =
+        "http://ipapi.co/json/";
+    inline constexpr const char* GEOLOCATION_URL_FALLBACK2 =
+        "https://ipapi.co/json/";
+    inline constexpr const char* GEOLOCATION_URL_FALLBACK3 =
+        "http://ipwho.is/json/";
+
     // Default LLM — configurable via NVS
     inline constexpr const char* LLM_DEFAULT_ENDPOINT =
         "https://api.openai.com/v1/chat/completions";
