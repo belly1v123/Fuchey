@@ -1,6 +1,6 @@
 # Fuchey
 
-**Fuchey** is an open-source, self-custodial **Solana crypto desk pent** built on the **ESP32-S3** inspired by the idea of bringing the personality and interaction of a Tamagotchi into the world of crypto.
+**Fuchey** is an open-source, self-custodial **Solana crypto desk pet** built on the **ESP32-S3** inspired by the idea of bringing the personality and interaction of a Tamagotchi into the world of crypto.
 
 It is a physical desk companion with its own display, buttons, and behavior engine. It lives beside your PC or laptop, reacts to events, displays useful information, and develops simple moods and behaviors based on what is happening around it.
 
