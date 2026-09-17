@@ -1,10 +1,15 @@
 # Fuchey
 
-**Fuchey** is an open-source, self-custodial **DIY Solana hardware wallet** built on the **ESP32-S3** with an integrated **text-based AI assistant**. Inspired by the idea that **"a wallet should not look like a wallet,"** Fuchey is designed to be an everyday desk device that displays useful information such as the time, weather, and live SOL price, while seamlessly transforming into a secure hardware wallet experience whenever blockchain interactions are required.
+**Fuchey** is an open-source, self-custodial **Solana crypto desk pent** built on the **ESP32-S3** inspired by the idea of bringing the personality and interaction of a Tamagotchi into the world of crypto.
 
-The primary goal of Fuchey is to make **self-custody secure, intuitive, and enjoyable**. All private keys are generated and stored on-device, transactions are signed locally, and sensitive operations require physical user confirmation. The integrated AI assistant helps users understand crypto, build transactions, and perform autonomous micropayments within user-defined spending limits, while remaining completely isolated from the wallet's cryptographic core.
+It is a physical desk companion with its own display, buttons, and behavior engine. It lives beside your PC or laptop, reacts to events, displays useful information, and develops simple moods and behaviors based on what is happening around it.
 
-Built with **ESP-IDF**, **PlatformIO**, and modern **C++**, Fuchey follows a modular, security-first architecture focused on reliability, maintainability, and an exceptional user experience.
+The core experience is built around a **character-driven behavior engine.** 
+The goal is to make crypto feel more tangible and alive rather than presenting everything through conventional dashboards and wallet interfaces.
+
+The device uses a 240×240 ST7789 SPI TFT display to bring the character and pixel-art interface to life. Alongside the character, Fuchey can display information such as the time, weather, SOL price, 24-hour market change, wallet information, and other contextual data.
+
+Crypto functionality remains an important part of the ecosystem, but it is treated as an interaction and event layer rather than Fuchey's entire identity. Wallet operations, blockchain activity, and companion software can communicate with the physical Fuchey and trigger behaviors or provide additional functionality. The project is built with ESP-IDF, PlatformIO, and modern C++, with a focus on modular firmware, responsive hardware interaction, pixel-art animation, and an extensible behavior engine.
 
 ## Tech Stack
 
