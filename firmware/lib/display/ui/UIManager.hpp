@@ -33,11 +33,9 @@ enum class UIScreen {
     TX_CONFIRM,
     TX_SUCCESS,
     TX_FAIL,
-    CHAT_VIEW,
     BALANCE_VIEW,
     POMODORO_VIEW,
     BADGE_VIEW,
-    ANIM_TEST,
     FAIR_PASS,
     HID_REMOTE,
     HOME
@@ -91,7 +89,6 @@ private:
     float       m_sol_low_24h{-1.0f};
     float       m_sol_change_pct{0.0f};
     std::string m_weather_city{"--"};
-    std::string m_last_ai_response{"Hello! I am Fuchey."};
     std::string m_tx_description{"Transfer 0.1 SOL"};
     uint64_t    m_tx_amount_cents{0};
 
@@ -177,12 +174,6 @@ private:
     uint8_t m_hid_repeat_row{0};
     uint32_t m_hid_repeat_next_ms{0};
 
-    // ANIM_TEST player (was function-static; reset on entry in set_screen()).
-    SpritePlayer m_anim_player;
-    bool        m_anim_started{false};
-    bool        m_anim_chrome_drawn{false};
-    uint8_t     m_anim_last_frame{255};
-
     // HOME screen player (Pass_design bg + clock + animated Yeti overlay).
     SpritePlayer m_home_yeti;
     bool        m_home_started{false};
@@ -205,11 +196,9 @@ private:
     void render_tx_confirm();
     void render_tx_result();
     void render_balance();
-    void render_chat();
     void render_pomodoro();
     void render_hid();
     void render_badge();
-    void render_anim_test();
     void render_fair_pass();
     void render_home();
     void render_setup();

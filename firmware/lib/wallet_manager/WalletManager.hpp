@@ -10,9 +10,8 @@
 //   - Session timeout management
 //   - Event posting (WALLET_CREATED, TX_APPROVED, etc.)
 //
-// SECURITY: AI and UI communicate with WalletManager.
+// SECURITY: UI communicates with WalletManager.
 //           WalletManager communicates with WalletCore.
-//           AI NEVER touches WalletCore directly.
 // ============================================================
 
 #include "../wallet/WalletCore.hpp"
@@ -71,7 +70,6 @@ public:
     // Returns immediately if auto-sign applies.
     //
     // CALL FROM: WalletManager task only.
-    // NOT callable by AI directly.
     TxResult request_signature(const TxRequest& req,
                                 bool force_confirm = false);
 

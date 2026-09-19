@@ -6,7 +6,7 @@
 // SECURITY CONTRACT:
 //   - Never exposes private keys outside this module
 //     (single deliberate exception: export_secret(), opt-in only)
-//   - Never depends on AI, WiFi, or UI
+//   - Never depends on WiFi or UI
 //   - Private key is held in memory only during active session
 //   - Mnemonic is stored encrypted in NVS
 //   - All key material is zeroed when session ends

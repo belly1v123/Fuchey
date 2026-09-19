@@ -36,11 +36,6 @@ enum class EventType : uint32_t {
     TX_BROADCAST_OK      = 0x0024,
     TX_BROADCAST_FAIL    = 0x0025,
 
-    // AI / Chat
-    AI_MESSAGE_RECV      = 0x0030,
-    AI_RESPONSE_READY    = 0x0031,
-    AI_PAYMENT_INTENT    = 0x0032,
-
     // Ambient
     WEATHER_UPDATED      = 0x0040,
     PRICE_UPDATED        = 0x0041,
@@ -69,13 +64,6 @@ struct Event {
             uint16_t tx_len;
             uint64_t amount_cents;   // Amount in cents (USD)
         } tx;
-
-        // AI_MESSAGE_RECV
-        struct {
-            char     text[128];
-            bool     is_payment_intent;
-            uint64_t payment_amount_cents;
-        } chat;
 
         // WEATHER_UPDATED
         struct {
@@ -115,7 +103,6 @@ struct Event {
 // Extern declarations — initialized in main before tasks start
 extern QueueHandle_t g_wallet_queue;   // Event → WalletManager
 extern QueueHandle_t g_ui_queue;       // Event → UIManager
-extern QueueHandle_t g_ai_queue;       // Event → AIManager
 extern QueueHandle_t g_button_queue;   // ButtonDriver → consumers
 
 // ─── Event Group Bits ─────────────────────────────────────
@@ -128,7 +115,6 @@ inline constexpr EventBits_t BIT_WIFI_IP          = BIT1;
 inline constexpr EventBits_t BIT_WALLET_READY     = BIT2;
 inline constexpr EventBits_t BIT_WALLET_LOCKED    = BIT3;
 inline constexpr EventBits_t BIT_TX_PENDING       = BIT4;
-inline constexpr EventBits_t BIT_AI_BUSY          = BIT5;
 inline constexpr EventBits_t BIT_WEATHER_OK       = BIT6;
 inline constexpr EventBits_t BIT_PRICE_OK         = BIT7;
 // Set by the UI to wake the PriceService task for an immediate fetch
