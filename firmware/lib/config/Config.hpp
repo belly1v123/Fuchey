@@ -75,7 +75,6 @@ namespace Tasks {
     inline constexpr uint32_t BUTTON_STACK      = 2048;
     inline constexpr uint32_t WIFI_STACK        = 8192;
     inline constexpr uint32_t WALLET_STACK      = 8192;
-    inline constexpr uint32_t AI_STACK          = 8192;
     inline constexpr uint32_t WEATHER_STACK     = 8192;
     inline constexpr uint32_t PRICE_STACK       = 8192;
     inline constexpr uint32_t BALANCE_STACK     = 8192;
@@ -86,7 +85,6 @@ namespace Tasks {
     inline constexpr int WALLET_PRIORITY        = 10;  // Highest — security critical
     inline constexpr int UI_PRIORITY            = 7;
     inline constexpr int WIFI_PRIORITY          = 6;
-    inline constexpr int AI_PRIORITY            = 5;   // Intentionally lower than wallet
     inline constexpr int WEATHER_PRIORITY       = 3;
     inline constexpr int PRICE_PRIORITY         = 3;
     inline constexpr int BALANCE_PRIORITY       = 3;
@@ -97,7 +95,6 @@ namespace Tasks {
     inline constexpr int WALLET_CORE            = 1;   // Core 1: security-critical only
     inline constexpr int UI_CORE                = 0;   // Core 0: UI + console
     inline constexpr int WIFI_CORE              = 0;
-    inline constexpr int AI_CORE                = 0;
     inline constexpr int PRICE_CORE             = 1;   // Core 1: TLS won't starve IDLE0
     inline constexpr int WEATHER_CORE           = 1;
     inline constexpr int BALANCE_CORE           = 1;
@@ -110,7 +107,6 @@ namespace Queues {
     inline constexpr int BUTTON_EVENTS          = 8;
     inline constexpr int WALLET_REQUESTS        = 4;
     inline constexpr int UI_COMMANDS            = 16;
-    inline constexpr int AI_MESSAGES            = 8;
     inline constexpr int LED_COMMANDS           = 4;
 }
 
@@ -146,7 +142,6 @@ namespace NVS {
     inline constexpr const char* CONFIG_NS     = "fuchey_cfg";
     inline constexpr const char* POLICY_NS     = "fuchey_policy";
     inline constexpr const char* WIFI_NS       = "fuchey_wifi";
-    inline constexpr const char* AI_NS         = "fuchey_ai";
 
     // Keys
     inline constexpr const char* KEY_MNEMONIC_ENC  = "mnemonic_enc";
@@ -154,8 +149,6 @@ namespace NVS {
     inline constexpr const char* KEY_SPEND_LIMIT   = "spend_limit";
     inline constexpr const char* KEY_WIFI_SSID     = "ssid";
     inline constexpr const char* KEY_WIFI_PASS     = "password";
-    inline constexpr const char* KEY_LLM_API_KEY   = "llm_api_key";
-    inline constexpr const char* KEY_LLM_ENDPOINT  = "llm_endpoint";
     inline constexpr const char* KEY_WEATHER_CITY  = "weather_city";
     inline constexpr const char* KEY_WEATHER_LAT   = "weather_lat";
     inline constexpr const char* KEY_WEATHER_LON   = "weather_lon";
@@ -192,11 +185,6 @@ namespace API {
         "https://ipapi.co/json/";
     inline constexpr const char* GEOLOCATION_URL_FALLBACK3 =
         "http://ipwho.is/json/";
-
-    // Default LLM — configurable via NVS
-    inline constexpr const char* LLM_DEFAULT_ENDPOINT =
-        "https://api.openai.com/v1/chat/completions";
-    inline constexpr const char* LLM_DEFAULT_MODEL = "gpt-4o-mini";
 
     // Solana Network Endpoints & Token Mints
     inline constexpr const char* SOLANA_MAINNET_RPC =

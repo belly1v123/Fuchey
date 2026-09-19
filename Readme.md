@@ -35,7 +35,6 @@ Crypto functionality remains an important part of the ecosystem, but it is treat
 - ✅ Display receive address as QR code on TFT
 - ✅ On-demand SOL + USDC balance fetch via RPC
 - ✅ Idle display cycle: clock → weather → SOL price → message
-- ✅ AI Assistant chat via serial console
 - ✅ Auto-connect WiFi (saved in NVS), switch between devnet/mainnet
 
 ## Hardware Wiring (TFT_version — ST7789 240x240 SPI)
@@ -92,10 +91,6 @@ balance
 network devnet
 network mainnet
 
-# AI Assistant
-ai_key <your_openai_key>
-ai <message>
-
 # Help
 h
 ```
@@ -104,7 +99,6 @@ h
 
 -  Self-custodial Solana hardware wallet
 -  On-device transaction signing
--  Integrated text-based AI assistant
 -  Clock, weather, and live SOL price display
 -  ESP32-S3 powered with TFT interface
 -  Security-first modular architecture

@@ -6,6 +6,8 @@
 
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -32,7 +34,6 @@
 #include "../lib/policy/SpendingPolicy.hpp"
 #include "../lib/wallet_manager/WalletManager.hpp"
 #include "../lib/wifi/WiFiManager.hpp"
-#include "../lib/chat/AIManager.hpp"
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
@@ -43,7 +44,6 @@ namespace Events {
 // Define global handles declared as extern in Events.hpp
 QueueHandle_t g_wallet_queue = nullptr;
 QueueHandle_t g_ui_queue     = nullptr;
-QueueHandle_t g_ai_queue     = nullptr;
 QueueHandle_t g_button_queue = nullptr;
 EventGroupHandle_t g_event_group = nullptr;
 
@@ -74,7 +74,6 @@ static Fuchey::SpendingPolicy s_spending_policy;
 static Fuchey::WalletManager  s_wallet_manager(s_wallet_core, s_spending_policy);
 
 static Fuchey::WiFiManager    s_wifi_manager;
-static Fuchey::AIManager      s_ai_manager(s_wifi_manager);
 static Fuchey::WeatherService s_weather_service(s_wifi_manager);
 static Fuchey::PriceService   s_price_service(s_wifi_manager);
 
@@ -276,7 +275,6 @@ extern "C" void app_main(void) {
     // 1. Allocate Queues & Event Groups
     Fuchey::Events::g_wallet_queue = xQueueCreate(Fuchey::Queues::WALLET_REQUESTS, sizeof(Fuchey::Events::Event));
     Fuchey::Events::g_ui_queue     = xQueueCreate(Fuchey::Queues::UI_COMMANDS,     sizeof(Fuchey::Events::Event));
-    Fuchey::Events::g_ai_queue     = xQueueCreate(Fuchey::Queues::AI_MESSAGES,     sizeof(Fuchey::Events::Event));
     Fuchey::Events::g_button_queue = xQueueCreate(Fuchey::Queues::BUTTON_EVENTS,   sizeof(Fuchey::ButtonState));
     Fuchey::Events::g_event_group  = xEventGroupCreate();
 
@@ -286,6 +284,21 @@ extern "C" void app_main(void) {
     // 2. Initialize System Layer (NVS, Storage, Drivers)
     ESP_ERROR_CHECK(Fuchey::Storage::init());
     ESP_LOGI(TAG, "[OK] Storage (NVS) initialized");
+
+    // Legacy cleanup: the AI assistant was removed. Wipe any LLM API key /
+    // endpoint an older build left in NVS. Delete this block once every
+    // device has been re-flashed once.
+    {
+        nvs_handle_t legacy;
+        if (nvs_open("fuchey_ai", NVS_READONLY, &legacy) == ESP_OK) {
+            nvs_close(legacy);
+            if (nvs_open("fuchey_ai", NVS_READWRITE, &legacy) == ESP_OK) {
+                nvs_erase_all(legacy);
+                nvs_commit(legacy);
+                nvs_close(legacy);
+            }
+        }
+    }
 
     // Load network setting from NVS (default devnet)
     {
@@ -348,7 +361,6 @@ extern "C" void app_main(void) {
 
     // 4. Initialize Network & Services
     s_wifi_manager.init();
-    s_ai_manager.init();
     s_weather_service.init();
     s_price_service.init();
     ESP_LOGI(TAG, "[OK] Network services initialized");
@@ -391,11 +403,6 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(Fuchey::WalletManager::task_entry, "wallet_mgr_task",
                             Fuchey::Tasks::WALLET_STACK, &s_wallet_manager,
                             Fuchey::Tasks::WALLET_PRIORITY, nullptr, Fuchey::Tasks::WALLET_CORE);
-
-    // AI Manager Task (Core 0 — Untrusted)
-    xTaskCreatePinnedToCore(Fuchey::AIManager::task_entry, "ai_task",
-                            Fuchey::Tasks::AI_STACK, &s_ai_manager,
-                            Fuchey::Tasks::AI_PRIORITY, nullptr, Fuchey::Tasks::AI_CORE);
 
     // Weather Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
     xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
@@ -448,7 +455,6 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    j / prev                   B3 press (previous item)");
         ESP_LOGI(CTAG, "    k / next                   B4 press (next item)");
         ESP_LOGI(CTAG, "    b / 2                      B1 press (alias: Back)");
-        ESP_LOGI(CTAG, "    anim                       Yeti animation test screen");
         ESP_LOGI(CTAG, "    pass                       Worlds Fair banner screen");
         ESP_LOGI(CTAG, "    pomodoro                   Pomodoro timer screen");
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
@@ -638,11 +644,6 @@ extern "C" void app_main(void) {
                 } else if (strcmp(cmd, "qr") == 0) {
                     ESP_LOGI(CTAG, "[UI] Switching to Wallet QR screen");
                     s_ui.set_screen(Fuchey::UIScreen::WALLET_QR);
-
-                // ── anim ──────────────────────────────────────
-                } else if (strcmp(cmd, "anim") == 0) {
-                    ESP_LOGI(CTAG, "[UI] Switching to ANIM_TEST screen");
-                    s_ui.set_screen(Fuchey::UIScreen::ANIM_TEST);
 
                 // ── pass ──────────────────────────────────────
                 } else if (strcmp(cmd, "pass") == 0) {
@@ -1030,25 +1031,6 @@ extern "C" void app_main(void) {
                     memset(cmd + 14, 0, len - 14);
                     ESP_LOGI(CTAG, "-------------------------------------------------");
 
-                // ── AI chat message ────────────────────────────
-                } else if (strncmp(cmd, "ai ", 3) == 0 && len > 3) {
-                    const char* msg = cmd + 3;
-                    ESP_LOGI(CTAG, "[AI] Sending message to AI Assistant: '%s'", msg);
-                    Fuchey::Events::Event evt{};
-                    evt.type = Fuchey::Events::EventType::AI_MESSAGE_RECV;
-                    std::strncpy(evt.data.chat.text, msg, sizeof(evt.data.chat.text) - 1);
-                    Fuchey::Events::post(Fuchey::Events::g_ai_queue, evt);
-
-                // ── AI API key ─────────────────────────────────
-                } else if (strncmp(cmd, "ai_key ", 7) == 0 && len > 7) {
-                    const char* key = cmd + 7;
-                    if (s_ai_manager.set_api_key(key)) {
-                        ESP_LOGI(CTAG, "[AI] API Key saved to NVS successfully");
-                    } else {
-                        ESP_LOGE(CTAG, "[AI] Failed to save API Key to NVS");
-                    }
-
-                // ── Send SOL ──────────────────────────────────
                 // ── Send SOL ──────────────────────────────────
                 } else if (strncmp(cmd, "send sol ", 9) == 0 && len > 9) {
                     struct SendArgs {
@@ -1659,8 +1641,6 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  wallet_info              Show current address");
                     ESP_LOGI(CTAG, "  wallet_export            Export private key (DANGER)");
                     ESP_LOGI(CTAG, "  balance                  Fetch live SOL & USDC balance");
-                    ESP_LOGI(CTAG, "  ai <message>             Send prompt to AI Assistant");
-                    ESP_LOGI(CTAG, "  ai_key <key>             Set OpenAI API key");
                     ESP_LOGI(CTAG, "  send                     Token transfer menu (SOL / USDC)");
                     ESP_LOGI(CTAG, "  send sol <amt> <to>      Transfer SOL");
                     ESP_LOGI(CTAG, "  send usdc <amt> <to>     Transfer USDC");

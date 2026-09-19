@@ -170,12 +170,6 @@ void UIManager::set_screen(UIScreen screen) {
         m_pomo_holding = false;
         m_pomo_last_sec = UINT32_MAX;
     }
-    if (screen == UIScreen::ANIM_TEST) {
-        // Restart animation from frame 0 on every entry.
-        m_anim_started = false;
-        m_anim_chrome_drawn = false;
-        m_anim_last_frame = 255;
-    }
     if (screen == UIScreen::HOME) {
         m_home_started = false;
         m_home_chrome = false;
@@ -260,11 +254,6 @@ void UIManager::process_event(const Events::Event& evt) {
             m_bal_fetching = false;
             ESP_LOGI(TAG, "Balance updated: %.4f SOL ($%.2f USDC) ok=%d",
                      m_bal_sol, m_bal_usdc, m_bal_ok);
-            break;
-
-        case Events::EventType::AI_RESPONSE_READY:
-            m_last_ai_response = evt.data.chat.text;
-            set_screen(UIScreen::CHAT_VIEW);
             break;
 
         case Events::EventType::TX_REQUEST:
@@ -388,12 +377,10 @@ void UIManager::go_back() {
             set_screen(UIScreen::WALLET_INFO);
             break;
         case UIScreen::WALLET_INFO:
-        case UIScreen::CHAT_VIEW:
         case UIScreen::POMODORO_VIEW:
         case UIScreen::HID_REMOTE:
         case UIScreen::BADGE_VIEW:
         case UIScreen::FAIR_PASS:
-        case UIScreen::ANIM_TEST:
             ESP_LOGI(TAG, "Screen: sub -> MENU_MAIN");
             set_screen(UIScreen::MENU_MAIN);
             break;
@@ -667,13 +654,9 @@ void UIManager::mark_wallet_configured(const char* address) {
 
 // ─── Render dispatch ──────────────────────────────────────
 void UIManager::render() {
-    // ANIM_TEST and HOME are self-flushing (static chrome via full flush
-    // once, then sprite/counter window flushes per changed frame). Keep them
-    // out of the clear()+full-flush path below.
-    if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
-        render_anim_test();
-        return;
-    }
+    // HOME is self-flushing (static chrome via full flush once, then
+    // sprite/window flushes per changed frame). Keep it out of the
+    // clear()+full-flush path below.
     if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
         render_home();
         return;
@@ -698,12 +681,10 @@ void UIManager::render() {
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::TX_SUCCESS:
         case UIScreen::TX_FAIL:      render_tx_result();   break;
-        case UIScreen::CHAT_VIEW:    render_chat();        break;
         case UIScreen::BALANCE_VIEW: render_balance();     break;
         case UIScreen::POMODORO_VIEW: render_pomodoro();   break;
         case UIScreen::HID_REMOTE:    render_hid();         break;
         case UIScreen::BADGE_VIEW:    render_badge();      break;
-        case UIScreen::ANIM_TEST:    break; // handled by early-return above (self-flushing)
         case UIScreen::HOME:         break; // handled by early-return above (self-flushing)
         case UIScreen::FAIR_PASS:    render_fair_pass();   break;
     }
@@ -824,10 +805,10 @@ void UIManager::render_message() {
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
     m_display.draw_text_centered(78, "Have a great day!", Display::FontSize::MEDIUM);
     m_display.draw_text_centered(112, "Solana hardware", Display::FontSize::MEDIUM, TFT_CYAN);
-    m_display.draw_text_centered(146, "wallet + AI desk", Display::FontSize::MEDIUM, TFT_CYAN);
+    m_display.draw_text_centered(146, "wallet desk pet", Display::FontSize::MEDIUM, TFT_CYAN);
 }
 
-// ─── Menu / Wallet / Chat screens ─────────────────────────
+// ─── Menu / Wallet screens ─────────────────────────
 // Main menu: horizontal icon carousel. One 96x96 icon is focused (centered,
 // name below it); B4/next slides the next icon in from the right, B3/prev
 // from the left. Entries without a PNG asset get a navy monogram tile.
@@ -1167,31 +1148,6 @@ void UIManager::render_balance() {
     m_display.draw_text_centered(222, "B1:hub", Display::FontSize::SMALL, TFT_GRAY);
 }
 
-void UIManager::render_chat() {
-    m_display.draw_text_centered(8, "AI CHAT", Display::FontSize::MEDIUM);
-    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-
-    // Wrap response text at ~38 chars per line (38 x 6px = 228px)
-    const std::string& msg = m_last_ai_response;
-    size_t pos = 0;
-    int y = 42;
-    while (pos < msg.size() && y < 206) {
-        size_t end = std::min(pos + 38, msg.size());
-        // Try to break at space
-        if (end < msg.size() && msg[end] != ' ') {
-            size_t sp = msg.rfind(' ', end);
-            if (sp != std::string::npos && sp > pos) end = sp;
-        }
-        m_display.draw_text(8, y, msg.substr(pos, end - pos).c_str(), Display::FontSize::SMALL);
-        pos = end;
-        while (pos < msg.size() && msg[pos] == ' ') ++pos;
-        y += 13;
-    }
-
-    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
-}
-
 // ─── Pomodoro timer ─────────────────────────────────────────
 // Poppins hero time (Bold, auto-fit size 3->2) + Regular labels.
 // B3 (left) = +sec, B4 (right) = +min, B2 = confirm, B1 = back.
@@ -1471,67 +1427,6 @@ void UIManager::render_badge() {
     m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
 }
 
-// ─── Animation test ───────────────────────────────────────
-// Partial-flush animation: static chrome is full-flushed once on entry;
-// each changed frame erases/redraws only the 96x96 sprite rect (transparent
-// color-key 0xF81F) plus a narrow counter strip. No-op when tick() is false,
-// so run() calling us every tick costs zero SPI on idle frames.
-void UIManager::render_anim_test() {
-    static constexpr Color kTransparent = 0xF81F;
-    static constexpr int kCounterY = 190;
-    static constexpr int kCounterH = 10; // SMALL font is 8px tall
-
-    uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    if (!m_anim_started) {
-        m_anim_player.set_anim(&YetiAnim, now);
-        m_anim_started = true;
-        m_anim_chrome_drawn = false;
-    }
-
-    const int x = (Display::WIDTH - YetiAnim.w) / 2;
-    const int y = 88 - YetiAnim.h / 2 + 30;
-
-    if (!m_anim_chrome_drawn) {
-        m_display.clear();
-        m_display.draw_text_centered(8, "YETI", Display::FontSize::MEDIUM, TFT_CYAN);
-        m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
-        const SpritePixel* f0 = m_anim_player.current_frame_data();
-        if (f0 != nullptr) {
-            m_display.fill_rect(x, y, YetiAnim.w, YetiAnim.h, TFT_BLACK);
-            m_display.draw_sprite_transparent(x, y, YetiAnim.w, YetiAnim.h, f0, kTransparent);
-        }
-        char buf[24];
-        snprintf(buf, sizeof(buf), "frame %u/%u", m_anim_player.current_frame() + 1, YetiAnim.frames);
-        m_display.draw_text_centered(kCounterY, buf, Display::FontSize::SMALL, TFT_GRAY);
-        m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-        m_display.draw_text_centered(222, "B1:menu", Display::FontSize::SMALL, TFT_GRAY);
-        m_display.flush();
-        m_anim_chrome_drawn = true;
-        m_anim_last_frame = m_anim_player.current_frame();
-        return;
-    }
-
-    if (!m_anim_player.tick(now)) return; // frame unchanged → zero SPI
-    const uint8_t fr = m_anim_player.current_frame();
-    if (fr == m_anim_last_frame) return;
-    m_anim_last_frame = fr;
-
-    const SpritePixel* f = m_anim_player.current_frame_data();
-    if (f == nullptr) return;
-    // Erase keeps old opaque pixels from leaving trails behind transparent ones.
-    m_display.fill_rect(x, y, YetiAnim.w, YetiAnim.h, TFT_BLACK);
-    m_display.draw_sprite_transparent(x, y, YetiAnim.w, YetiAnim.h, f, kTransparent);
-    m_display.flush_window(x, y, YetiAnim.w, YetiAnim.h);
-
-    // Counter strip uses a full-width window so push_window() takes the
-    // no-staging fast path (w == WIDTH).
-    m_display.fill_rect(0, kCounterY, Display::WIDTH, kCounterH, TFT_BLACK);
-    char buf[24];
-    snprintf(buf, sizeof(buf), "frame %u/%u", fr + 1, YetiAnim.frames);
-    m_display.draw_text_centered(kCounterY, buf, Display::FontSize::SMALL, TFT_GRAY);
-    m_display.flush_window(0, kCounterY, Display::WIDTH, kCounterH);
-}
-
 // ─── Worlds Fair banner (static full-screen image) ──────────
 // render() clear()s + flush()es around us; one full flush (~115ms @8MHz)
 // is fine for a static image.
@@ -1540,8 +1435,8 @@ void UIManager::render_fair_pass() {
 }
 
 // ─── Home screen (Pass_design bg + clock/date/weather + animated Yeti) ─
-// Self-flushing like ANIM_TEST, but the background is a photo: every overlay
-// redraw first restores its bg crop via draw_sprite_crop (a black clear would
+// Self-flushing: because the background is a photo, every overlay redraw
+// first restores its bg crop via draw_sprite_crop (a black clear would
 // leave a box), then draws, then flush_window()s only that region.
 // Clock/date/weather live on ONE frosted band (pre-blurred PassBlurTop asset
 // covers y 0..130) so overlapping pads can't clobber each other.
@@ -1804,7 +1699,7 @@ void UIManager::run() {
     Events::Event evt{};
 
     while (true) {
-        // Process UI queue events (weather, price, AI, TX, WiFi)
+        // Process UI queue events (weather, price, TX, WiFi)
         if (Events::g_ui_queue &&
             xQueueReceive(Events::g_ui_queue, &evt, pdMS_TO_TICKS(10)) == pdTRUE) {
             process_event(evt);
@@ -1863,12 +1758,10 @@ void UIManager::run() {
                     // Hub: B2 opens the focused sub-tab (Balance / QR).
                     open_wallet_tab(m_wallet_tab);
                 } else if (m_current_screen == UIScreen::WALLET_QR ||
-                           m_current_screen == UIScreen::CHAT_VIEW ||
                            m_current_screen == UIScreen::IDLE_PRICE ||
                            m_current_screen == UIScreen::BALANCE_VIEW ||
                            m_current_screen == UIScreen::BADGE_VIEW ||
-                           m_current_screen == UIScreen::FAIR_PASS ||
-                           m_current_screen == UIScreen::ANIM_TEST) {
+                           m_current_screen == UIScreen::FAIR_PASS) {
                     // In a sub-screen B2 re-opens the menu (no-op if already there)
                     ESP_LOGI(TAG, "[Menu] B2 -> opening main menu");
                     set_screen(UIScreen::MENU_MAIN);
@@ -2008,13 +1901,11 @@ void UIManager::run() {
         }
 
         // Redraw only when state actually changed (screen/data/button).
-        // ANIM_TEST and HOME are polled every tick but no-op (zero SPI)
-        // unless the frame/minute advanced.
+        // HOME is polled every tick but no-ops (zero SPI) unless the
+        // frame/minute advanced.
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
-        if (!m_setup_needed && m_current_screen == UIScreen::ANIM_TEST) {
-            need_render = true;
-        } else if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
+        if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::BALANCE_VIEW &&
                    !m_bal_fetched) {
