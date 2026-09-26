@@ -582,8 +582,9 @@ void UIManager::pomo_tick(uint32_t now_ms) {
 }
 
 // ─── Setup wizard ─────────────────────────────────────────
-void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
-    m_setup_needed = wifi_missing || wallet_missing;
+void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing, bool location_missing) {
+    m_setup_needed    = wifi_missing || wallet_missing || location_missing;
+    m_location_missing = location_missing;
     request_redraw();
 
     if (!m_setup_needed) {
@@ -598,7 +599,7 @@ void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
         ESP_LOGI(TAG, "  SETUP WIZARD: Step 1 — Enter WiFi credentials");
         ESP_LOGI(TAG, "  Serial command:  w <SSID> <PASSWORD>");
         ESP_LOGI(TAG, "=================================================");
-    } else {
+    } else if (wallet_missing) {
         // WiFi already saved, skip to wallet
         m_setup_stage = SetupStage::WALLET_PROMPT;
         ESP_LOGI(TAG, "=================================================");
@@ -606,6 +607,14 @@ void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
         ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
         ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
         ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
+        ESP_LOGI(TAG, "=================================================");
+    } else {
+        // WiFi + wallet already present, only location is missing
+        m_setup_stage = SetupStage::LOCATION_PROMPT;
+        ESP_LOGI(TAG, "=================================================");
+        ESP_LOGI(TAG, "  SETUP WIZARD: Wallet OK — Step 3: Set your location");
+        ESP_LOGI(TAG, "  Serial command:  setloc <CITY> <LAT> <LON>");
+        ESP_LOGI(TAG, "  Example:         setloc Chitwan 27.68 84.43");
         ESP_LOGI(TAG, "=================================================");
     }
 }
@@ -641,6 +650,19 @@ void UIManager::on_wifi_got_ip() {
 
 void UIManager::mark_wallet_configured(const char* address) {
     if (address) m_wallet_address = address;
+
+    // Wallet done — move on to the location step if it is still missing.
+    if (m_location_missing) {
+        m_setup_stage = SetupStage::LOCATION_PROMPT;
+        request_redraw();
+        ESP_LOGI(TAG, "=================================================");
+        ESP_LOGI(TAG, "  SETUP WIZARD: Wallet OK — Step 3: Set your location");
+        ESP_LOGI(TAG, "  Serial command:  setloc <CITY> <LAT> <LON>");
+        ESP_LOGI(TAG, "  Example:         setloc Chitwan 27.68 84.43");
+        ESP_LOGI(TAG, "=================================================");
+        return;
+    }
+
     m_setup_needed = false;
     m_setup_stage  = SetupStage::DONE;
     ESP_LOGI(TAG, "=================================================");
@@ -648,6 +670,17 @@ void UIManager::mark_wallet_configured(const char* address) {
     if (!m_wallet_address.empty()) {
         ESP_LOGI(TAG, "  Wallet: %s", m_wallet_address.c_str());
     }
+    ESP_LOGI(TAG, "=================================================");
+    set_screen(UIScreen::HOME);
+}
+
+void UIManager::mark_location_configured(const char* city) {
+    if (city) m_location_city = city;
+    m_setup_needed = false;
+    m_setup_stage  = SetupStage::DONE;
+    ESP_LOGI(TAG, "=================================================");
+    ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
+    ESP_LOGI(TAG, "  Location: %s", m_location_city.empty() ? "set" : m_location_city.c_str());
     ESP_LOGI(TAG, "=================================================");
     set_screen(UIScreen::HOME);
 }
@@ -1614,7 +1647,7 @@ void UIManager::render_setup() {
             gfx_centered(m_display, 130, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
             gfx_centered(m_display, 158, "type:", &PoppinsRegular9pt7b, TFT_GRAY);
             command_pill(m_display, 182, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 1 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::WIFI_CONNECTING: {
@@ -1633,7 +1666,7 @@ void UIManager::render_setup() {
 
             // Static empty progress bar (frame only)
             m_display.draw_progress_bar(20, 180, 200, 16, 0, TFT_CYAN);
-            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 1 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
         }
 
@@ -1645,7 +1678,20 @@ void UIManager::render_setup() {
             command_pill(m_display, 126, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
             command_pill(m_display, 154, "wallet_import <key>", &PoppinsRegular9pt7b, TFT_CYAN);
             gfx_centered(m_display, 186, "<mnemonic / key>", &PoppinsRegular9pt7b, TFT_GRAY);
-            gfx_centered(m_display, 222, "Step 2 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 2 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
+            break;
+
+        case SetupStage::LOCATION_PROMPT:
+            setup_header(m_display);
+            gfx_centered(m_display, 44, "Wallet: OK", &PoppinsBold9pt7b, Colors::GREEN);
+            gfx_centered(m_display, 72, "Step 3", &PoppinsBold9pt7b, TFT_ORANGE);
+            gfx_centered(m_display, 96, "Set Your Location", &PoppinsBold9pt7b, Colors::WHITE);
+            gfx_centered(m_display, 116, "Go to serial monitor", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 134, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
+            command_pill(m_display, 160, "setloc City lat lon", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 184, "ex. setloc Chitwan", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 200, "27.68 84.43", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 3 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::DONE:

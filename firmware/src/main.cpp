@@ -380,14 +380,16 @@ extern "C" void app_main(void) {
 
     // 5. Detect first-boot state for UIManager setup screen
     {
-        bool wifi_missing = !s_wifi_manager.has_credentials();
-        bool wallet_missing = !s_wallet_core.has_wallet();
-        s_ui.set_setup_needed(wifi_missing, wallet_missing);
+        bool wifi_missing    = !s_wifi_manager.has_credentials();
+        bool wallet_missing  = !s_wallet_core.has_wallet();
+        bool location_missing = !s_weather_service.has_configured_location();
+        s_ui.set_setup_needed(wifi_missing, wallet_missing, location_missing);
 
         ESP_LOGI(TAG, "-------------------------------------------------");
         ESP_LOGI(TAG, "  Boot State:");
-        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing   ? "MISSING" : "SAVED");
-        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing ? "MISSING" : "FOUND");
+        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing     ? "MISSING" : "SAVED");
+        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing   ? "MISSING" : "FOUND");
+        ESP_LOGI(TAG, "    Weather location : %s", location_missing ? "MISSING" : "SAVED");
         ESP_LOGI(TAG, "-------------------------------------------------");
     }
 
@@ -1628,8 +1630,36 @@ extern "C" void app_main(void) {
 
                 // ── Manual Weather update ──────────────────────
                 } else if (strcmp(cmd, "weather") == 0) {
-                    ESP_LOGI(CTAG, "[Weather] Fetching geolocation & weather...");
+                    ESP_LOGI(CTAG, "[Weather] Fetching: %s (source=%s)",
+                             s_weather_service.city_name().c_str(),
+                             s_weather_service.location_source().c_str());
                     s_weather_service.update_now();
+
+                // ── Set manual weather location ────────────────
+                } else if (strncmp(cmd, "setloc", 6) == 0) {
+                    // Accept optional commas between coords (e.g. "27.56, 84.30")
+                    for (char* p = cmd; *p; ++p) {
+                        if (*p == ',') *p = ' ';
+                    }
+                    char city[64] = {0}, end[4] = {0};
+                    float lat = 0.0f, lon = 0.0f;
+                    int parsed = sscanf(cmd + 6, " %63[^ ]%f%f%3s", city, &lat, &lon, end);
+                    if (parsed == 3 && city[0]) {
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[Weather] Setting manual location: %s (%.4f, %.4f)",
+                                 city, lat, lon);
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        if (s_weather_service.set_manual_location(city, lat, lon)) {
+                            ESP_LOGI(CTAG, "[Weather] Location saved to NVS (source=manual)");
+                            s_ui.mark_location_configured(city);
+                            s_weather_service.update_now();
+                        } else {
+                            ESP_LOGE(CTAG, "Usage: setloc <CITY> <LAT> <LON>  (lat -90..90, lon -180..180)");
+                        }
+                    } else {
+                        ESP_LOGW(CTAG, "Usage: setloc <CITY> <LAT> <LON>");
+                        ESP_LOGW(CTAG, "  Example: setloc Chitwan 27.68 84.43");
+                    }
 
                 // ── Help ──────────────────────────────────────
                 } else if ((cmd[0] == 'h' || cmd[0] == '?') && len == 1) {
@@ -1646,7 +1676,8 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  send usdc <amt> <to>     Transfer USDC");
                     ESP_LOGI(CTAG, "  network                  Show / switch network (devnet/mainnet)");
                     ESP_LOGI(CTAG, "  airdrop [amount]         Request Devnet SOL airdrop");
-                    ESP_LOGI(CTAG, "  weather                  Fetch weather & geolocation");
+                    ESP_LOGI(CTAG, "  weather                  Fetch weather now");
+                    ESP_LOGI(CTAG, "  setloc <city> <lat> <lon> Set weather location");
                     ESP_LOGI(CTAG, "  p                        Fetch SOL price");
                     ESP_LOGI(CTAG, "  c / 1                    B1 button (TX confirm / Back)");
                     ESP_LOGI(CTAG, "  n / menu                 B2 button (open / select)");
