@@ -48,6 +48,10 @@ CONFIG_ESP32_WIFI_NVS_ENABLED=y
 # HTTP client (for AI / weather / price APIs)
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
 
+# DNS — consult public fallback (1.1.1.1, set in WiFiManager) when the
+# DHCP-assigned router DNS stops answering, instead of failing lookups.
+CONFIG_LWIP_FALLBACK_DNS_SERVER_SUPPORT=y
+
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

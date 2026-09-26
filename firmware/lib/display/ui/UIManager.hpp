@@ -46,6 +46,7 @@ enum class SetupStage {
     WIFI_PROMPT,       // Waiting for user to type WiFi credentials
     WIFI_CONNECTING,   // Credentials entered, waiting for IP
     WALLET_PROMPT,     // WiFi ready, waiting for wallet input
+    LOCATION_PROMPT,   // Wallet ready, waiting for weather location
     DONE,              // Setup complete, entering idle mode
 };
 
@@ -57,9 +58,10 @@ public:
     bool init();
     void set_screen(UIScreen screen);
 
-    void set_setup_needed(bool wifi_missing, bool wallet_missing);
+    void set_setup_needed(bool wifi_missing, bool wallet_missing, bool location_missing);
     void mark_wifi_configured(const char* ssid = nullptr); // ssid shown on OLED during connecting
     void mark_wallet_configured(const char* address = nullptr); // address cached for WALLET_INFO screen
+    void mark_location_configured(const char* city = nullptr); // city cached for weather label
     void on_wifi_got_ip();   // Called when WIFI_GOT_IP event received
 
     // Render loop processing
@@ -147,9 +149,11 @@ private:
 
     // Setup wizard
     bool        m_setup_needed{false};
+    bool        m_location_missing{false}; // snapshot from set_setup_needed
     SetupStage  m_setup_stage{SetupStage::WIFI_PROMPT};
     std::string m_connecting_ssid{};    // SSID being connected to (shown on OLED)
     std::string m_wallet_address{};     // Cached after wallet created/imported
+    std::string m_location_city{};      // Cached city after location set
     uint32_t    m_connecting_dots_ms{0};
     uint8_t     m_connecting_dots{0};
     uint8_t     m_menu_index{0};

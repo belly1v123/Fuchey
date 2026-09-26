@@ -35,7 +35,26 @@ bool WiFiManager::init() {
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t* sta_netif = esp_netif_create_default_wifi_sta();
+
+    // Fallback DNS: if the DHCP-assigned (router) DNS server stops answering,
+    // lwIP retries with a public resolver instead of failing name lookups.
+    // Only takes effect with CONFIG_LWIP_FALLBACK_DNS_SERVER_SUPPORT=y.
+    if (sta_netif && DnsConfig::FALLBACK_V4 && *DnsConfig::FALLBACK_V4) {
+        esp_netif_dns_info_t fallback{};
+        fallback.ip.type = ESP_IPADDR_TYPE_V4;
+        uint32_t addr = esp_ip4addr_aton(DnsConfig::FALLBACK_V4);
+        if (addr != 0) {
+            fallback.ip.u_addr.ip4.addr = addr;
+            if (esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_FALLBACK, &fallback) == ESP_OK) {
+                ESP_LOGI(TAG, "Fallback DNS set: %s", DnsConfig::FALLBACK_V4);
+            } else {
+                ESP_LOGW(TAG, "Failed to set fallback DNS: %s", DnsConfig::FALLBACK_V4);
+            }
+        } else {
+            ESP_LOGW(TAG, "Invalid fallback DNS address: %s", DnsConfig::FALLBACK_V4);
+        }
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
