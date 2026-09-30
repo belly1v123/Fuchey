@@ -1,22 +1,28 @@
 #pragma once
 // ============================================================
 // Fuchey — WalletManager.hpp
-// The ONLY module permitted to invoke WalletCore.sign().
+// The ONLY module permitted to invoke WalletCore::sign().
 //
-// Responsibilities:
-//   - Wallet lifecycle management
-//   - Spending policy enforcement
-//   - Transaction approval flow
-//   - Session timeout management
-//   - Event posting (WALLET_CREATED, TX_APPROVED, etc.)
+// Signing flow (sign_transaction):
+//   1. Parse the exact message bytes (TxParser) — reject anything that
+//      is not a single SOL / USDC transfer paid by this wallet.
+//   2. Show the parsed details on the TFT (TX_REQUEST → UIManager).
+//   3. Block until the user physically taps B1 (approve) or
+//      double/long-presses B1 (reject); console-injected buttons can
+//      never approve. Timeout = reject.
+//   4. Sign those same bytes.
 //
-// SECURITY: UI communicates with WalletManager.
-//           WalletManager communicates with WalletCore.
+// Every signature requires physical confirmation: SpendingPolicy is
+// kept for the stored preference but is NOT consulted (no auto-sign).
 // ============================================================
 
 #include "../wallet/WalletCore.hpp"
 #include "../policy/SpendingPolicy.hpp"
 #include "../events/Events.hpp"
+#include "TxParser.hpp"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/timers.h>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -24,23 +30,37 @@
 
 namespace Fuchey {
 
-// ─── Transaction request ──────────────────────────────────
-struct TxRequest {
-    uint8_t  data[256];    // Raw transaction bytes
-    uint16_t data_len;
-    uint64_t amount_cents; // USD value for policy check (0 = unknown → confirm)
-    char     description[64]; // Human-readable (for UI display)
+// ─── Signing context (supplied by the caller) ─────────────
+struct SignContext {
+    bool  mainnet{false};  // Network the caller will broadcast to
+    float sol_usd{0.0f};   // Display-only SOL/USD rate (<= 0: unknown)
+    bool  price_live{false}; // rate was fetched right before this request
 };
 
-// ─── Transaction result ───────────────────────────────────
-struct TxResult {
-    bool                approved;
-    Crypto::Signature   signature;
-    WalletResult        error;
+// ─── Signing result ───────────────────────────────────────
+enum class SignStatus : uint8_t {
+    SIGNED,
+    APPROVED,         // request_confirmation only: user approved on hardware
+    REJECTED,         // User rejected (B1 double/long press)
+    TIMED_OUT,        // No decision within the confirmation window
+    UNSUPPORTED_TX,   // TxParser refused the message
+    NETWORK_MISMATCH, // USDC mint does not match the selected network
+    BUSY,             // Another confirmation is already pending
+    NO_WALLET,
+    SIGN_FAILED,
+};
+
+struct SignResult {
+    SignStatus             status{SignStatus::SIGN_FAILED};
+    Crypto::Signature      signature{};
+    TxParser::ParseError   parse_error{TxParser::ParseError::OK};
+    TxParser::ParsedTransfer parsed{};
 };
 
 class WalletManager {
 public:
+    static constexpr uint32_t CONFIRM_TIMEOUT_MS = 30000;
+
     explicit WalletManager(WalletCore& core,
                            SpendingPolicy& policy);
 
@@ -50,50 +70,39 @@ public:
 
     // ── Lifecycle ────────────────────────────────────────
     bool init();
-    void start_session_timer();
-    void reset_session_timer();
-    void on_session_timeout();
-
-    // ── Wallet operations ────────────────────────────────
-    WalletResult create_wallet(int words, std::string& out_mnemonic);
-    WalletResult import_wallet(std::string_view mnemonic);
-    void lock();
-    WalletResult unlock();
 
     // ── Queries ──────────────────────────────────────────
     WalletState wallet_state() const { return m_core.state(); }
     std::optional<std::string> get_address() const { return m_core.get_address(); }
 
-    // ── Transaction approval (the critical path) ──────────
-    // This is the ONLY place signing is initiated.
-    // Blocks until user confirms (if required) or auto-signs.
-    // Returns immediately if auto-sign applies.
-    //
-    // CALL FROM: WalletManager task only.
-    TxResult request_signature(const TxRequest& req,
-                                bool force_confirm = false);
+    // ── Transaction signing (the critical path) ──────────
+    // Blocks the calling task for up to CONFIRM_TIMEOUT_MS. Safe to call
+    // from any task; only one request can be pending at a time.
+    SignResult sign_transaction(std::span<const uint8_t> message,
+                                const SignContext& ctx);
 
-    // ── Policy management ────────────────────────────────
+    // ── Generic physical confirmation ────────────────────
+    // Shows `summary` on the TFT and waits for a hardware B1 decision.
+    // request_id is assigned here. Used by sign_transaction and by the
+    // debug wallet_export console command.
+    SignStatus request_confirmation(Events::TxSummary& summary,
+                                    uint32_t timeout_ms = CONFIRM_TIMEOUT_MS);
+
+    static const char* status_to_string(SignStatus s);
+
+    // ── Policy management (stored only, see header note) ─
     bool set_spend_limit(SpendLimit limit);
     SpendLimit get_spend_limit() const;
 
     // ── FreeRTOS task entry ───────────────────────────────
-    // Runs the wallet manager event loop.
     static void task_entry(void* arg);
     void run();
 
 private:
-    WalletCore&     m_core;
-    SpendingPolicy& m_policy;
-    TimerHandle_t   m_session_timer{nullptr};
-    bool            m_waiting_confirmation{false};
-
-    // ── Confirmation handling ─────────────────────────────
-    // Blocks waiting for the transaction button (CONFIRM).
-    // Single press = accept, double/long press = reject.
-    // Returns true if user confirmed, false if rejected/timeout
-    bool wait_for_confirmation(const TxRequest& req,
-                               uint32_t timeout_ms = 30000);
+    WalletCore&       m_core;
+    SpendingPolicy&   m_policy;
+    SemaphoreHandle_t m_confirm_mutex{nullptr};
+    uint32_t          m_next_request_id{1};
 
     static constexpr const char* TAG = "WalletManager";
 };
