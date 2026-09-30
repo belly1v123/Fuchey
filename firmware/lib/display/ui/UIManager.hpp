@@ -91,12 +91,14 @@ private:
     float       m_sol_low_24h{-1.0f};
     float       m_sol_change_pct{0.0f};
     std::string m_weather_city{"--"};
-    std::string m_tx_description{"Transfer 0.1 SOL"};
-    uint64_t    m_tx_amount_cents{0};
+    // Pending confirmation (TX_CONFIRM), built by WalletManager from the
+    // parsed message bytes.
+    Events::TxSummary m_confirm{};
 
     // Transaction result (for TX_SUCCESS / TX_FAIL screens)
     bool        m_tx_result_ok{false};
     char        m_tx_result_asset[8]{};
+    char        m_tx_result_amount[24]{};  // exact native amount, e.g. "0.25"
     uint64_t    m_tx_result_amount_cents{0};
     char        m_tx_result_recipient[48]{};
     char        m_tx_result_msg[64]{};
@@ -198,6 +200,7 @@ private:
     void render_wallet_info();
     void render_wallet_qr();
     void render_tx_confirm();
+    void render_export_confirm();
     void render_tx_result();
     void render_balance();
     void render_pomodoro();

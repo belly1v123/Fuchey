@@ -257,11 +257,26 @@ void UIManager::process_event(const Events::Event& evt) {
             break;
 
         case Events::EventType::TX_REQUEST:
-            m_tx_amount_cents = evt.data.tx.amount_cents;
+            m_confirm = evt.data.confirm;
+            m_confirm.asset[sizeof(m_confirm.asset) - 1] = '\0';
+            m_confirm.amount[sizeof(m_confirm.amount) - 1] = '\0';
+            m_confirm.fee[sizeof(m_confirm.fee) - 1] = '\0';
+            m_confirm.recipient[sizeof(m_confirm.recipient) - 1] = '\0';
             m_tx_pending_accept = false;
-            ESP_LOGI(TAG, "TX request received: $%.2f — showing confirmation",
-                     static_cast<double>(m_tx_amount_cents) / 100.0);
+            m_tx_press_start_ms = 0;
+            ESP_LOGI(TAG, "Confirm request #%lu received — showing confirmation",
+                     static_cast<unsigned long>(m_confirm.request_id));
             set_screen(UIScreen::TX_CONFIRM);
+            break;
+
+        case Events::EventType::TX_REJECTED:
+            // WalletManager gave up on this request (timeout): leave the screen.
+            if (m_current_screen == UIScreen::TX_CONFIRM &&
+                evt.data.u32 == m_confirm.request_id) {
+                ESP_LOGW(TAG, "Confirm request #%lu cancelled", static_cast<unsigned long>(evt.data.u32));
+                m_tx_pending_accept = false;
+                set_screen(UIScreen::HOME);
+            }
             break;
 
         case Events::EventType::TX_BROADCAST_OK:
@@ -276,6 +291,7 @@ void UIManager::process_event(const Events::Event& evt) {
             const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : nullptr;
 
             m_tx_result_asset[0] = '\0';
+            m_tx_result_amount[0] = '\0';
             m_tx_result_recipient[0] = '\0';
             m_tx_result_msg[0] = '\0';
 
@@ -300,6 +316,10 @@ void UIManager::process_event(const Events::Event& evt) {
                 size_t asset_len = std::min<size_t>(colon1 - data, sizeof(m_tx_result_asset) - 1);
                 memcpy(m_tx_result_asset, data, asset_len);
                 m_tx_result_asset[asset_len] = '\0';
+
+                size_t amt_len = std::min<size_t>(colon2 - colon1 - 1, sizeof(m_tx_result_amount) - 1);
+                memcpy(m_tx_result_amount, colon1 + 1, amt_len);
+                m_tx_result_amount[amt_len] = '\0';
 
                 const char* rec = colon2 + 1;
                 size_t rec_len = std::min<size_t>(strlen(rec), sizeof(m_tx_result_recipient) - 1);
@@ -340,27 +360,27 @@ void UIManager::process_event(const Events::Event& evt) {
 }
 
 // ─── TX approve / reject ──────────────────────────────────
+// Decisions go only to g_tx_confirm_queue, tagged with the request id so
+// WalletManager can ignore anything stale.
 void UIManager::approve_transaction() {
     m_tx_pending_accept = false;
-    ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
-             static_cast<double>(m_tx_amount_cents) / 100.0);
-    extern QueueHandle_t g_tx_confirm_queue;
+    ESP_LOGI(TAG, "[TX] User CONFIRMED request #%lu (hardware B1)",
+             static_cast<unsigned long>(m_confirm.request_id));
     Events::Event tx_evt{};
     tx_evt.type = Events::EventType::TX_APPROVED;
-    tx_evt.data.tx.amount_cents = m_tx_amount_cents;
-    Events::post(Events::g_wallet_queue, tx_evt);
-    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    tx_evt.data.u32 = m_confirm.request_id;
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt, pdMS_TO_TICKS(50));
     set_screen(UIScreen::HOME);
 }
 
 void UIManager::reject_transaction() {
     m_tx_pending_accept = false;
-    ESP_LOGI(TAG, "[TX] User REJECTED transaction (double/long press)");
-    extern QueueHandle_t g_tx_confirm_queue;
+    ESP_LOGI(TAG, "[TX] User REJECTED request #%lu (double/long press)",
+             static_cast<unsigned long>(m_confirm.request_id));
     Events::Event tx_evt{};
     tx_evt.type = Events::EventType::TX_REJECTED;
-    Events::post(Events::g_wallet_queue, tx_evt);
-    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    tx_evt.data.u32 = m_confirm.request_id;
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt, pdMS_TO_TICKS(50));
     set_screen(UIScreen::HOME);
 }
 
@@ -697,7 +717,9 @@ void UIManager::render() {
 
     m_display.clear();
 
-    if (m_setup_needed) {
+    // A pending signature/export confirmation always wins over the setup
+    // wizard: B1 must never approve something that is not on screen.
+    if (m_setup_needed && m_current_screen != UIScreen::TX_CONFIRM) {
         render_setup();
         m_display.flush();
         return;
@@ -881,7 +903,7 @@ void UIManager::render_menu() {
         const int x1 = std::min(Display::WIDTH, cx + half);
         if (x1 > x0) {
             char buf[16];
-            snprintf(buf, sizeof(buf), "%s", e.label);
+            snprintf(buf, sizeof(buf), "%s", label);
             // Center manually so off-screen entries slide out cleanly.
             const int len = static_cast<int>(strlen(buf));
             const int tx = cx - (len * 12) / 2; // MEDIUM ~= 12px/char
@@ -1031,19 +1053,107 @@ void UIManager::render_wallet_qr() {
     }
 }
 
+// Micro-dollars → "$12.34"; sub-cent values keep 4 decimals ("$0.0008") so a
+// tiny fee is not shown as $0.00.
+static void format_usd_micro(uint64_t micro, char* out, size_t len) {
+    if (micro >= 10000) {
+        uint64_t cents = (micro + 5000) / 10000;
+        snprintf(out, len, "$%llu.%02llu", static_cast<unsigned long long>(cents / 100),
+                 static_cast<unsigned long long>(cents % 100));
+    } else if (micro >= 100) {
+        snprintf(out, len, "$0.%04llu", static_cast<unsigned long long>((micro + 50) / 100));
+    } else {
+        snprintf(out, len, "<$0.0001");
+    }
+}
+
+// Full base58 address in 15-char MEDIUM rows (max 44 chars → 3 rows), so
+// the user can check every character against the intended recipient.
+static void draw_address_rows(Display& d, int y, const char* addr, Color c) {
+    constexpr size_t kRow = 15;
+    size_t len = strlen(addr);
+    for (size_t off = 0; off < len; off += kRow) {
+        d.draw_text_centered(y, std::string_view(addr + off, std::min(kRow, len - off)),
+                             Display::FontSize::MEDIUM, c);
+        y += 18;
+    }
+}
+
 void UIManager::render_tx_confirm() {
-    m_display.draw_text_centered(8, "CONFIRM?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    if (m_confirm.kind == Events::ConfirmKind::EXPORT_KEY) {
+        render_export_confirm();
+        return;
+    }
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "SEND %s?", m_confirm.asset);
+    m_display.draw_text_centered(8, buf, Display::FontSize::MEDIUM, TFT_ORANGE);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "$%.2f", static_cast<double>(m_tx_amount_cents) / 100.0);
-    m_display.draw_text_centered(72, buf, Display::FontSize::LARGE);
+    // Network badge — mainnet in red so real funds are never a surprise.
+    m_display.draw_text_centered(38, m_confirm.mainnet ? "MAINNET" : "DEVNET",
+                                 Display::FontSize::SMALL,
+                                 m_confirm.mainnet ? Colors::RED : Colors::YELLOW);
 
-    if (!m_tx_description.empty())
-        m_display.draw_text_centered(124, m_tx_description.c_str(), Display::FontSize::MEDIUM, TFT_CYAN);
+    // Exact native amount (from the parsed message), largest font that fits.
+    snprintf(buf, sizeof(buf), "%s %s", m_confirm.amount, m_confirm.asset);
+    const size_t n = strlen(buf);
+    Display::FontSize fs = n <= 13 ? Display::FontSize::LARGE
+                         : n <= 20 ? Display::FontSize::MEDIUM
+                                   : Display::FontSize::SMALL;
+    m_display.draw_text_centered(52, buf, fs);
+
+    char usd[20];
+    if (m_confirm.usd_micro > 0) {
+        format_usd_micro(m_confirm.usd_micro, usd, sizeof(usd));
+        snprintf(buf, sizeof(buf), "= %s", usd);
+        m_display.draw_text_centered(80, buf, Display::FontSize::SMALL, TFT_SILVER);
+    }
+
+    const bool token = strcmp(m_confirm.asset, "SOL") != 0;
+    m_display.draw_text_centered(96, token ? "TO TOKEN ACCOUNT" : "TO",
+                                 Display::FontSize::SMALL, TFT_GRAY);
+    draw_address_rows(m_display, 108, m_confirm.recipient, TFT_CYAN);
+
+    // Network fee in SOL (exact, from the message) + its USD value.
+    if (m_confirm.fee_usd_micro > 0) {
+        format_usd_micro(m_confirm.fee_usd_micro, usd, sizeof(usd));
+        snprintf(buf, sizeof(buf), "Fee %s SOL = %s", m_confirm.fee, usd);
+    } else {
+        snprintf(buf, sizeof(buf), "Fee %s SOL", m_confirm.fee);
+    }
+    m_display.draw_text_centered(168, buf, Display::FontSize::SMALL, TFT_SILVER);
+
+    // SOL/USD rate used for the USD figures, and whether it is fresh.
+    if (m_confirm.sol_usd_cents > 0) {
+        snprintf(buf, sizeof(buf), "1 SOL = $%lu.%02lu %s",
+                 static_cast<unsigned long>(m_confirm.sol_usd_cents / 100),
+                 static_cast<unsigned long>(m_confirm.sol_usd_cents % 100),
+                 m_confirm.price_live ? "(live)" : "(cached)");
+        m_display.draw_text_centered(184, buf, Display::FontSize::SMALL,
+                                     m_confirm.price_live ? TFT_GRAY : Colors::YELLOW);
+    } else {
+        m_display.draw_text_centered(184, "SOL price unavailable", Display::FontSize::SMALL,
+                                     Colors::YELLOW);
+    }
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "B1 1x:send 2x/hold:no", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SIGN  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+void UIManager::render_export_confirm() {
+    m_display.draw_text_centered(8, "EXPORT KEY?", Display::FontSize::MEDIUM, Colors::RED);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+
+    m_display.draw_text_centered(40, "DEBUG ONLY", Display::FontSize::SMALL, Colors::YELLOW);
+    m_display.draw_text_centered(58, "Private key will", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(76, "print to USB log", Display::FontSize::MEDIUM);
+
+    m_display.draw_text_centered(100, "WALLET", Display::FontSize::SMALL, TFT_GRAY);
+    draw_address_rows(m_display, 112, m_confirm.recipient, TFT_CYAN);
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:EXPORT 2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_tx_result() {
@@ -1071,9 +1181,7 @@ void UIManager::render_tx_result() {
     char line1[32];
     char line2[56];
     if (m_tx_result_asset[0]) {
-        snprintf(line1, sizeof(line1), "$%.2f %s",
-                 static_cast<double>(m_tx_result_amount_cents) / 100.0,
-                 m_tx_result_asset);
+        snprintf(line1, sizeof(line1), "%s %s", m_tx_result_amount, m_tx_result_asset);
         snprintf(line2, sizeof(line2), "-> %s", m_tx_result_recipient);
     } else {
         line1[0] = '\0';
@@ -1770,14 +1878,25 @@ void UIManager::run() {
             // ── TX_CONFIRM: B1 exclusive ───────────────────────
             // B1 single tap = accept (deferred until no double/long follows),
             // B1 double/long = reject. B2/B3/B4 ignored here.
+            // Console-injected buttons may reject but can NEVER approve:
+            // only the physical GPIO driver produces an accepted tap.
             if (m_current_screen == UIScreen::TX_CONFIRM) {
-                if (btn.id == ButtonId::B1_TX_BACK) {
+                if (btn.id == ButtonId::B1_TX_BACK && btn.from_console) {
+                    if (btn.event == ButtonEvent::DOUBLE_PRESS ||
+                        btn.event == ButtonEvent::LONG_PRESS) {
+                        reject_transaction();
+                    } else {
+                        ESP_LOGW(TAG, "[TX] Console input cannot approve — press B1 on the device");
+                    }
+                } else if (btn.id == ButtonId::B1_TX_BACK) {
                     if (btn.event == ButtonEvent::PRESS) {
                         m_tx_press_start_ms = btn.timestamp_ms;
                         m_tx_pending_accept = false;
-                    } else if (btn.event == ButtonEvent::RELEASE) {
+                    } else if (btn.event == ButtonEvent::RELEASE && m_tx_press_start_ms != 0) {
                         // Clean single tap candidate — defer accept to rule out
                         // a fast second press (double press) or a held long press.
+                        // Requires the PRESS to have happened on this screen, so a
+                        // button already held when the request arrived can't approve.
                         m_tx_pending_accept = true;
                         m_tx_accept_deadline_ms = m_tx_press_start_ms + 500;
                     } else if (btn.event == ButtonEvent::DOUBLE_PRESS ||
@@ -1879,7 +1998,10 @@ void UIManager::run() {
         }
 
         // Deferred TX accept — a clean single tap was confirmed (no double/long press)
-        if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept) {
+        // Only once every queued button event has been consumed, so a
+        // double/long press that is still in the queue always wins.
+        if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept &&
+            uxQueueMessagesWaiting(Events::g_button_queue) == 0) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (now >= m_tx_accept_deadline_ms) {
                 approve_transaction();
