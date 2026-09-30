@@ -35,5 +35,48 @@ std::string Base64::encode(std::span<const uint8_t> data) {
     return result;
 }
 
+static int b64_value(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+bool Base64::decode(std::string_view in, std::vector<uint8_t>& out) {
+    out.clear();
+    if (in.size() % 4 != 0) return false;
+    out.reserve(in.size() / 4 * 3);
+
+    for (size_t i = 0; i < in.size(); i += 4) {
+        const bool last = (i + 4 == in.size());
+        int v[4];
+        int pad = 0;
+        for (int k = 0; k < 4; ++k) {
+            char c = in[i + k];
+            if (c == '=') {
+                // Padding only in the last quantum, only in positions 2-3,
+                // and nothing but padding after it.
+                if (!last || k < 2) return false;
+                v[k] = 0;
+                ++pad;
+            } else {
+                if (pad) return false;
+                v[k] = b64_value(c);
+                if (v[k] < 0) return false;
+            }
+        }
+        uint32_t triplet = (static_cast<uint32_t>(v[0]) << 18) |
+                           (static_cast<uint32_t>(v[1]) << 12) |
+                           (static_cast<uint32_t>(v[2]) << 6) |
+                            static_cast<uint32_t>(v[3]);
+        out.push_back(static_cast<uint8_t>((triplet >> 16) & 0xFF));
+        if (pad < 2) out.push_back(static_cast<uint8_t>((triplet >> 8) & 0xFF));
+        if (pad < 1) out.push_back(static_cast<uint8_t>(triplet & 0xFF));
+    }
+    return true;
+}
+
 } // namespace Crypto
 } // namespace Fuchey
