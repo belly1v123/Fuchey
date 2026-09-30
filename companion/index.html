@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuchey Companion</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Fuchey <span>companion</span></div>
+    <div class="conn">
+      <span id="net-badge" class="badge hidden"></span>
+      <button id="btn-connect" class="primary">Connect Fuchey</button>
+      <button id="btn-disconnect" class="ghost hidden">Disconnect</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="unsupported" class="card warn hidden">
+      This browser has no Web Serial. Use desktop Chrome or Edge, opened on
+      <code>http://localhost</code> or an HTTPS site.
+    </section>
+
+    <section id="intro" class="card">
+      <h2>Connect your Fuchey</h2>
+      <p>Plug Fuchey into this computer over USB and press <b>Connect Fuchey</b>.
+        The page builds transactions; Fuchey shows each one on its screen and signs
+        only after you tap <b>B1</b> on the device. Your key never leaves Fuchey.</p>
+    </section>
+
+    <section id="wallet" class="card hidden">
+      <div class="row between">
+        <h2>Wallet</h2>
+        <button id="btn-refresh" class="ghost small">Refresh</button>
+      </div>
+      <div class="addr-row">
+        <code id="address"></code>
+        <button id="btn-copy" class="ghost small">Copy</button>
+      </div>
+      <div class="balances">
+        <div class="bal"><span class="label">SOL</span><span id="bal-sol">—</span></div>
+        <div class="bal"><span class="label">USDC</span><span id="bal-usdc">—</span></div>
+      </div>
+      <p class="muted small" id="device-info"></p>
+    </section>
+
+    <section id="send" class="card hidden">
+      <h2>Send</h2>
+      <form id="send-form" autocomplete="off">
+        <label>Token
+          <select id="asset">
+            <option value="SOL">SOL</option>
+            <option value="USDC">USDC</option>
+          </select>
+        </label>
+        <label>Recipient address
+          <input id="recipient" spellcheck="false" placeholder="Solana address">
+        </label>
+        <label>Amount
+          <input id="amount" inputmode="decimal" placeholder="0.0">
+        </label>
+        <p class="muted small">Network fee: 0.000005 SOL (1 signature, no priority fee).</p>
+        <p id="send-error" class="error hidden"></p>
+        <button id="btn-send" class="primary" type="submit">Review on Fuchey</button>
+      </form>
+    </section>
+
+    <section id="result" class="card hidden"></section>
+
+    <details class="card log">
+      <summary>Device log</summary>
+      <pre id="log"></pre>
+    </details>
+
+    <details class="card">
+      <summary>Settings</summary>
+      <label>Devnet RPC URL <input id="rpc-devnet" spellcheck="false"></label>
+      <label>Mainnet RPC URL <input id="rpc-mainnet" spellcheck="false"></label>
+      <p class="muted small">The network always follows the device (switch it on Fuchey's console:
+        <code>network devnet</code> / <code>network mainnet</code>). Public RPCs are rate-limited.</p>
+      <button id="btn-save-settings" class="ghost small">Save</button>
+    </details>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h2>Confirm on your Fuchey</h2>
+      <p class="muted">Check that the device screen shows exactly this, then tap <b>B1</b>.
+        Double-press or hold B1 to reject.</p>
+      <dl id="confirm-details"></dl>
+      <div class="countdown"><div id="countdown-bar"></div></div>
+      <p id="modal-status" class="muted small"></p>
+      <button id="btn-cancel" class="ghost">Cancel request</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

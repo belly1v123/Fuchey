@@ -1,0 +1,269 @@
+// ============================================================
+// Fuchey — UsbProtocol.cpp
+// ============================================================
+
+#include "UsbProtocol.hpp"
+#include "../config/Config.hpp"
+#include "../crypto/Base58.hpp"
+#include "../crypto/Base64.hpp"
+#include "../wallet_manager/TxParser.hpp"
+#include "cJSON.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+
+namespace Fuchey {
+
+static constexpr const char* TAG = "UsbProtocol";
+static constexpr uint32_t SIGN_WORKER_STACK = 20480;  // TLS price fetch + signing
+static constexpr int      SIGN_WORKER_PRIO  = 4;
+
+UsbProtocol::UsbProtocol(WalletCore& core, WalletManager& manager,
+                         PriceService& price, IsMainnetFn is_mainnet)
+    : m_core(core), m_manager(manager), m_price(price), m_is_mainnet(is_mainnet) {}
+
+// ─── CRC32 (IEEE 802.3 / zlib) ────────────────────────────
+uint32_t UsbProtocol::crc32(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; ++b) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+// ─── Output ───────────────────────────────────────────────
+cJSON* UsbProtocol::reply(uint32_t id, bool ok) {
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "id", id);
+    cJSON_AddBoolToObject(obj, "ok", ok);
+    return obj;
+}
+
+void UsbProtocol::send(cJSON* obj) {
+    if (!obj) return;
+    char* json = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!json) return;
+    uint32_t crc = crc32(reinterpret_cast<const uint8_t*>(json), strlen(json));
+    // One printf call → one locked write, so log lines cannot split a frame.
+    printf("%s%s*%08lX\n", PREFIX, json, static_cast<unsigned long>(crc));
+    fflush(stdout);
+    cJSON_free(json);
+}
+
+void UsbProtocol::send_error(uint32_t id, const char* code, const char* detail) {
+    cJSON* obj = reply(id, false);
+    cJSON_AddStringToObject(obj, "err", code);
+    if (detail) cJSON_AddStringToObject(obj, "detail", detail);
+    send(obj);
+}
+
+// ─── Input ────────────────────────────────────────────────
+bool UsbProtocol::handle_line(const char* line) {
+    if (!line || strncmp(line, PREFIX, 2) != 0) return false;
+
+    const char* json = line + 2;
+    const char* star = strrchr(json, '*');
+    if (!star || strlen(star + 1) != 8) {
+        send_error(0, "bad_frame", "missing *CRC32");
+        return true;
+    }
+    char* end = nullptr;
+    unsigned long want = strtoul(star + 1, &end, 16);
+    if (!end || *end != '\0') {
+        send_error(0, "bad_frame", "bad CRC hex");
+        return true;
+    }
+    const size_t json_len = static_cast<size_t>(star - json);
+    if (crc32(reinterpret_cast<const uint8_t*>(json), json_len) != static_cast<uint32_t>(want)) {
+        send_error(0, "bad_crc");
+        return true;
+    }
+
+    cJSON* req = cJSON_ParseWithLength(json, json_len);
+    if (!req) {
+        send_error(0, "bad_json");
+        return true;
+    }
+
+    cJSON* id_item  = cJSON_GetObjectItem(req, "id");
+    cJSON* cmd_item = cJSON_GetObjectItem(req, "cmd");
+    const uint32_t id = (id_item && cJSON_IsNumber(id_item) && id_item->valuedouble >= 0)
+                        ? static_cast<uint32_t>(id_item->valuedouble) : 0;
+    const char* cmd = (cmd_item && cJSON_IsString(cmd_item)) ? cmd_item->valuestring : nullptr;
+
+    if (!cmd) {
+        send_error(id, "bad_request", "missing cmd");
+    } else if (strcmp(cmd, "hello") == 0) {
+        cmd_hello(id);
+    } else if (strcmp(cmd, "get_pubkey") == 0) {
+        cmd_get_pubkey(id);
+    } else if (strcmp(cmd, "sign_tx") == 0) {
+        cmd_sign_tx(id, req);
+    } else if (strcmp(cmd, "cancel") == 0) {
+        cmd_cancel(id);
+    } else {
+        send_error(id, "unknown_cmd", cmd);
+    }
+
+    cJSON_Delete(req);
+    return true;
+}
+
+// ─── Commands ─────────────────────────────────────────────
+void UsbProtocol::cmd_hello(uint32_t id) {
+    cJSON* obj = reply(id, true);
+    cJSON_AddNumberToObject(obj, "proto", VERSION);
+    cJSON_AddStringToObject(obj, "fw", FW_VERSION);
+    cJSON_AddStringToObject(obj, "network", m_is_mainnet() ? "mainnet" : "devnet");
+    cJSON_AddNumberToObject(obj, "max_tx", MAX_TX_BYTES);
+    auto addr = m_core.get_address();
+    cJSON_AddBoolToObject(obj, "has_wallet", addr.has_value());
+    if (addr) cJSON_AddStringToObject(obj, "pubkey", addr->c_str());
+    cJSON_AddBoolToObject(obj, "busy", m_busy.load());
+    send(obj);
+}
+
+void UsbProtocol::cmd_get_pubkey(uint32_t id) {
+    auto addr = m_core.get_address();
+    if (!addr) {
+        send_error(id, "no_wallet");
+        return;
+    }
+    cJSON* obj = reply(id, true);
+    cJSON_AddStringToObject(obj, "pubkey", addr->c_str());
+    send(obj);
+}
+
+void UsbProtocol::cmd_cancel(uint32_t id) {
+    cJSON* obj = reply(id, true);
+    cJSON_AddBoolToObject(obj, "cancelled", m_manager.cancel_pending());
+    send(obj);
+}
+
+void UsbProtocol::cmd_sign_tx(uint32_t id, cJSON* req) {
+    cJSON* msg_item = cJSON_GetObjectItem(req, "msg");
+    cJSON* net_item = cJSON_GetObjectItem(req, "network");
+    if (!msg_item || !cJSON_IsString(msg_item) || !net_item || !cJSON_IsString(net_item)) {
+        send_error(id, "bad_request", "need msg (base64) and network");
+        return;
+    }
+
+    // The app must be talking about the same cluster the device shows.
+    const bool want_mainnet = strcmp(net_item->valuestring, "mainnet") == 0;
+    if ((!want_mainnet && strcmp(net_item->valuestring, "devnet") != 0) ||
+        want_mainnet != m_is_mainnet()) {
+        send_error(id, "network_mismatch", m_is_mainnet() ? "device is on mainnet"
+                                                          : "device is on devnet");
+        return;
+    }
+
+    auto* job = new SignJob{this, id, {}};
+    if (!Crypto::Base64::decode(msg_item->valuestring, job->message) ||
+        job->message.empty() || job->message.size() > MAX_TX_BYTES) {
+        delete job;
+        send_error(id, "bad_request", "msg must be base64, 1..1232 bytes");
+        return;
+    }
+
+    bool expected = false;
+    if (!m_busy.compare_exchange_strong(expected, true)) {
+        delete job;
+        send_error(id, "busy", "a signature request is already pending");
+        return;
+    }
+
+    if (xTaskCreate(sign_worker, "usb_sign_task", SIGN_WORKER_STACK, job,
+                    SIGN_WORKER_PRIO, nullptr) != pdPASS) {
+        m_busy.store(false);
+        delete job;
+        send_error(id, "sign_failed", "out of memory");
+    }
+}
+
+// ─── Signing worker ───────────────────────────────────────
+void UsbProtocol::sign_worker(void* arg) {
+    auto* job = static_cast<SignJob*>(arg);
+    UsbProtocol* self = job->self;
+    self->run_sign(*job);
+    delete job;
+    self->m_busy.store(false);
+    vTaskDelete(nullptr);
+}
+
+void UsbProtocol::run_sign(SignJob& job) {
+    auto pubkey = m_core.get_pubkey();
+    if (!pubkey) {
+        send_error(job.id, "no_wallet");
+        return;
+    }
+
+    // Pre-parse so the app gets a precise error immediately and can mirror
+    // the device screen. WalletManager parses again before signing.
+    TxParser::ParsedTransfer parsed{};
+    auto perr = TxParser::parse_transfer(job.message, *pubkey, parsed);
+    if (perr != TxParser::ParseError::OK) {
+        send_error(job.id, "unsupported_tx", TxParser::error_to_string(perr));
+        return;
+    }
+
+    // Fresh SOL/USD rate for the on-device USD figures (display only).
+    const bool price_live = m_price.update_now();
+    SignContext ctx{};
+    ctx.mainnet    = m_is_mainnet();
+    ctx.sol_usd    = m_price.has_data() ? m_price.get_sol_usd() : 0.0f;
+    ctx.price_live = price_live;
+
+    {
+        char amount[24], fee[16];
+        TxParser::format_units(parsed.amount, parsed.decimals, amount, sizeof(amount));
+        TxParser::format_units(parsed.fee_lamports, 9, fee, sizeof(fee));
+        std::string to = Crypto::Base58::pubkey_to_address(
+            std::span<const uint8_t, 32>(parsed.destination.data(), 32));
+
+        cJSON* evt = cJSON_CreateObject();
+        cJSON_AddNumberToObject(evt, "id", job.id);
+        cJSON_AddStringToObject(evt, "event", "awaiting_confirmation");
+        cJSON_AddStringToObject(evt, "asset", parsed.asset == TxParser::Asset::SOL ? "SOL" : "USDC");
+        cJSON_AddStringToObject(evt, "amount", amount);
+        cJSON_AddStringToObject(evt, "fee", fee);
+        cJSON_AddStringToObject(evt, "to", to.c_str());
+        cJSON_AddNumberToObject(evt, "timeout_ms", WalletManager::CONFIRM_TIMEOUT_MS);
+        send(evt);
+    }
+
+    ESP_LOGI(TAG, "sign_tx #%lu: waiting for B1 on the device", static_cast<unsigned long>(job.id));
+    SignResult res = m_manager.sign_transaction(job.message, ctx);
+
+    if (res.status == SignStatus::SIGNED) {
+        std::string sig = Crypto::Base64::encode(
+            std::span<const uint8_t>(res.signature.data(), res.signature.size()));
+        cJSON* obj = reply(job.id, true);
+        cJSON_AddStringToObject(obj, "sig", sig.c_str());
+        send(obj);
+        return;
+    }
+
+    const char* code = "sign_failed";
+    switch (res.status) {
+        case SignStatus::REJECTED:         code = "rejected";         break;
+        case SignStatus::CANCELLED:        code = "cancelled";        break;
+        case SignStatus::TIMED_OUT:        code = "timeout";          break;
+        case SignStatus::UNSUPPORTED_TX:   code = "unsupported_tx";   break;
+        case SignStatus::NETWORK_MISMATCH: code = "network_mismatch"; break;
+        case SignStatus::BUSY:             code = "busy";             break;
+        case SignStatus::NO_WALLET:        code = "no_wallet";        break;
+        default:                                                      break;
+    }
+    send_error(job.id, code, res.status == SignStatus::UNSUPPORTED_TX
+                                 ? TxParser::error_to_string(res.parse_error)
+                                 : WalletManager::status_to_string(res.status));
+}
+
+} // namespace Fuchey

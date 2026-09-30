@@ -41,6 +41,9 @@ SignStatus WalletManager::request_confirmation(Events::TxSummary& summary,
     }
 
     summary.request_id = m_next_request_id++;
+    if (m_next_request_id == 0) m_next_request_id = 1;  // 0 means "none pending"
+    m_cancel_requested.store(false);
+    m_pending_id.store(summary.request_id);
 
     // Drop stale decisions from earlier (timed-out) requests.
     Events::Event reply{};
@@ -51,6 +54,7 @@ SignStatus WalletManager::request_confirmation(Events::TxSummary& summary,
     req.data.confirm = summary;
     if (!Events::post(Events::g_ui_queue, req, pdMS_TO_TICKS(200))) {
         ESP_LOGE(TAG, "UI queue full — cannot show confirmation");
+        m_pending_id.store(0);
         xSemaphoreGive(m_confirm_mutex);
         return SignStatus::SIGN_FAILED;
     }
@@ -72,7 +76,8 @@ SignStatus WalletManager::request_confirmation(Events::TxSummary& summary,
             break;
         }
         if (reply.type == Events::EventType::TX_REJECTED) {
-            status = SignStatus::REJECTED;
+            status = m_cancel_requested.exchange(false) ? SignStatus::CANCELLED
+                                                        : SignStatus::REJECTED;
             break;
         }
     }
@@ -89,8 +94,23 @@ SignStatus WalletManager::request_confirmation(Events::TxSummary& summary,
     if (Events::g_event_group) {
         xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
     }
+    m_pending_id.store(0);
     xSemaphoreGive(m_confirm_mutex);
     return status;
+}
+
+bool WalletManager::cancel_pending() {
+    const uint32_t id = m_pending_id.load();
+    if (id == 0 || !g_tx_confirm_queue) return false;
+
+    m_cancel_requested.store(true);
+    Events::Event evt{};
+    evt.type = Events::EventType::TX_REJECTED;
+    evt.data.u32 = id;
+    Events::post(g_tx_confirm_queue, evt, pdMS_TO_TICKS(50));  // unblocks the waiter
+    Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50));  // closes TX_CONFIRM
+    ESP_LOGW(TAG, "Confirmation #%lu cancelled by requester", static_cast<unsigned long>(id));
+    return true;
 }
 
 // ─── Sign transaction (CRITICAL PATH) ─────────────────────
@@ -185,6 +205,7 @@ const char* WalletManager::status_to_string(SignStatus s) {
         case SignStatus::SIGNED:           return "signed";
         case SignStatus::APPROVED:         return "approved";
         case SignStatus::REJECTED:         return "rejected by user";
+        case SignStatus::CANCELLED:        return "cancelled";
         case SignStatus::TIMED_OUT:        return "confirmation timed out";
         case SignStatus::UNSUPPORTED_TX:   return "unsupported transaction";
         case SignStatus::NETWORK_MISMATCH: return "network mismatch";

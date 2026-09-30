@@ -40,6 +40,7 @@
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
+#include "../lib/protocol/UsbProtocol.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -92,6 +93,12 @@ static const char* get_usdc_mint() {
 }
 
 static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
+
+static bool is_mainnet() { return !s_is_devnet; }
+
+// Companion-app protocol ("@@" framed lines on the USB console).
+static Fuchey::UsbProtocol s_usb_protocol(s_wallet_core, s_wallet_manager,
+                                          s_price_service, is_mainnet);
 
 // Re-point network-dependent services at the current s_is_devnet selection.
 // The monitor snapshots its URL/mint at construction (devnet default, before
@@ -382,7 +389,8 @@ static void sign_and_broadcast(const char* tag, const std::vector<uint8_t>& msg,
                      ? Fuchey::TxParser::error_to_string(res.parse_error) : "");
         // User reject / timeout already left the confirm screen; report the rest.
         if (res.status != Fuchey::SignStatus::REJECTED &&
-            res.status != Fuchey::SignStatus::TIMED_OUT) {
+            res.status != Fuchey::SignStatus::TIMED_OUT &&
+            res.status != Fuchey::SignStatus::CANCELLED) {
             post_tx_fail(Fuchey::WalletManager::status_to_string(res.status), recipient);
         }
         return;
@@ -791,7 +799,8 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
 
-        char line[512];
+        // Sized for companion-app frames (base64 of a 1232-byte tx + JSON).
+        char line[Fuchey::UsbProtocol::MAX_LINE_CHARS + 64];
         std::string pending_line;
         std::string pending_wallet_import;
         while (true) {
@@ -827,6 +836,9 @@ extern "C" void app_main(void) {
                     cmd[--len] = '\0';
                 }
                 if (len == 0) continue;
+
+                // Companion-app frames ("@@...") never reach the command table.
+                if (s_usb_protocol.handle_line(cmd)) continue;
 
                 if (!pending_wallet_import.empty() &&
                     strcmp(cmd, "wallet_import_cancel") != 0) {
@@ -1457,7 +1469,7 @@ extern "C" void app_main(void) {
             }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
-    }, "console_task", 8192, nullptr, 4, nullptr, 0);
+    }, "console_task", 12288, nullptr, 4, nullptr, 0);
 
     ESP_LOGI(TAG, "=================================================");
     ESP_LOGI(TAG, "  Boot complete. Fuchey is running.");

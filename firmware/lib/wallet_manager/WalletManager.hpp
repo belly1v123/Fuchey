@@ -23,6 +23,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/timers.h>
+#include <atomic>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -42,6 +43,7 @@ enum class SignStatus : uint8_t {
     SIGNED,
     APPROVED,         // request_confirmation only: user approved on hardware
     REJECTED,         // User rejected (B1 double/long press)
+    CANCELLED,        // Requester withdrew the request (cancel_pending)
     TIMED_OUT,        // No decision within the confirmation window
     UNSUPPORTED_TX,   // TxParser refused the message
     NETWORK_MISMATCH, // USDC mint does not match the selected network
@@ -88,6 +90,12 @@ public:
     SignStatus request_confirmation(Events::TxSummary& summary,
                                     uint32_t timeout_ms = CONFIRM_TIMEOUT_MS);
 
+    // Withdraw the pending confirmation (e.g. companion app "cancel").
+    // Closes the TFT screen; the waiting call returns CANCELLED.
+    // Returns false when nothing is pending. Can never approve.
+    bool cancel_pending();
+    bool is_pending() const { return m_pending_id.load() != 0; }
+
     static const char* status_to_string(SignStatus s);
 
     // ── Policy management (stored only, see header note) ─
@@ -103,6 +111,8 @@ private:
     SpendingPolicy&   m_policy;
     SemaphoreHandle_t m_confirm_mutex{nullptr};
     uint32_t          m_next_request_id{1};
+    std::atomic<uint32_t> m_pending_id{0};
+    std::atomic<bool>     m_cancel_requested{false};
 
     static constexpr const char* TAG = "WalletManager";
 };
