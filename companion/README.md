@@ -18,8 +18,10 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 
 Open <http://localhost:8765>, plug Fuchey in, press **Connect Fuchey** and
-pick the Espressif USB device. Close `pio device monitor` first — only one
-program can hold the serial port.
+pick the Espressif USB device (COM5 on the dev PC). Close `pio device
+monitor` first — only one program can hold the serial port. Connecting can
+restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
+**DEVNET** before sending. Hard-reload (Ctrl+Shift+R) after updating files.
 
 ## What it does
 
@@ -28,16 +30,37 @@ program can hold the serial port.
 - Sends SOL (System `Transfer`) or USDC (SPL `TransferChecked`):
   1. checks the address, amount (exact decimals, no floats), balance and,
      for SOL to an empty address, the rent-exempt minimum;
-  2. builds a legacy message with a fresh blockhash;
+     asks "are you sure?" above 0.5 SOL / 50 USDC (`LARGE_AMOUNT` in `app.js`);
+  2. builds a legacy message with a fresh `confirmed` blockhash;
   3. `sign_tx` → Fuchey shows it; you tap B1 (or reject);
   4. verifies the returned signature with WebCrypto Ed25519 — a bad
      signature is never broadcast;
-  5. broadcasts, waits for confirmation, links to the explorer.
+  5. broadcasts (retries briefly on "Blockhash not found"), waits for
+     confirmation, links to the explorer. If confirmation fails after the
+     broadcast, the explorer link is kept.
 - **Cancel request** withdraws a pending confirmation from the device.
+- **Receive (QR)** shows the address as a QR code; **Show on Fuchey** opens
+  the device's own Receive QR screen (firmware cap `show_address`).
 
-USDC can only be sent to wallets that already have a USDC token account
-(same rule as the device parser). The device screen shows the destination
-**token account**; the page shows both it and the recipient wallet.
+USDC to a wallet that already has a USDC account: the device screen shows
+the destination **token account**; the page shows both it and the wallet.
+
+USDC to a wallet **without** a USDC account (firmware cap
+`usdc_create_ata`): the page derives the recipient's associated token
+account and adds an ATA `CreateIdempotent` instruction; you pay the rent
+(0.00203928 SOL) once. Fuchey checks the account really is that wallet's
+ATA, then shows **TO WALLET** + the wallet address and a yellow
+"+ new USDC acct" line.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| "The USB port is busy" | Another program has COM5 (pio monitor, `fuchey_usb.py`, another tab). Close it. |
+| "Fuchey did not answer" | Still booting after connect — wait for the home screen, Connect again. |
+| "Blockhash not found" | Tx expired before broadcast (devnet blockhash ≈ 35 s). Nothing was sent; send again and tap B1 promptly. |
+| "Rejected" / "expired" | B1 double/long press, or no answer in 30 s. Nothing was signed. |
+| Script hears nothing | Raise DTR after opening the port (the device only transmits with DTR set). |
 
 ## Protocol v1 (see `firmware/lib/protocol/UsbProtocol.hpp`)
 
@@ -49,10 +72,11 @@ One line per message on the USB console, mixed with log lines:
 
 | Request | Reply |
 |---|---|
-| `{"id":1,"cmd":"hello"}` | `ok, proto, fw, network, max_tx, has_wallet, pubkey, busy` |
+| `{"id":1,"cmd":"hello"}` | `ok, proto, fw, network, max_tx, has_wallet, pubkey, busy, caps` |
 | `{"id":2,"cmd":"get_pubkey"}` | `ok, pubkey` |
-| `{"id":3,"cmd":"sign_tx","msg":"<base64 message>","network":"devnet"}` | event `awaiting_confirmation {asset, amount, fee, to, timeout_ms}`, then `ok, sig` (base64, 64 bytes) |
+| `{"id":3,"cmd":"sign_tx","msg":"<base64 message>","network":"devnet"}` | event `awaiting_confirmation {asset, amount, fee, to, timeout_ms[, creates_account, rent]}`, then `ok, sig` (base64, 64 bytes) |
 | `{"id":4,"cmd":"cancel"}` | `ok, cancelled` |
+| `{"id":5,"cmd":"show_address"}` | `ok` (device opens its Receive QR screen) |
 
 Errors: `{"id":n,"ok":false,"err":"rejected|cancelled|timeout|busy|network_mismatch|unsupported_tx|no_wallet|bad_request|bad_crc|bad_frame|bad_json|unknown_cmd|sign_failed","detail":"..."}`.
 
