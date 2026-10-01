@@ -15,8 +15,8 @@ namespace Fuchey {
 
 static constexpr const char* TAG = "WalletManager";
 
-WalletManager::WalletManager(WalletCore& core, SpendingPolicy& policy)
-    : m_core(core), m_policy(policy) {}
+WalletManager::WalletManager(WalletCore& core)
+    : m_core(core) {}
 
 // ─── Init ─────────────────────────────────────────────────
 bool WalletManager::init() {
@@ -222,15 +222,6 @@ const char* WalletManager::status_to_string(SignStatus s) {
         case SignStatus::SIGN_FAILED:      return "signing failed";
     }
     return "unknown";
-}
-
-// ─── Policy ───────────────────────────────────────────────
-bool WalletManager::set_spend_limit(SpendLimit limit) {
-    return m_policy.set_limit(limit);
-}
-
-SpendLimit WalletManager::get_spend_limit() const {
-    return m_policy.get_limit();
 }
 
 // ─── FreeRTOS task ────────────────────────────────────────

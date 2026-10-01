@@ -140,13 +140,11 @@ namespace Pomodoro {
 namespace NVS {
     inline constexpr const char* WALLET_NS     = "fuchey_wallet";
     inline constexpr const char* CONFIG_NS     = "fuchey_cfg";
-    inline constexpr const char* POLICY_NS     = "fuchey_policy";
     inline constexpr const char* WIFI_NS       = "fuchey_wifi";
 
     // Keys
     inline constexpr const char* KEY_MNEMONIC_ENC  = "mnemonic_enc";
     inline constexpr const char* KEY_WALLET_CREATED = "wallet_ok";
-    inline constexpr const char* KEY_SPEND_LIMIT   = "spend_limit";
     inline constexpr const char* KEY_WIFI_SSID     = "ssid";
     inline constexpr const char* KEY_WIFI_PASS     = "password";
     inline constexpr const char* KEY_WEATHER_CITY  = "weather_city";
