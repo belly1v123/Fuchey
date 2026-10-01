@@ -171,7 +171,9 @@ export class Rpc {
   }
 
   async getLatestBlockhash() {
-    return (await this.call("getLatestBlockhash", [{ commitment: "finalized" }])).value.blockhash;
+    // "confirmed" (not "finalized"): ~13 s fresher, which matters because the
+    // blockhash has to survive the wait for B1 on the device.
+    return (await this.call("getLatestBlockhash", [{ commitment: "confirmed" }])).value.blockhash;
   }
 
   async getMinimumRentExempt(size = 0) {
@@ -192,7 +194,17 @@ export class Rpc {
   async sendTransaction(wireBytes) {
     let s = "";
     for (const b of wireBytes) s += String.fromCharCode(b);
-    return this.call("sendTransaction", [btoa(s), { encoding: "base64", preflightCommitment: "confirmed" }]);
+    const params = [btoa(s), { encoding: "base64", preflightCommitment: "confirmed", maxRetries: 5 }];
+    // Public devnet RPC is load-balanced; a lagging node can briefly report a
+    // fresh blockhash as unknown. Retry a few times before giving up.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.call("sendTransaction", params);
+      } catch (e) {
+        if (attempt >= 4 || !/blockhash not found/i.test(e.message)) throw e;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
   }
 
   /** Poll until confirmed/finalized, an on-chain error, or timeout. */

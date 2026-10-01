@@ -178,7 +178,9 @@ async function onSend(ev) {
       if (toBal === 0n && amount < rentMin) {
         throw new Error(`This address is empty; Solana requires at least ${formatUnits(rentMin, 9)} SOL for a new account.`);
       }
-      message = buildSolTransfer({ from, to, lamports: amount, blockhash: await r.getLatestBlockhash() });
+      const blockhash = await r.getLatestBlockhash();
+      log(`— blockhash ${blockhash}`);
+      message = buildSolTransfer({ from, to, lamports: amount, blockhash });
     } else {
       const mint = NETWORKS[network].usdcMint;
       const [src, dst, solBal] = await Promise.all([
@@ -198,20 +200,24 @@ async function onSend(ev) {
 
     openModal({ asset, amount: formatUnits(amount, decimals), to: shownTo, owner: asset === "USDC" ? to : null, network });
 
+    log(`— sign_tx: ${formatUnits(amount, decimals)} ${asset} → ${shownTo} (${network}); tap B1 on Fuchey`);
     const signature = await device.signMessage(message, network, (evt) => {
       if (evt.event === "awaiting_confirmation") {
         startCountdown(evt.timeout_ms || 30000);
         $("modal-status").textContent = `Fuchey shows ${evt.amount} ${evt.asset} → ${evt.to.slice(0, 6)}…${evt.to.slice(-6)}, fee ${evt.fee} SOL`;
       }
     });
+    log("— signed on Fuchey");
     $("modal-status").textContent = "Signed on Fuchey. Verifying…";
 
     const check = await verifySignature(from, signature, message);
     if (check === "invalid") throw new Error("Signature from the device did not verify — not broadcasting.");
     if (check === "unsupported") log("note: browser lacks Ed25519 WebCrypto; relying on RPC verification");
 
+    log("— broadcasting…");
     $("modal-status").textContent = "Broadcasting…";
     const txSig = await r.sendTransaction(assembleTransaction(signature, message));
+    log(`— sent: ${txSig}`);
     closeModal();
     showResult(true, `Sent ${formatUnits(amount, decimals)} ${asset}. Waiting for confirmation…`, txSig);
     await r.confirm(txSig);
@@ -219,8 +225,13 @@ async function onSend(ev) {
     $("amount").value = "";
     refreshBalances();
   } catch (e) {
+    let msg = describe(e);
+    if (/blockhash not found/i.test(msg)) {
+      msg += " — the transaction expired before it reached the network (devnet blockhashes last ~35 s). Nothing was sent; press Send again and approve on Fuchey promptly.";
+    }
+    log(`— send failed: ${msg}`);
     closeModal();
-    showResult(false, describe(e));
+    showResult(false, msg);
   } finally {
     state.sending = false;
     $("btn-send").disabled = false;
