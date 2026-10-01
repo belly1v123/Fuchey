@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <unistd.h>
 
 namespace Fuchey {
 
@@ -54,6 +55,10 @@ void UsbProtocol::send(cJSON* obj) {
     // One printf call → one locked write, so log lines cannot split a frame.
     printf("%s%s*%08lX\n", PREFIX, json, static_cast<unsigned long>(crc));
     fflush(stdout);
+    // fflush only hands bytes to the console driver; the USB CDC console keeps
+    // a partial packet until fsync, so without this a reply can sit unsent
+    // until the next log line (seen: ~30 s, longer than a blockhash lives).
+    fsync(fileno(stdout));
     cJSON_free(json);
 }
 

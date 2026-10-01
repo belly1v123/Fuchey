@@ -64,6 +64,10 @@ class Device:
         self.ser.dtr = False
         self.ser.rts = False
         self.ser.open()
+        # Raise DTR only after opening (RTS stays low): the "run" state, which
+        # never resets the chip, and the USB CDC console only transmits to a
+        # host that has DTR asserted.
+        self.ser.dtr = True
         self.next_id = 1
         self.buf = b""
 
