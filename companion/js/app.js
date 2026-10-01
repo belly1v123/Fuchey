@@ -37,22 +37,42 @@ const rpc = () => new Rpc(settings.get(state.network));
 
 // ── error text ────────────────────────────────────────────
 const DEVICE_ERRORS = {
-  rejected: "Rejected on Fuchey.",
-  cancelled: "Request cancelled.",
-  timeout: "No answer on Fuchey within 30 s — nothing was signed.",
-  busy: "Fuchey is already showing another request. Finish or reject it on the device first.",
-  network_mismatch: "Network mismatch between this page and Fuchey. Reconnect.",
+  rejected: "You rejected it on Fuchey. Nothing was signed or sent.",
+  cancelled: "Request cancelled. Nothing was signed or sent.",
+  timeout: "No answer on Fuchey within 30 s, so the request expired. Nothing was signed — press Send to try again.",
+  busy: "Fuchey is already showing another request. Approve or reject it on the device first.",
+  network_mismatch: "This page and Fuchey disagree on the network (devnet/mainnet). Disconnect and connect again.",
   unsupported_tx: "Fuchey refused this transaction shape.",
   no_wallet: "Fuchey has no wallet yet. Create or import one on the device console.",
-  disconnected: "Fuchey was disconnected.",
-  no_reply: "Fuchey did not answer. Is the firmware up to date?",
+  disconnected: "Fuchey was disconnected (unplugged or reset). Nothing was signed. Plug it in, wait for the home screen, then Connect.",
+  no_reply: "Fuchey did not answer. It may still be starting up — wait for its home screen and press Connect again. If it keeps happening, update the firmware.",
 };
+
+// Errors from the browser (Web Serial) and the RPC, in plain words.
+function describeBrowserError(err) {
+  const name = err?.name || "";
+  const msg = err?.message || String(err);
+  if (name === "NetworkError" || /failed to open serial port/i.test(msg)) {
+    return "The USB port is busy. Close anything else using Fuchey (pio monitor, fuchey_usb.py, another tab with this page), then press Connect again.";
+  }
+  if (name === "InvalidStateError") return "The USB port is already open. Reload this page and connect again.";
+  if (name === "SecurityError") return "The browser blocked USB access. Open this page on http://localhost (or HTTPS) in Chrome or Edge.";
+  if (/failed to fetch|networkerror when attempting/i.test(msg)) {
+    return "Can't reach the Solana RPC. Check your internet connection, or the RPC URL in Settings.";
+  }
+  if (/RPC HTTP 429/.test(msg)) return "The public RPC is rate-limiting this page. Wait a minute, or set your own RPC URL in Settings.";
+  if (/insufficient (lamports|funds)|no record of a prior credit/i.test(msg)) {
+    return "Not enough SOL to cover this transfer and the network fee.";
+  }
+  return msg;
+}
+
 function describe(err) {
   if (err instanceof DeviceError) {
     const base = DEVICE_ERRORS[err.code] || `Device error: ${err.code}`;
     return err.detail && err.code === "unsupported_tx" ? `${base} (${err.detail})` : base;
   }
-  return err?.message || String(err);
+  return describeBrowserError(err);
 }
 
 // ── log panel ─────────────────────────────────────────────
@@ -67,6 +87,8 @@ device.addEventListener("log", (e) => log(e.detail));
 // ── connection ────────────────────────────────────────────
 async function connect() {
   $("btn-connect").disabled = true;
+  $("plug-hint").classList.add("hidden");
+  $("result").classList.add("hidden");
   try {
     await device.connect();
     log("— port opened, saying hello…");
@@ -85,11 +107,23 @@ async function connect() {
   }
 }
 
-device.addEventListener("disconnect", () => {
+device.addEventListener("disconnect", (e) => {
+  const wasConnected = state.info !== null;
   state.info = null;
   state.network = null;
   closeModal();
   renderDisconnected();
+  // A sign in progress reports its own error; otherwise explain the unplug.
+  if (wasConnected && !state.sending && e.detail !== "closed") {
+    showResult(false, DEVICE_ERRORS.disconnected);
+  }
+  log(`— disconnected (${e.detail})`);
+});
+
+// A previously allowed Fuchey was plugged back in. Don't auto-connect
+// (opening the port can restart it) — just say it's there.
+navigator.serial?.addEventListener("connect", () => {
+  if (!state.info) $("plug-hint").classList.remove("hidden");
 });
 
 function renderConnected() {
@@ -100,6 +134,7 @@ function renderConnected() {
   const badge = $("net-badge");
   badge.textContent = network.toUpperCase();
   badge.className = `badge ${network}`;
+  $("mainnet-banner").classList.toggle("hidden", network !== "mainnet");
   $("wallet").classList.remove("hidden");
   $("device-info").textContent = `Firmware ${info.fw} · protocol v${info.proto} · max tx ${info.max_tx} bytes`;
   $("receive").classList.add("hidden");
@@ -121,6 +156,7 @@ function renderDisconnected() {
   $("btn-connect").classList.remove("hidden");
   $("btn-disconnect").classList.add("hidden");
   $("net-badge").className = "badge hidden";
+  $("mainnet-banner").classList.add("hidden");
   $("wallet").classList.add("hidden");
   $("send").classList.add("hidden");
 }
@@ -156,6 +192,8 @@ function sendError(msg) {
   el.textContent = msg;
   el.classList.toggle("hidden", !msg);
 }
+
+let txSig = null;   // set once broadcast — a later error must keep its link
 
 async function onSend(ev) {
   ev.preventDefault();
@@ -201,6 +239,7 @@ Is this amount correct? (Check for an extra zero.)`,
     const r = rpc();
     let message;
     let shownTo = to;
+    txSig = null;
     let createsAccount = false;
 
     if (asset === "SOL") {
@@ -273,7 +312,7 @@ Is this amount correct? (Check for an extra zero.)`,
 
     log("— broadcasting…");
     $("modal-status").textContent = "Broadcasting…";
-    const txSig = await r.sendTransaction(assembleTransaction(signature, message));
+    txSig = await r.sendTransaction(assembleTransaction(signature, message));
     log(`— sent: ${txSig}`);
     closeModal();
     const opened = createsAccount
@@ -289,9 +328,15 @@ Is this amount correct? (Check for an extra zero.)`,
     if (/blockhash not found/i.test(msg)) {
       msg += " — the transaction expired before it reached the network (devnet blockhashes last ~35 s). Nothing was sent; press Send again and approve on Fuchey promptly.";
     }
+    if (txSig && /^Transaction failed/.test(msg)) {
+      msg = `It reached the network but failed on-chain (${msg.replace(/^Transaction failed: /, "")}). Funds did not move; only the fee was charged.`;
+    } else if (txSig) {
+      // Already broadcast: it may still land, so keep the Explorer link.
+      msg = `Sent, but not confirmed yet: ${msg} Check the Explorer link before trying again.`;
+    }
     log(`— send failed: ${msg}`);
     closeModal();
-    showResult(false, msg);
+    showResult(false, msg, txSig);
   } finally {
     state.sending = false;
     $("btn-send").disabled = false;
