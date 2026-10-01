@@ -7,6 +7,10 @@ import {
 } from "./solana.js";
 
 const $ = (id) => document.getElementById(id);
+
+// Ask "are you sure?" in the page before a send this large reaches the device
+// (smallest units: lamports / USDC micro-units).
+const LARGE_AMOUNT = { SOL: 500_000_000n, USDC: 50_000_000n };   // 0.5 SOL, 50 USDC
 const device = new FucheyDevice();
 
 const state = {
@@ -161,6 +165,20 @@ async function onSend(ev) {
   } catch (e) {
     sendError(e.message);
     return;
+  }
+
+  if (amount > LARGE_AMOUNT[asset]) {
+    const ok = window.confirm(
+      `Large amount: ${formatUnits(amount, decimals)} ${asset} on ${network.toUpperCase()}
+` +
+      `to ${to}
+
+Is this amount correct? (Check for an extra zero.)`,
+    );
+    if (!ok) {
+      sendError("Cancelled — nothing was sent to Fuchey.");
+      return;
+    }
   }
 
   state.sending = true;
