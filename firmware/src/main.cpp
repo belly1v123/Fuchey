@@ -325,10 +325,13 @@ static void post_tx_fail(const char* reason, const std::string& recipient) {
     Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
 }
 
+// "confirmed", not "finalized": a finalized blockhash is already ~13 s old,
+// and on devnet a blockhash can expire ~35 s after it is produced — too tight
+// once the price fetch and the 30 s B1 window are added.
 static bool fetch_latest_blockhash(std::array<uint8_t, 32>& out, const char* tag) {
     auto resp = s_wifi_manager.post_json(
         get_rpc_url(),
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}");
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"confirmed\"}]}");
     if (!resp.success) {
         ESP_LOGE(TAG, "[%s] getLatestBlockhash failed (HTTP %d)", tag, resp.status_code);
         return false;

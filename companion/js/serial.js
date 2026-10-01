@@ -197,23 +197,12 @@ export class FucheyDevice extends EventTarget {
 
   /** Ask the device to sign a legacy message. Resolves with 64 signature bytes. */
   async signMessage(messageBytes, network, onEvent) {
-    // The device's USB CDC console can hold the last line it wrote until more
-    // output follows, so the signed reply may sit there until something else
-    // is logged (seen: ~30 s). A devnet blockhash only lives ~35 s, so poke the
-    // device with a cheap `hello` every second; its reply pushes ours out.
-    const poke = setInterval(() => {
-      this.request("hello", {}, { timeoutMs: 1500 }).catch(() => {});
-    }, 1000);
-    try {
-      const res = await this.request(
-        "sign_tx",
-        { msg: bytesToBase64(messageBytes), network },
-        { timeoutMs: 60000, onEvent },   // device times out at 30 s; RPC price fetch adds a little
-      );
-      return base64ToBytes(res.sig);
-    } finally {
-      clearInterval(poke);
-    }
+    const res = await this.request(
+      "sign_tx",
+      { msg: bytesToBase64(messageBytes), network },
+      { timeoutMs: 60000, onEvent },   // device times out at 30 s; RPC price fetch adds a little
+    );
+    return base64ToBytes(res.sig);
   }
 
   /** Open the Receive QR screen on the device (firmware with caps "show_address"). */
