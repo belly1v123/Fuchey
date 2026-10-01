@@ -7,6 +7,7 @@
 #include "Animations.hpp"
 #include "SpritePlayer.hpp"
 #include "YetiAnim.hpp"
+#include "DndAnim.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
@@ -419,12 +420,12 @@ void UIManager::go_back() {
 }
 
 // ─── Menu helpers ──────────────────────────────────────────
-// Main menu (horizontal icon carousel, 4 entries):
+// Main menu (horizontal icon carousel, 5 entries):
 //   0 = Wallet Info (hub)  1 = Pomodoro  2 = Badge (opens the pass)
-//   3 = Media Remote (BLE HID)
+//   3 = Media Remote (BLE HID)  4 = DND mood toggle (swaps home Yeti anim)
 // View Balance and QR live under the Wallet Info hub, not top-level.
 void UIManager::open_menu_index(uint8_t index) {
-    m_menu_index = index % 4;
+    m_menu_index = index % 5;
     m_menu_prev_index = -1; // direct open: no slide animation
     if (m_menu_index == 0) {
         ESP_LOGI(TAG, "Screen: WALLET_INFO hub");
@@ -436,9 +437,15 @@ void UIManager::open_menu_index(uint8_t index) {
     } else if (m_menu_index == 2) {
         ESP_LOGI(TAG, "Screen: FAIR_PASS (via Badge)");
         set_screen(UIScreen::FAIR_PASS);
-    } else {
+    } else if (m_menu_index == 3) {
         ESP_LOGI(TAG, "Screen: HID_REMOTE (BLE media)");
         set_screen(UIScreen::HID_REMOTE);
+    } else {
+        // DND mood toggle: flip the flag and jump home so the Yeti swap
+        // is visible immediately. render_home rebuilds chrome + swaps anim.
+        m_dnd_mode = !m_dnd_mode;
+        ESP_LOGI(TAG, "[Menu] DND mood -> %s", m_dnd_mode ? "ON" : "OFF");
+        set_screen(UIScreen::HOME);
     }
 }
 
@@ -473,7 +480,7 @@ void UIManager::step_wallet_tab(int8_t dir) {
 
 void UIManager::step_menu(int8_t dir) {
     int idx = static_cast<int>(m_menu_index);
-    idx = (idx + dir + 4) % 4;
+    idx = (idx + dir + 5) % 5;
     ESP_LOGI(TAG, "[Menu] %s -> index: %d", dir > 0 ? "Next" : "Prev", idx);
     if (m_current_screen == UIScreen::MENU_MAIN) {
         m_menu_index = static_cast<uint8_t>(idx);
@@ -878,15 +885,20 @@ void UIManager::render_menu() {
         const SpritePixel* icon; // nullptr -> monogram tile
         const char* mono;        // tile text when icon == nullptr
     };
-    static const MenuEntry kItems[4] = {
+    static const MenuEntry kItems[5] = {
         {"Wallet Info",  WalletInfoIcon_data, nullptr},
         {"Pomodoro",     PomodoroIcon_data,   nullptr},
         {"Badge",        BadgeIcon_data,      nullptr},
         {"Media Remote", BleHidIcon_data,      nullptr},
+        {"DND",          nullptr,             "DND"}, // monogram tile, label live
     };
 
     auto draw_entry = [&](int x, uint8_t idx) {
-        const MenuEntry& e = kItems[idx % 4];
+        const MenuEntry& e = kItems[idx % 5];
+        // DND entry shows live state under the icon.
+        const char* label = (idx % 5 == 4)
+            ? (m_dnd_mode ? "DND: ON" : "DND: OFF")
+            : e.label;
         if (e.icon != nullptr) {
             m_display.draw_sprite_transparent(x, kIconY, kIcon, kIcon, e.icon, kTransparent);
         } else {
@@ -1583,7 +1595,7 @@ void UIManager::render_fair_pass() {
 // covers y 0..130) so overlapping pads can't clobber each other.
 void UIManager::render_home() {
     // Exact lopaka placement: time (5,4) size 3, date (5,53) size 2,
-    // temp (5,88) size 2, icon 30x32 at (88,88), yeti 96x96 at (133,111).
+    // temp (5,88) size 2, icon 30x32 at (88,88), yeti 120x120 at (133,111).
     // Frosted pill hugs the glyphs (pad 1), not a filled band.
     static constexpr int kYetiX = 133, kYetiY = 111;
     static constexpr int kTimeX = 5,   kTimeY = 4, kTimeScale = 3;
@@ -1594,9 +1606,20 @@ void UIManager::render_home() {
     static constexpr Color kClock = 0xFFE0;  // yellow
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    // Mood anim: idle Yeti vs DND Yeti (same 120x120 geometry, so all crop/
+    // flush rect math below stays valid for both).
+    const SpriteAnim* want_anim = m_dnd_mode ? &DndAnim : &YetiAnim;
     if (!m_home_started) {
-        m_home_yeti.set_anim(&YetiAnim, now);
+        m_home_yeti.set_anim(want_anim, now);
         m_home_started = true;
+        m_home_dnd = m_dnd_mode;
+        m_home_chrome = false;
+    }
+    if (m_home_dnd != m_dnd_mode) {
+        // Mood flipped while home was live: swap anim + force full chrome
+        // rebuild (bg/crop state is wiped by the chrome path below).
+        m_home_yeti.set_anim(want_anim, now);
+        m_home_dnd = m_dnd_mode;
         m_home_chrome = false;
     }
 
