@@ -273,8 +273,10 @@ void UIManager::process_event(const Events::Event& evt) {
 
         case Events::EventType::UI_SHOW_ADDRESS:
             // Companion app "Show on Fuchey": read-only, never interrupts a
-            // pending confirmation or the first-boot setup.
-            if (m_setup_stage == SetupStage::DONE && !m_wallet_address.empty() &&
+            // pending confirmation or the first-boot setup. UsbProtocol has
+            // already checked a wallet exists; render_wallet_qr() loads the
+            // address itself (the cache is empty after a normal boot).
+            if (m_setup_stage == SetupStage::DONE &&
                 m_current_screen != UIScreen::TX_CONFIRM) {
                 ESP_LOGI(TAG, "Screen: WALLET_QR (companion show_address)");
                 m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
