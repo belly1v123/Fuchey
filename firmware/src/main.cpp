@@ -34,7 +34,6 @@
 #include "../lib/crypto/SHA256.hpp"
 #include "../lib/crypto/Ed25519.hpp"
 #include "../lib/wallet/WalletCore.hpp"
-#include "../lib/policy/SpendingPolicy.hpp"
 #include "../lib/wallet_manager/WalletManager.hpp"
 #include "../lib/wifi/WiFiManager.hpp"
 #include "../lib/weather/WeatherService.hpp"
@@ -74,8 +73,7 @@ static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_B1_TX_BACK,
                                         Fuchey::Buttons::LONG_PRESS_MS);
 Fuchey::WalletCore            s_wallet_core;
 namespace Fuchey { WalletCore* g_wallet_core_ptr = nullptr; }
-static Fuchey::SpendingPolicy s_spending_policy;
-static Fuchey::WalletManager  s_wallet_manager(s_wallet_core, s_spending_policy);
+static Fuchey::WalletManager  s_wallet_manager(s_wallet_core);
 
 static Fuchey::WiFiManager    s_wifi_manager;
 static Fuchey::WeatherService s_weather_service(s_wifi_manager);
@@ -686,7 +684,6 @@ extern "C" void app_main(void) {
     }
 
     Fuchey::g_wallet_core_ptr = &s_wallet_core;
-    s_spending_policy.init();
     s_wallet_core.init();
     s_wallet_manager.init();
     ESP_LOGI(TAG, "[OK] Wallet core initialized — state: %s",

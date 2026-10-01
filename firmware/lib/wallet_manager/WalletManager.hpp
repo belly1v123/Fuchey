@@ -12,12 +12,10 @@
 //      never approve. Timeout = reject.
 //   4. Sign those same bytes.
 //
-// Every signature requires physical confirmation: SpendingPolicy is
-// kept for the stored preference but is NOT consulted (no auto-sign).
+// Every signature requires physical confirmation (no auto-sign).
 // ============================================================
 
 #include "../wallet/WalletCore.hpp"
-#include "../policy/SpendingPolicy.hpp"
 #include "../events/Events.hpp"
 #include "TxParser.hpp"
 #include <freertos/FreeRTOS.h>
@@ -63,8 +61,7 @@ class WalletManager {
 public:
     static constexpr uint32_t CONFIRM_TIMEOUT_MS = 30000;
 
-    explicit WalletManager(WalletCore& core,
-                           SpendingPolicy& policy);
+    explicit WalletManager(WalletCore& core);
 
     // Non-copyable
     WalletManager(const WalletManager&) = delete;
@@ -98,17 +95,12 @@ public:
 
     static const char* status_to_string(SignStatus s);
 
-    // ── Policy management (stored only, see header note) ─
-    bool set_spend_limit(SpendLimit limit);
-    SpendLimit get_spend_limit() const;
-
     // ── FreeRTOS task entry ───────────────────────────────
     static void task_entry(void* arg);
     void run();
 
 private:
     WalletCore&       m_core;
-    SpendingPolicy&   m_policy;
     SemaphoreHandle_t m_confirm_mutex{nullptr};
     uint32_t          m_next_request_id{1};
     std::atomic<uint32_t> m_pending_id{0};
