@@ -17,6 +17,9 @@ export const NETWORKS = {
 };
 
 export const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+export const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+// Rent-exempt minimum of a 165-byte token account (what opening one costs).
+export const TOKEN_ACCOUNT_RENT_LAMPORTS = 2039280n;
 export const SOL_DECIMALS = 9;
 export const USDC_DECIMALS = 6;
 export const BASE_FEE_LAMPORTS = 5000n;   // per signature; Fuchey txs have 1
@@ -115,6 +118,68 @@ export function buildSolTransfer({ from, to, lamports, blockhash }) {
     Uint8Array.from([...compactU16(1), 2, ...compactU16(2), 0, 1, ...compactU16(12)]),
     Uint8Array.from([2, 0, 0, 0]),                   // Transfer
     u64le(lamports),
+  ]);
+}
+
+// ── associated token account (PDA) ───────────────────────
+const ED_P = 2n ** 255n - 19n;
+const ED_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
+
+function modPow(b, e, m) {
+  let r = 1n;
+  b %= m;
+  for (; e > 0n; e >>= 1n, b = (b * b) % m) if (e & 1n) r = (r * b) % m;
+  return r;
+}
+
+// Same test as Solana's bytes_are_curve_point (and the device's TxParser).
+function isOnCurve(bytes) {
+  let y = 0n;
+  for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(i === 31 ? bytes[i] & 0x7f : bytes[i]);
+  y %= ED_P;
+  const y2 = (y * y) % ED_P;
+  const u = (y2 - 1n + ED_P) % ED_P;
+  const v = (ED_D * y2 + 1n) % ED_P;
+  return u === 0n || modPow((u * v) % ED_P, (ED_P - 1n) / 2n, ED_P) === 1n;
+}
+
+/** Associated token account address of (owner, mint). */
+export async function findAssociatedTokenAddress(owner, mint) {
+  const marker = new TextEncoder().encode("ProgramDerivedAddress");
+  for (let bump = 255; bump >= 0; bump--) {
+    const seed = concat([
+      b58decode(owner), b58decode(TOKEN_PROGRAM), b58decode(mint),
+      Uint8Array.from([bump]), b58decode(ATA_PROGRAM), marker,
+    ]);
+    const h = new Uint8Array(await crypto.subtle.digest("SHA-256", seed));
+    if (!isOnCurve(h)) return b58encode(h);
+  }
+  throw new Error("No associated token address");
+}
+
+/**
+ * Legacy message: ATA CreateIdempotent for `recipient`, then SPL Token
+ * TransferChecked into that new account. The device verifies the ATA
+ * derivation and shows `recipient` (the owner wallet).
+ */
+export function buildTokenTransferCheckedWithCreate({ owner, source, recipient, ata, mint, amount, decimals, blockhash }) {
+  // keys: 0 owner (signer, w) · 1 source (w) · 2 ata (w) · 3 mint · 4 token
+  //       program · 5 ATA program · 6 System Program · 7 recipient wallet
+  return concat([
+    Uint8Array.from([1, 0, 5]),                     // 1 signer; last 5 keys read-only
+    Uint8Array.from(compactU16(8)),
+    b58decode(owner), b58decode(source), b58decode(ata),
+    b58decode(mint), b58decode(TOKEN_PROGRAM), b58decode(ATA_PROGRAM),
+    new Uint8Array(32), b58decode(recipient),
+    b58decode(blockhash),
+    Uint8Array.from(compactU16(2)),
+    // CreateIdempotent: [payer, ata, owner, mint, system, token]
+    Uint8Array.from([5, ...compactU16(6), 0, 2, 7, 3, 6, 4, ...compactU16(1), 1]),
+    // TransferChecked: [source, mint, destination, owner]
+    Uint8Array.from([4, ...compactU16(4), 1, 3, 2, 0, ...compactU16(10)]),
+    Uint8Array.from([12]),
+    u64le(amount),
+    Uint8Array.from([decimals]),
   ]);
 }
 
