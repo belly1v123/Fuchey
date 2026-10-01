@@ -180,7 +180,9 @@ export class FucheyDevice extends EventTarget {
   }
 
   /** hello with retries (the device may still be booting after connect). */
-  async hello(attempts = 4) {
+  // Opening the port can restart Fuchey; it needs ~7 s to boot, so keep
+  // asking for up to ~12 s before giving up.
+  async hello(attempts = 8) {
     let last;
     for (let i = 0; i < attempts; i++) {
       try {
