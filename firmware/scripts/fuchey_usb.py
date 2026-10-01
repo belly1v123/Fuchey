@@ -56,7 +56,14 @@ def b58encode(b: bytes) -> str:
 # ── framing ───────────────────────────────────────────────
 class Device:
     def __init__(self, port: str):
-        self.ser = serial.Serial(port, 115200, timeout=0.2)
+        # Open with DTR/RTS de-asserted: toggling them on open resets the S3.
+        self.ser = serial.Serial()
+        self.ser.port = port
+        self.ser.baudrate = 115200
+        self.ser.timeout = 0.2
+        self.ser.dtr = False
+        self.ser.rts = False
+        self.ser.open()
         self.next_id = 1
         self.buf = b""
 
@@ -79,11 +86,14 @@ class Device:
             while b"\n" in self.buf:
                 raw, self.buf = self.buf.split(b"\n", 1)
                 text = raw.decode("utf-8", "replace").rstrip("\r")
-                if not text.startswith("@@"):
+                at = text.find("@@")   # a log fragment may precede the frame
+                if at < 0:
                     if text.strip():
                         print(f"  [log] {text}")
                     continue
-                body, _, crc = text[2:].rpartition("*")
+                if at > 0:
+                    print(f"  [log] {text[:at]}")
+                body, _, crc = text[at + 2:].rpartition("*")
                 if f"{zlib.crc32(body.encode()) & 0xFFFFFFFF:08X}" != crc:
                     print(f"  [bad crc] {text}")
                     continue
