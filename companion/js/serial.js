@@ -214,6 +214,11 @@ export class FucheyDevice extends EventTarget {
     }
   }
 
+  /** Open the Receive QR screen on the device (firmware with caps "show_address"). */
+  showAddress() {
+    return this.request("show_address", {}, { timeoutMs: 3000 });
+  }
+
   cancel() {
     return this.request("cancel", {}, { timeoutMs: 3000 });
   }

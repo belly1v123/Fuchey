@@ -148,9 +148,16 @@ SignResult WalletManager::sign_transaction(std::span<const uint8_t> message,
              p.asset == TxParser::Asset::SOL ? "SOL" : "USDC");
     TxParser::format_units(p.amount, p.decimals, summary.amount, sizeof(summary.amount));
     TxParser::format_units(p.fee_lamports, 9, summary.fee, sizeof(summary.fee));
+    // With an ATA create the parser has verified destination == ATA(owner),
+    // so show the owner wallet — what the user actually typed and recognises.
+    const Crypto::PubKey& shown = p.creates_token_account ? p.owner : p.destination;
     std::string dest = Crypto::Base58::pubkey_to_address(
-        std::span<const uint8_t, 32>(p.destination.data(), 32));
+        std::span<const uint8_t, 32>(shown.data(), 32));
     snprintf(summary.recipient, sizeof(summary.recipient), "%s", dest.c_str());
+    summary.creates_account = p.creates_token_account;
+    if (p.creates_token_account) {
+        TxParser::format_units(p.rent_lamports, 9, summary.rent, sizeof(summary.rent));
+    }
     // Display-only USD values. 1 lamport × (USD/SOL) = rate / 1000 micro-USD.
     if (ctx.sol_usd > 0.0f) {
         const double rate = static_cast<double>(ctx.sol_usd);
@@ -167,9 +174,10 @@ SignResult WalletManager::sign_transaction(std::span<const uint8_t> message,
         summary.usd_micro = p.amount;  // 6 decimals == micro-dollars
     }
 
-    ESP_LOGI(TAG, "Confirm: %s %s -> %s (fee %s SOL, %s)",
+    ESP_LOGI(TAG, "Confirm: %s %s -> %s (fee %s SOL, %s)%s",
              summary.amount, summary.asset, summary.recipient, summary.fee,
-             ctx.mainnet ? "MAINNET" : "devnet");
+             ctx.mainnet ? "MAINNET" : "devnet",
+             summary.creates_account ? " + creates USDC account" : "");
 
     // 3. Physical confirmation.
     SignStatus decision = request_confirmation(summary);
