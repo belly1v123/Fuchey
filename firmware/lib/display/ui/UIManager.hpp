@@ -182,6 +182,9 @@ private:
 
     // HOME screen player (Pass_design bg + clock + animated Yeti overlay).
     SpritePlayer m_home_yeti;
+    // DND mood: when true the home overlay plays the DND Yeti instead of idle.
+    bool        m_dnd_mode{false};
+    bool        m_home_dnd{false}; // which anim the player currently holds
     bool        m_home_started{false};
     bool        m_home_chrome{false};
     uint8_t     m_home_last_frame{255};
