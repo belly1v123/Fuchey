@@ -4,7 +4,9 @@
 
 #include "TxParser.hpp"
 #include "../crypto/Base58.hpp"
+#include "../crypto/SHA256.hpp"
 #include "../config/Config.hpp"
+#include <mbedtls/bignum.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -25,10 +27,15 @@ constexpr uint8_t  CB_IX_REQUEST_HEAP_FRAME = 1;
 constexpr uint8_t  CB_IX_SET_CU_LIMIT       = 2;
 constexpr uint8_t  CB_IX_SET_CU_PRICE       = 3;
 constexpr uint8_t  CB_IX_SET_DATA_SIZE      = 4;
+constexpr uint8_t  ATA_IX_CREATE_IDEMPOTENT = 1;
+// Rent-exempt minimum for a 165-byte SPL token account (fixed by the runtime's
+// rent parameters: (165 + 128) * 3480 * 2).
+constexpr uint64_t TOKEN_ACCOUNT_RENT_LAMPORTS = 2039280;
 
 // Decoded once; the constants are valid base58 so decode cannot fail.
 struct Known {
     Crypto::PubKey token_program{};
+    Crypto::PubKey ata_program{};
     Crypto::PubKey compute_budget{};
     Crypto::PubKey usdc_mainnet{};
     Crypto::PubKey usdc_devnet{};
@@ -45,6 +52,7 @@ const Known& known() {
     static Known k = [] {
         Known v;
         decode_key("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", v.token_program);
+        decode_key("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", v.ata_program);
         decode_key("ComputeBudget111111111111111111111111111111", v.compute_budget);
         decode_key(API::USDC_MAINNET_MINT, v.usdc_mainnet);
         decode_key(API::USDC_DEVNET_MINT, v.usdc_devnet);
@@ -103,7 +111,78 @@ uint32_t read_u32_le(const uint8_t* p) {
            (static_cast<uint32_t>(p[3]) << 24);
 }
 
+// True when the 32 bytes decompress to an Ed25519 point — the same test as
+// Solana's bytes_are_curve_point (curve25519-dalek decompress): with y taken
+// mod p (sign bit ignored), (y^2 - 1) / (d*y^2 + 1) must be a square.
+// Euler's criterion on u*v avoids the division. Public data only, so
+// variable time is fine. Any bignum error reports "on curve", which only
+// skips that bump (the derivation then fails closed).
+bool is_on_curve(const uint8_t* bytes32) {
+    uint8_t yb[32];
+    memcpy(yb, bytes32, 32);
+    yb[31] &= 0x7F;
+
+    mbedtls_mpi p, e, d, y, y2, u, v, t;
+    mbedtls_mpi* all[] = {&p, &e, &d, &y, &y2, &u, &v, &t};
+    for (auto* m : all) mbedtls_mpi_init(m);
+
+    bool on_curve = true;
+    int rc = 0;
+    rc |= mbedtls_mpi_lset(&p, 1);
+    rc |= mbedtls_mpi_shift_l(&p, 255);
+    rc |= mbedtls_mpi_sub_int(&p, &p, 19);                       // p = 2^255 - 19
+    rc |= mbedtls_mpi_sub_int(&e, &p, 1);
+    rc |= mbedtls_mpi_shift_r(&e, 1);                            // (p - 1) / 2
+    rc |= mbedtls_mpi_read_string(&d, 10,
+        "37095705934669439343138083508754565189542113879843219016388785533085940283555");
+    rc |= mbedtls_mpi_read_binary_le(&y, yb, sizeof(yb));
+    rc |= mbedtls_mpi_mod_mpi(&y, &y, &p);
+    rc |= mbedtls_mpi_mul_mpi(&y2, &y, &y);
+    rc |= mbedtls_mpi_mod_mpi(&y2, &y2, &p);
+    rc |= mbedtls_mpi_sub_int(&u, &y2, 1);
+    rc |= mbedtls_mpi_mod_mpi(&u, &u, &p);                       // u = y^2 - 1
+    rc |= mbedtls_mpi_mul_mpi(&v, &d, &y2);
+    rc |= mbedtls_mpi_add_int(&v, &v, 1);
+    rc |= mbedtls_mpi_mod_mpi(&v, &v, &p);                       // v = d*y^2 + 1
+    if (rc == 0) {
+        if (mbedtls_mpi_cmp_int(&u, 0) == 0) {
+            on_curve = true;                                     // x = 0
+        } else {
+            rc |= mbedtls_mpi_mul_mpi(&t, &u, &v);
+            rc |= mbedtls_mpi_mod_mpi(&t, &t, &p);
+            rc |= mbedtls_mpi_exp_mod(&t, &t, &e, &p, nullptr);
+            if (rc == 0) on_curve = (mbedtls_mpi_cmp_int(&t, 1) == 0);
+        }
+    }
+    for (auto* m : all) mbedtls_mpi_free(m);
+    return on_curve;
+}
+
 } // namespace
+
+bool derive_ata(const Crypto::PubKey& owner, const Crypto::PubKey& mint, Crypto::PubKey& out) {
+    const Known& k = known();
+    static constexpr char kMarker[] = "ProgramDerivedAddress";
+    // sha256(owner | token_program | mint | bump | ata_program | marker)
+    uint8_t buf[32 * 3 + 1 + 32 + sizeof(kMarker) - 1];
+    uint8_t* w = buf;
+    memcpy(w, owner.data(), 32);           w += 32;
+    memcpy(w, k.token_program.data(), 32); w += 32;
+    memcpy(w, mint.data(), 32);            w += 32;
+    uint8_t* bump = w++;
+    memcpy(w, k.ata_program.data(), 32);   w += 32;
+    memcpy(w, kMarker, sizeof(kMarker) - 1);
+
+    for (int b = 255; b >= 0; --b) {
+        *bump = static_cast<uint8_t>(b);
+        auto h = Crypto::sha256(std::span<const uint8_t>(buf, sizeof(buf)));
+        if (!is_on_curve(h.data())) {
+            std::copy(h.begin(), h.end(), out.begin());
+            return true;
+        }
+    }
+    return false;
+}
 
 ParseError parse_transfer(std::span<const uint8_t> message,
                           const Crypto::PubKey& signer,
@@ -151,6 +230,8 @@ ParseError parse_transfer(std::span<const uint8_t> message,
     if (!r.compact_u16(num_ix)) return ParseError::TRUNCATED;
 
     bool     have_transfer = false;
+    bool     have_ata_ix   = false;
+    uint8_t  ata_acc[6]    = {};
     bool     cu_limit_set  = false;
     uint32_t cu_limit      = 0;
     uint64_t cu_price      = 0;  // micro-lamports per CU
@@ -199,6 +280,22 @@ ParseError parse_transfer(std::span<const uint8_t> message,
         ++non_cb_ix;
         if (have_transfer) return ParseError::MULTIPLE_TRANSFERS;
 
+        if (key_eq(prog, k.ata_program)) {
+            // Associated Token Account: CreateIdempotent, once, before the
+            // transfer. accounts: [payer, ata, owner, mint, system, token]
+            if (have_ata_ix || data.size() != 1 || data[0] != ATA_IX_CREATE_IDEMPOTENT ||
+                n_acc != 6) {
+                return ParseError::UNSUPPORTED_INSTRUCTION;
+            }
+            if (acc[0] != 0 || !is_writable(acc[1]) || !is_zero_key(acc[4]) ||
+                !key_eq(acc[5], k.token_program)) {
+                return ParseError::UNSUPPORTED_INSTRUCTION;
+            }
+            std::copy_n(acc.begin(), 6, ata_acc);
+            have_ata_ix = true;
+            continue;
+        }
+
         if (is_zero_key(prog)) {
             // System Program: Transfer { lamports: u64 }
             if (data.size() != 12 || read_u32_le(data.data()) != SYSTEM_IX_TRANSFER ||
@@ -243,6 +340,28 @@ ParseError parse_transfer(std::span<const uint8_t> message,
     if (!r.at_end()) return ParseError::TRAILING_BYTES;
     if (!have_transfer) return ParseError::NO_TRANSFER;
 
+    if (have_ata_ix) {
+        // The created account must be exactly the USDC destination, for the
+        // same mint, and the ATA of the owner named in the instruction —
+        // so the owner shown on screen really receives the tokens.
+        if (out.asset != Asset::USDC) return ParseError::BAD_TOKEN_ACCOUNT;
+        auto ata  = key_at(ata_acc[1]);
+        auto mint = key_at(ata_acc[3]);
+        const Crypto::PubKey& usdc = out.mint_is_mainnet ? k.usdc_mainnet : k.usdc_devnet;
+        if (!std::equal(out.destination.begin(), out.destination.end(), ata.begin()) ||
+            !std::equal(usdc.begin(), usdc.end(), mint.begin())) {
+            return ParseError::BAD_TOKEN_ACCOUNT;
+        }
+        Crypto::PubKey owner{}, derived{};
+        std::copy_n(key_at(ata_acc[2]).begin(), 32, owner.begin());
+        if (!derive_ata(owner, usdc, derived) || derived != out.destination) {
+            return ParseError::BAD_TOKEN_ACCOUNT;
+        }
+        out.creates_token_account = true;
+        out.owner         = owner;
+        out.rent_lamports = TOKEN_ACCOUNT_RENT_LAMPORTS;
+    }
+
     // ── Fee: signatures + ceil(cu_price * cu_limit / 1e6) ─
     if (!cu_limit_set) {
         uint64_t def = static_cast<uint64_t>(DEFAULT_CU_PER_INSTRUCTION) * non_cb_ix;
@@ -275,6 +394,7 @@ const char* error_to_string(ParseError err) {
         case ParseError::UNKNOWN_MINT:            return "unknown token mint";
         case ParseError::FEE_OVERFLOW:            return "fee overflow";
         case ParseError::TRAILING_BYTES:          return "trailing bytes";
+        case ParseError::BAD_TOKEN_ACCOUNT:       return "token account does not match recipient";
     }
     return "unknown";
 }

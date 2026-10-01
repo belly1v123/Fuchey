@@ -4,6 +4,7 @@
 
 #include "UsbProtocol.hpp"
 #include "../config/Config.hpp"
+#include "../events/Events.hpp"
 #include "../crypto/Base58.hpp"
 #include "../crypto/Base64.hpp"
 #include "../wallet_manager/TxParser.hpp"
@@ -113,6 +114,8 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_sign_tx(id, req);
     } else if (strcmp(cmd, "cancel") == 0) {
         cmd_cancel(id);
+    } else if (strcmp(cmd, "show_address") == 0) {
+        cmd_show_address(id);
     } else {
         send_error(id, "unknown_cmd", cmd);
     }
@@ -132,6 +135,10 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     cJSON_AddBoolToObject(obj, "has_wallet", addr.has_value());
     if (addr) cJSON_AddStringToObject(obj, "pubkey", addr->c_str());
     cJSON_AddBoolToObject(obj, "busy", m_busy.load());
+    // Optional features, so the app can adapt to older firmware.
+    cJSON* caps = cJSON_AddArrayToObject(obj, "caps");
+    cJSON_AddItemToArray(caps, cJSON_CreateString("show_address"));
+    cJSON_AddItemToArray(caps, cJSON_CreateString("usdc_create_ata"));
     send(obj);
 }
 
@@ -144,6 +151,24 @@ void UsbProtocol::cmd_get_pubkey(uint32_t id) {
     cJSON* obj = reply(id, true);
     cJSON_AddStringToObject(obj, "pubkey", addr->c_str());
     send(obj);
+}
+
+void UsbProtocol::cmd_show_address(uint32_t id) {
+    if (!m_core.get_address()) {
+        send_error(id, "no_wallet");
+        return;
+    }
+    if (m_busy.load()) {
+        send_error(id, "busy", "a signature request is pending");
+        return;
+    }
+    Events::Event evt{};
+    evt.type = Events::EventType::UI_SHOW_ADDRESS;
+    if (!Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50))) {
+        send_error(id, "busy", "UI queue full");
+        return;
+    }
+    send(reply(id, true));
 }
 
 void UsbProtocol::cmd_cancel(uint32_t id) {
@@ -229,8 +254,10 @@ void UsbProtocol::run_sign(SignJob& job) {
         char amount[24], fee[16];
         TxParser::format_units(parsed.amount, parsed.decimals, amount, sizeof(amount));
         TxParser::format_units(parsed.fee_lamports, 9, fee, sizeof(fee));
+        const Crypto::PubKey& shown = parsed.creates_token_account ? parsed.owner
+                                                                   : parsed.destination;
         std::string to = Crypto::Base58::pubkey_to_address(
-            std::span<const uint8_t, 32>(parsed.destination.data(), 32));
+            std::span<const uint8_t, 32>(shown.data(), 32));
 
         cJSON* evt = cJSON_CreateObject();
         cJSON_AddNumberToObject(evt, "id", job.id);
@@ -240,6 +267,12 @@ void UsbProtocol::run_sign(SignJob& job) {
         cJSON_AddStringToObject(evt, "fee", fee);
         cJSON_AddStringToObject(evt, "to", to.c_str());
         cJSON_AddNumberToObject(evt, "timeout_ms", WalletManager::CONFIRM_TIMEOUT_MS);
+        if (parsed.creates_token_account) {
+            char rent[16];
+            TxParser::format_units(parsed.rent_lamports, 9, rent, sizeof(rent));
+            cJSON_AddBoolToObject(evt, "creates_account", true);
+            cJSON_AddStringToObject(evt, "rent", rent);
+        }
         send(evt);
     }
 

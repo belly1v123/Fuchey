@@ -11,6 +11,10 @@
 //   - exactly ONE transfer:
 //       System Program Transfer               → SOL
 //       SPL Token TransferChecked, USDC mint  → USDC
+//   - USDC only: optionally ONE Associated Token Account CreateIdempotent
+//     right before the transfer, paid by this wallet, creating exactly the
+//     destination account, which must be the ATA derived from
+//     (recipient owner, USDC mint) — verified on device.
 // ============================================================
 
 #include "../crypto/CryptoEngine.hpp"
@@ -37,6 +41,7 @@ enum class ParseError : uint8_t {
     UNKNOWN_MINT,
     FEE_OVERFLOW,
     TRAILING_BYTES,
+    BAD_TOKEN_ACCOUNT,   // ATA create does not match the transfer / derivation
 };
 
 struct ParsedTransfer {
@@ -46,6 +51,11 @@ struct ParsedTransfer {
     Crypto::PubKey destination{};    // SOL: recipient wallet, USDC: dest token account
     bool           mint_is_mainnet{false}; // USDC only: which USDC mint was used
     uint64_t       fee_lamports{0};  // base signature fee + compute-unit priority fee
+    // USDC with an ATA create: the recipient wallet (owner of `destination`),
+    // and the rent this wallet pays to open that account.
+    bool           creates_token_account{false};
+    Crypto::PubKey owner{};
+    uint64_t       rent_lamports{0};
 };
 
 // Parse `message` (the bytes that get signed, WITHOUT the signature
@@ -55,6 +65,9 @@ ParseError parse_transfer(std::span<const uint8_t> message,
                           ParsedTransfer& out);
 
 const char* error_to_string(ParseError err);
+
+// Associated token account of (owner, mint) under the SPL Token program.
+bool derive_ata(const Crypto::PubKey& owner, const Crypto::PubKey& mint, Crypto::PubKey& out);
 
 // Exact decimal rendering of an integer amount: (1234500, 6) -> "1.2345".
 void format_units(uint64_t amount, uint8_t decimals, char* out, size_t out_len);

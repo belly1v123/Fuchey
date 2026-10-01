@@ -4,7 +4,9 @@ import {
   NETWORKS, SOL_DECIMALS, USDC_DECIMALS, BASE_FEE_LAMPORTS,
   Rpc, isAddress, parseUnits, formatUnits,
   buildSolTransfer, buildTokenTransferChecked, assembleTransaction, verifySignature,
+  buildTokenTransferCheckedWithCreate, findAssociatedTokenAddress, TOKEN_ACCOUNT_RENT_LAMPORTS,
 } from "./solana.js";
+import { qrSvg } from "./qr.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -100,6 +102,11 @@ function renderConnected() {
   badge.className = `badge ${network}`;
   $("wallet").classList.remove("hidden");
   $("device-info").textContent = `Firmware ${info.fw} · protocol v${info.proto} · max tx ${info.max_tx} bytes`;
+  $("receive").classList.add("hidden");
+  $("qr").innerHTML = "";
+  const canShow = info.has_wallet && Array.isArray(info.caps) && info.caps.includes("show_address");
+  $("btn-receive").classList.toggle("hidden", !info.has_wallet);
+  $("btn-show-device").classList.toggle("hidden", !canShow);
   if (info.has_wallet) {
     $("address").textContent = info.pubkey;
     $("send").classList.remove("hidden");
@@ -187,6 +194,7 @@ Is this amount correct? (Check for an extra zero.)`,
     const r = rpc();
     let message;
     let shownTo = to;
+    let createsAccount = false;
 
     if (asset === "SOL") {
       const bal = await r.getBalance(from);
@@ -207,16 +215,38 @@ Is this amount correct? (Check for an extra zero.)`,
       if (!src || src.amount < amount) {
         throw new Error(`Insufficient USDC: have ${formatUnits(src ? src.amount : 0n, 6)}.`);
       }
-      if (!dst) throw new Error("Recipient has no USDC token account yet (they must receive USDC once first).");
-      if (solBal < BASE_FEE_LAMPORTS) throw new Error("Not enough SOL to pay the network fee.");
-      shownTo = dst.address;   // the device shows the destination token account
-      message = buildTokenTransferChecked({
-        owner: from, source: src.address, destination: dst.address, mint,
-        amount, decimals: USDC_DECIMALS, blockhash: await r.getLatestBlockhash(),
-      });
+      const blockhash = await r.getLatestBlockhash();
+      log(`— blockhash ${blockhash}`);
+      if (dst) {
+        if (solBal < BASE_FEE_LAMPORTS) throw new Error("Not enough SOL to pay the network fee.");
+        shownTo = dst.address;   // the device shows the destination token account
+        message = buildTokenTransferChecked({
+          owner: from, source: src.address, destination: dst.address, mint,
+          amount, decimals: USDC_DECIMALS, blockhash,
+        });
+      } else {
+        // No USDC account yet: open the recipient's associated token account
+        // in the same transaction (this wallet pays the rent).
+        if (!(state.info.caps || []).includes("usdc_create_ata")) {
+          throw new Error("Recipient has no USDC account yet, and this Fuchey firmware can't create one. Update the firmware.");
+        }
+        if (solBal < BASE_FEE_LAMPORTS + TOKEN_ACCOUNT_RENT_LAMPORTS) {
+          throw new Error(`Opening the recipient's USDC account needs ${formatUnits(TOKEN_ACCOUNT_RENT_LAMPORTS + BASE_FEE_LAMPORTS, 9)} SOL; you have ${formatUnits(solBal, 9)}.`);
+        }
+        const ata = await findAssociatedTokenAddress(to, mint);
+        log(`— recipient has no USDC account; creating ${ata}`);
+        createsAccount = true;   // the device shows the recipient wallet
+        message = buildTokenTransferCheckedWithCreate({
+          owner: from, source: src.address, recipient: to, ata, mint,
+          amount, decimals: USDC_DECIMALS, blockhash,
+        });
+      }
     }
 
-    openModal({ asset, amount: formatUnits(amount, decimals), to: shownTo, owner: asset === "USDC" ? to : null, network });
+    openModal({
+      asset, amount: formatUnits(amount, decimals), to: shownTo,
+      owner: asset === "USDC" && !createsAccount ? to : null, network, createsAccount,
+    });
 
     log(`— sign_tx: ${formatUnits(amount, decimals)} ${asset} → ${shownTo} (${network}); tap B1 on Fuchey`);
     const signature = await device.signMessage(message, network, (evt) => {
@@ -259,7 +289,7 @@ Is this amount correct? (Check for an extra zero.)`,
 // ── modal / result ────────────────────────────────────────
 let countdownTimer = null;
 
-function openModal({ asset, amount, to, owner, network }) {
+function openModal({ asset, amount, to, owner, network, createsAccount = false }) {
   const dl = $("confirm-details");
   dl.innerHTML = "";
   const rows = [
@@ -268,6 +298,7 @@ function openModal({ asset, amount, to, owner, network }) {
     [owner ? "To token account" : "To", to],
     ...(owner ? [["Recipient wallet", owner]] : []),
     ["Fee", "0.000005 SOL"],
+    ...(createsAccount ? [["New USDC account", `${formatUnits(TOKEN_ACCOUNT_RENT_LAMPORTS, 9)} SOL rent (paid once)`]] : []),
   ];
   for (const [k, v] of rows) {
     const dt = document.createElement("dt"); dt.textContent = k;
@@ -318,6 +349,20 @@ function init() {
   $("btn-disconnect").addEventListener("click", () => device.disconnect());
   $("btn-refresh").addEventListener("click", refreshBalances);
   $("btn-copy").addEventListener("click", () => navigator.clipboard?.writeText(state.info?.pubkey || ""));
+  $("btn-receive").addEventListener("click", () => {
+    const panel = $("receive");
+    const open = panel.classList.toggle("hidden") === false;
+    // Plain address (not a solana: URI) — every wallet app scans it.
+    if (open && state.info?.pubkey) $("qr").innerHTML = qrSvg(state.info.pubkey);
+  });
+  $("btn-show-device").addEventListener("click", async () => {
+    try {
+      await device.showAddress();
+      log("— Fuchey is showing its Receive QR");
+    } catch (e) {
+      showResult(false, `Could not show the address on Fuchey: ${describe(e)}`);
+    }
+  });
   $("send-form").addEventListener("submit", onSend);
   $("btn-cancel").addEventListener("click", async () => {
     $("modal-status").textContent = "Cancelling…";

@@ -52,6 +52,9 @@ button.small { padding: 5px 10px; font-size: 13px; }
 
 .addr-row { display: flex; gap: 10px; align-items: center; }
 .addr-row code { overflow-wrap: anywhere; font-size: 13px; }
+.receive-actions { margin-top: 12px; flex-wrap: wrap; }
+.receive { display: grid; justify-items: center; gap: 8px; margin-top: 12px; text-align: center; }
+.qr svg { display: block; width: min(240px, 70vw); height: auto; border-radius: 8px; }
 .balances { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0 8px; }
 .bal { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 4px; }
 .bal .label { color: var(--muted); font-size: 12px; }

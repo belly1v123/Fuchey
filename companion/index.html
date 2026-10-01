@@ -42,6 +42,15 @@
         <div class="bal"><span class="label">SOL</span><span id="bal-sol">—</span></div>
         <div class="bal"><span class="label">USDC</span><span id="bal-usdc">—</span></div>
       </div>
+      <div class="row receive-actions">
+        <button id="btn-receive" class="ghost small">Receive (QR)</button>
+        <button id="btn-show-device" class="ghost small hidden">Show on Fuchey</button>
+      </div>
+      <div id="receive" class="receive hidden">
+        <div id="qr" class="qr"></div>
+        <p class="muted small">Scan to send to this Fuchey. Check the address on Fuchey's own
+          Receive QR screen before sharing it — the device is the source of truth.</p>
+      </div>
       <p class="muted small" id="device-info"></p>
     </section>
 

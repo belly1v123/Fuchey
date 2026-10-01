@@ -47,6 +47,7 @@ enum class EventType : uint32_t {
     UI_BUTTON_LONG_PRESS = 0x0052,
     UI_IDLE_TICK         = 0x0053,
     UI_SCREEN_CHANGE     = 0x0054,
+    UI_SHOW_ADDRESS      = 0x0055,  // Companion app: open the Receive QR screen
 
     // System
     SYSTEM_BOOT_DONE     = 0x0060,
@@ -69,6 +70,10 @@ struct TxSummary {
     char        amount[24];     // Exact decimal amount, e.g. "0.25"
     char        fee[16];        // Network fee in SOL, e.g. "0.000005"
     char        recipient[48];  // Base58 destination (wallet or token account)
+    // USDC to a recipient without a USDC account: the transaction also opens
+    // one (this wallet pays the rent). `recipient` is then the owner wallet.
+    bool        creates_account;
+    char        rent[16];       // Rent in SOL, e.g. "0.00203928"
     // Display-only USD values (micro-dollars). Not part of what is signed.
     uint64_t    usd_micro;      // Transfer value, 0 = unknown
     uint64_t    fee_usd_micro;  // Network fee value, 0 = unknown

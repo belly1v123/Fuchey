@@ -20,6 +20,8 @@
 //            → event "awaiting_confirmation" {asset, amount, fee, to}
 //            → {"ok":true,"sig":"<base64 64-byte signature>"}
 //   cancel                        → withdraws the pending sign_tx
+//   show_address                  → opens the Receive QR screen (read-only)
+// hello also returns caps=[...] naming optional features.
 //
 // The app can never approve: signing always goes through
 // WalletManager::sign_transaction() (parse → TFT → physical B1).
@@ -71,6 +73,7 @@ private:
     void cmd_get_pubkey(uint32_t id);
     void cmd_sign_tx(uint32_t id, cJSON* req);
     void cmd_cancel(uint32_t id);
+    void cmd_show_address(uint32_t id);
 
     static void sign_worker(void* arg);
     void run_sign(SignJob& job);

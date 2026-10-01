@@ -263,11 +263,23 @@ void UIManager::process_event(const Events::Event& evt) {
             m_confirm.amount[sizeof(m_confirm.amount) - 1] = '\0';
             m_confirm.fee[sizeof(m_confirm.fee) - 1] = '\0';
             m_confirm.recipient[sizeof(m_confirm.recipient) - 1] = '\0';
+            m_confirm.rent[sizeof(m_confirm.rent) - 1] = '\0';
             m_tx_pending_accept = false;
             m_tx_press_start_ms = 0;
             ESP_LOGI(TAG, "Confirm request #%lu received — showing confirmation",
                      static_cast<unsigned long>(m_confirm.request_id));
             set_screen(UIScreen::TX_CONFIRM);
+            break;
+
+        case Events::EventType::UI_SHOW_ADDRESS:
+            // Companion app "Show on Fuchey": read-only, never interrupts a
+            // pending confirmation or the first-boot setup.
+            if (m_setup_stage == SetupStage::DONE && !m_wallet_address.empty() &&
+                m_current_screen != UIScreen::TX_CONFIRM) {
+                ESP_LOGI(TAG, "Screen: WALLET_QR (companion show_address)");
+                m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                set_screen(UIScreen::WALLET_QR);
+            }
             break;
 
         case Events::EventType::TX_REJECTED:
@@ -1123,7 +1135,9 @@ void UIManager::render_tx_confirm() {
     }
 
     const bool token = strcmp(m_confirm.asset, "SOL") != 0;
-    m_display.draw_text_centered(96, token ? "TO TOKEN ACCOUNT" : "TO",
+    m_display.draw_text_centered(96, !token ? "TO"
+                                     : m_confirm.creates_account ? "TO WALLET"
+                                                                 : "TO TOKEN ACCOUNT",
                                  Display::FontSize::SMALL, TFT_GRAY);
     draw_address_rows(m_display, 108, m_confirm.recipient, TFT_CYAN);
 
@@ -1147,6 +1161,12 @@ void UIManager::render_tx_confirm() {
     } else {
         m_display.draw_text_centered(184, "SOL price unavailable", Display::FontSize::SMALL,
                                      Colors::YELLOW);
+    }
+
+    if (m_confirm.creates_account) {
+        // Extra cost beyond the fee: rent for the recipient's new USDC account.
+        snprintf(buf, sizeof(buf), "+ new USDC acct %s SOL", m_confirm.rent);
+        m_display.draw_text_centered(199, buf, Display::FontSize::SMALL, Colors::YELLOW);
     }
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
