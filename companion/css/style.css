@@ -36,6 +36,7 @@ main { max-width: 640px; margin: 24px auto; padding: 0 16px; display: grid; gap:
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .error { color: var(--danger); }
+.note { color: var(--warn); margin: 0; }
 
 button {
   font: inherit; border-radius: 8px; padding: 9px 16px; cursor: pointer;
