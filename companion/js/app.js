@@ -145,6 +145,12 @@ async function refreshBalances() {
 }
 
 // ── send ──────────────────────────────────────────────────
+function sendNote(msg) {
+  const el = $("send-note");
+  el.textContent = msg;
+  el.classList.toggle("hidden", !msg);
+}
+
 function sendError(msg) {
   const el = $("send-error");
   el.textContent = msg;
@@ -155,6 +161,7 @@ async function onSend(ev) {
   ev.preventDefault();
   if (state.sending) return;
   sendError("");
+  sendNote("");
   $("result").classList.add("hidden");
 
   const asset = $("asset").value;
@@ -236,6 +243,8 @@ Is this amount correct? (Check for an extra zero.)`,
         const ata = await findAssociatedTokenAddress(to, mint);
         log(`— recipient has no USDC account; creating ${ata}`);
         createsAccount = true;   // the device shows the recipient wallet
+        sendNote(`This recipient has no USDC account yet. This send also opens one for them — ` +
+                 `you pay ${formatUnits(TOKEN_ACCOUNT_RENT_LAMPORTS, 9)} SOL rent, once.`);
         message = buildTokenTransferCheckedWithCreate({
           owner: from, source: src.address, recipient: to, ata, mint,
           amount, decimals: USDC_DECIMALS, blockhash,
@@ -267,9 +276,12 @@ Is this amount correct? (Check for an extra zero.)`,
     const txSig = await r.sendTransaction(assembleTransaction(signature, message));
     log(`— sent: ${txSig}`);
     closeModal();
-    showResult(true, `Sent ${formatUnits(amount, decimals)} ${asset}. Waiting for confirmation…`, txSig);
+    const opened = createsAccount
+      ? ` and opened the recipient's USDC account (${formatUnits(TOKEN_ACCOUNT_RENT_LAMPORTS, 9)} SOL rent)`
+      : "";
+    showResult(true, `Sent ${formatUnits(amount, decimals)} ${asset}${opened}. Waiting for confirmation…`, txSig);
     await r.confirm(txSig);
-    showResult(true, `Confirmed: ${formatUnits(amount, decimals)} ${asset} sent.`, txSig);
+    showResult(true, `Confirmed: ${formatUnits(amount, decimals)} ${asset} sent${opened}.`, txSig);
     $("amount").value = "";
     refreshBalances();
   } catch (e) {
