@@ -304,7 +304,7 @@ void UIManager::process_event(const Events::Event& evt) {
             // pending confirmation or the first-boot setup. UsbProtocol has
             // already checked a wallet exists; render_wallet_qr() loads the
             // address itself (the cache is empty after a normal boot).
-            if (m_setup_stage == SetupStage::DONE &&
+            if (!m_setup_needed &&
                 m_current_screen != UIScreen::TX_CONFIRM) {
                 ESP_LOGI(TAG, "Screen: WALLET_QR (companion show_address)");
                 m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -656,6 +656,10 @@ void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing, bool lo
     m_wallet_missing   = wallet_missing;
     m_location_missing = location_missing;
     m_setup_needed     = wifi_missing || wallet_missing || location_missing;
+    if (!m_setup_needed) {
+        m_setup_stage = SetupStage::DONE;   // fully set up at boot
+        return;
+    }
     advance_setup();
 }
 
