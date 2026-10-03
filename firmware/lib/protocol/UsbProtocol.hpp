@@ -54,7 +54,7 @@
 #include "../wallet_manager/WalletManager.hpp"
 #include "../price/PriceService.hpp"
 #include "DeviceSettings.hpp"
-#include "../wallet/RecoverySession.hpp"
+#include "../wallet/RecoveryController.hpp"
 #include "../wallet/WalletCreateSession.hpp"
 #include <atomic>
 #include <cstdint>
@@ -83,6 +83,7 @@ public:
 
     // Shared with the UI (which draws the words and handles B1/B3/B4).
     void set_create_session(WalletCreateSession* s) { m_create = s; }
+    void set_recovery(RecoveryController* r) { m_rc = r; }
 
     static uint32_t crc32(const uint8_t* data, size_t len);
 
@@ -98,8 +99,7 @@ private:
     PriceService&     m_price;
     IsMainnetFn       m_is_mainnet;
     DeviceSettings*   m_settings;
-    RecoverySession   m_recovery;
-    bool              m_recovery_restore{false};
+    RecoveryController* m_rc{nullptr};
     bool              m_recovery_active{false};
     WalletCreateSession* m_create{nullptr};
     bool              m_create_active{false};
@@ -117,7 +117,7 @@ private:
     void cmd_recovery_start(uint32_t id, cJSON* req);
     void cmd_recovery_tap(uint32_t id, cJSON* req);
     void cmd_recovery_cancel(uint32_t id);
-    void recovery_post_view(Events::RecoveryResult result);
+    void recovery_post_view();
     void recovery_reply_progress(uint32_t id);
     void recovery_end();
     void cleanup_finished_sessions();

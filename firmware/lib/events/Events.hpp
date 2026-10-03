@@ -49,7 +49,7 @@ enum class EventType : uint32_t {
     UI_IDLE_TICK         = 0x0053,
     UI_SCREEN_CHANGE     = 0x0054,
     UI_SHOW_ADDRESS      = 0x0055,  // Companion app: open the Receive QR screen
-    UI_RECOVERY_VIEW     = 0x0056,  // Scrambled-grid recovery: what to draw
+    UI_RECOVERY_VIEW     = 0x0056,  // Recovery state changed (UI reads RecoveryController)
     UI_WALLET_CREATE     = 0x0057,  // Create-wallet session changed (redraw / open)
 
     // System
@@ -84,22 +84,6 @@ struct TxSummary {
     bool        price_live;     // true = fetched just before this request
 };
 
-// Scrambled-grid recovery screen state (device screen ONLY — the
-// labels are never sent to the host).
-enum class RecoveryResult : uint8_t {
-    NONE = 0, MATCH, MISMATCH, BAD_CHECKSUM, RESTORED, FAILED, CANCELLED,
-};
-struct RecoveryView {
-    bool           active;
-    bool           restore;      // false = "check my words"
-    bool           words_mode;   // grid shows words instead of letter groups
-    uint8_t        word;         // 1-based word being entered
-    uint8_t        total;        // 12 or 24
-    RecoveryResult result;
-    char           typed[28];    // keypad groups typed so far, e.g. "abc-mno"
-    char           cells[9][12]; // grid labels ("" = empty cell)
-};
-
 // ─── Generic Event Payload ────────────────────────────────
 // Keep small to fit comfortably in queues without heap allocation
 struct Event {
@@ -111,9 +95,6 @@ struct Event {
             uint16_t tx_len;
             uint64_t amount_cents;   // Amount in cents (USD)
         } tx;
-
-        // UI_RECOVERY_VIEW
-        RecoveryView recovery;
 
         // TX_REQUEST (to UI); request_id is also used by TX_APPROVED /
         // TX_REJECTED (data.u32) on g_tx_confirm_queue and g_ui_queue.
@@ -160,10 +141,6 @@ extern QueueHandle_t g_ui_queue;       // Event → UIManager
 extern QueueHandle_t g_button_queue;   // ButtonDriver → consumers
 // UI → WalletManager: TX_APPROVED / TX_REJECTED for the pending request is
 // declared as Fuchey::g_tx_confirm_queue below (defined in main.cpp).
-
-// Set by the UI when the user presses B1 on the recovery screen (or it
-// times out); UsbProtocol ends the session on the next command.
-extern std::atomic<bool> g_recovery_abort;
 
 // ─── Event Group Bits ─────────────────────────────────────
 // Global event group for fast cross-task signaling

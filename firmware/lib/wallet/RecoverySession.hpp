@@ -60,6 +60,11 @@ public:
     // The phrase, space-separated. Caller must wipe its copy.
     std::string phrase() const;
 
+    // On-device display only.
+    int         entered_count() const { return static_cast<int>(m_words.size()); }
+    std::string entered_word(int i) const;
+    std::string last_word() const;
+
 private:
     WordFn   m_word_at;
     int      m_count;

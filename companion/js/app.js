@@ -48,6 +48,7 @@ const DEVICE_ERRORS = {
   scan_failed: "Fuchey's WiFi radio is busy (probably still connecting). Try the scan again in a few seconds.",
   wallet_exists: "This Fuchey already has a wallet, so Restore is off (it never overwrites one). Use \"Check my words\" instead.",
   no_session: "The recovery session ended on Fuchey. Start again.",
+  not_ready: "Too quick — Fuchey's screen hadn't changed yet. Look at the new grid and click again.",
   failed: "Fuchey could not apply that setting.",
   no_reply: "Fuchey did not answer. It may still be starting up — wait for its home screen and press Connect again. If it keeps happening, update the firmware.",
 };
@@ -213,7 +214,7 @@ async function recStart(purpose) {
 const REC_RESULT = {
   match: ["Your words match this Fuchey's wallet. Your backup is good.", true],
   mismatch: ["Those words belong to a DIFFERENT wallet than this Fuchey's. Check your backup.", false],
-  bad_checksum: ["That's not a valid recovery phrase (checksum failed) — a word is probably wrong. Start again.", false],
+  bad_checksum: ["Not a valid recovery phrase — at least one word differs from your paper. Fuchey's screen now lists the words it recorded (only there): compare them with your paper, press B1 on Fuchey to close, then start again.", false],
   restored: ["Wallet restored on Fuchey.", true],
   failed: ["Fuchey couldn't finish. Nothing was changed.", false],
 };
@@ -224,6 +225,7 @@ async function recTap(pos) {
   rec.busy = true;
   try {
     const r = await device.recoveryTap(pos);
+    setMsg("rec-msg", "");
     if (!r.done) { recProgress(r); return; }
     recShow(false);
     const [text, ok] = REC_RESULT[r.result] || [`Finished: ${r.result}`, false];
@@ -235,6 +237,10 @@ async function recTap(pos) {
       refreshBalances();
     }
   } catch (e) {
+    if (e instanceof DeviceError && e.code === "not_ready") {
+      setMsg("rec-msg", describe(e));   // click ignored; the session continues
+      return;
+    }
     recShow(false);
     setMsg("rec-msg", describe(e));
   } finally {

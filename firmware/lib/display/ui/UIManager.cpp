@@ -272,13 +272,17 @@ void UIManager::process_event(const Events::Event& evt) {
             break;
 
         case Events::EventType::UI_RECOVERY_VIEW:
-            m_recovery = evt.data.recovery;
-            m_recovery_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            if (m_current_screen != UIScreen::TX_CONFIRM &&
-                (m_recovery.active || m_recovery.result != Events::RecoveryResult::NONE)) {
-                if (m_current_screen != UIScreen::RECOVERY) set_screen(UIScreen::RECOVERY);
-            } else if (m_current_screen == UIScreen::RECOVERY) {
-                set_screen(UIScreen::HOME);
+            if (m_rc) {
+                const auto v = m_rc->view(false);
+                if (v.result != RecoveryController::Result::NONE) {
+                    m_recovery_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                }
+                if (m_current_screen != UIScreen::TX_CONFIRM &&
+                    (v.active || v.result != RecoveryController::Result::NONE)) {
+                    if (m_current_screen != UIScreen::RECOVERY) set_screen(UIScreen::RECOVERY);
+                } else if (m_current_screen == UIScreen::RECOVERY) {
+                    set_screen(UIScreen::HOME);
+                }
             }
             break;
 
@@ -769,6 +773,8 @@ void UIManager::render() {
     }
 
     m_display.flush();
+    // The recovery grid is now physically on screen: taps may refer to it.
+    if (m_current_screen == UIScreen::RECOVERY && m_rc) m_rc->mark_rendered(m_recovery_drawn);
 }
 
 // ─── Idle screens ─────────────────────────────────────────
@@ -1182,21 +1188,37 @@ void UIManager::render_tx_confirm() {
 // Only this screen knows what each cell means; the app shows 9 blank
 // buttons and sends the position the user clicked.
 void UIManager::render_recovery() {
-    const auto& r = m_recovery;
-    char buf[40];
+    if (!m_rc) return;
+    using R = RecoveryController::Result;
+    const auto r = m_rc->view(true);
+    m_recovery_drawn = r.layout;
+    char buf[48];
     m_display.draw_text_centered(6, r.restore ? "RESTORE WALLET" : "CHECK WORDS",
                                  Display::FontSize::MEDIUM, TFT_ORANGE);
 
-    if (r.result != Events::RecoveryResult::NONE) {
+    if (r.result == R::BAD_CHECKSUM) {
+        // Review: what Fuchey recorded (device screen only) vs your paper.
+        m_display.draw_text_centered(28, "Invalid phrase - compare:", Display::FontSize::SMALL, Colors::RED);
+        const int rows = (r.review_count + 1) / 2;
+        const int dy = rows > 6 ? 14 : 20;
+        for (int i = 0; i < r.review_count; ++i) {
+            const int col = i / rows, row = i % rows;
+            snprintf(buf, sizeof(buf), "%2d.%s", i + 1, r.review[i]);
+            m_display.draw_text(16 + col * 116, 50 + row * dy, buf,
+                                Display::FontSize::SMALL, Colors::WHITE);
+        }
+        m_display.draw_text_centered(229, "B1: close (words are erased)", Display::FontSize::SMALL, TFT_GRAY);
+        return;
+    }
+    if (r.result != R::NONE) {
         const char* l1 = "Failed";
         const char* l2 = "";
         Color c = Colors::RED;
         switch (r.result) {
-            case Events::RecoveryResult::MATCH:        l1 = "Words MATCH";    l2 = "your wallet";        c = Colors::GREEN; break;
-            case Events::RecoveryResult::MISMATCH:     l1 = "NO MATCH";       l2 = "different wallet";   break;
-            case Events::RecoveryResult::BAD_CHECKSUM: l1 = "Invalid phrase"; l2 = "check the words";    break;
-            case Events::RecoveryResult::RESTORED:     l1 = "Wallet restored"; c = Colors::GREEN;        break;
-            case Events::RecoveryResult::CANCELLED:    l1 = "Cancelled";      c = TFT_GRAY;              break;
+            case R::MATCH:     l1 = "Words MATCH";     l2 = "your wallet";      c = Colors::GREEN; break;
+            case R::MISMATCH:  l1 = "NO MATCH";        l2 = "different wallet"; break;
+            case R::RESTORED:  l1 = "Wallet restored"; c = Colors::GREEN;       break;
+            case R::CANCELLED: l1 = "Cancelled";       c = TFT_GRAY;            break;
             default: break;
         }
         m_display.draw_text_centered(100, l1, Display::FontSize::MEDIUM, c);
@@ -1204,8 +1226,13 @@ void UIManager::render_recovery() {
         return;
     }
 
-    snprintf(buf, sizeof(buf), "Word %u of %u", static_cast<unsigned>(r.word),
-             static_cast<unsigned>(r.total));
+    if (r.prev[0]) {
+        snprintf(buf, sizeof(buf), "Word %u of %u   prev: %s", static_cast<unsigned>(r.word),
+                 static_cast<unsigned>(r.total), r.prev);
+    } else {
+        snprintf(buf, sizeof(buf), "Word %u of %u", static_cast<unsigned>(r.word),
+                 static_cast<unsigned>(r.total));
+    }
     m_display.draw_text_centered(28, buf, Display::FontSize::SMALL, Colors::WHITE);
     snprintf(buf, sizeof(buf), "%s", r.typed[0] ? r.typed : (r.words_mode ? "" : "pick 1st letter"));
     m_display.draw_text_centered(42, buf, Display::FontSize::SMALL, TFT_CYAN);
@@ -2102,11 +2129,13 @@ void UIManager::run() {
                     request_redraw();
                 }
             } else if (m_current_screen == UIScreen::RECOVERY) {
-                // B1 abandons recovery (wipes it on the next app command).
-                if (btn.id == ButtonId::B1_TX_BACK && btn.event == ButtonEvent::PRESS) {
-                    ESP_LOGI(TAG, "[Recovery] cancelled on device");
-                    Events::g_recovery_abort.store(true);
-                    m_recovery = Events::RecoveryView{};
+                // B1: cancel an entry in progress, or close the result/review.
+                if (btn.id == ButtonId::B1_TX_BACK && btn.event == ButtonEvent::PRESS && m_rc) {
+                    if (m_rc->active()) {
+                        ESP_LOGI(TAG, "[Recovery] cancelled on device");
+                        m_rc->cancel();
+                    }
+                    m_rc->dismiss();
                     set_screen(UIScreen::HOME);
                 }
             } else if (btn.id == ButtonId::B1_TX_BACK) {
@@ -2239,14 +2268,20 @@ void UIManager::run() {
                 m_create->cancel();
                 set_screen(UIScreen::HOME);
             }
-        } else if (m_current_screen == UIScreen::RECOVERY) {
-            // Result stays 5 s; an abandoned session (page closed) ends after
-            // 3 min without a tap.
+        } else if (m_current_screen == UIScreen::RECOVERY && m_rc) {
+            // Result 5 s (a bad-phrase review 60 s, or until B1); an abandoned
+            // entry (page closed) ends after 3 min without a tap.
             const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-            const bool showing_result = m_recovery.result != Events::RecoveryResult::NONE;
-            if (now - m_recovery_ms >= (showing_result ? 5000u : 180000u)) {
-                if (!showing_result) Events::g_recovery_abort.store(true);
-                m_recovery = Events::RecoveryView{};
+            const auto v = m_rc->view(false);
+            if (v.result != RecoveryController::Result::NONE) {
+                const uint32_t keep = v.result == RecoveryController::Result::BAD_CHECKSUM ? 60000u : 5000u;
+                if (now - m_recovery_ms >= keep) {
+                    m_rc->dismiss();
+                    set_screen(UIScreen::HOME);
+                }
+            } else if (!v.active || now - m_rc->last_activity_ms() >= 180000u) {
+                m_rc->cancel();
+                m_rc->dismiss();
                 set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::IDLE_PRICE) {
@@ -2294,6 +2329,11 @@ void UIManager::run() {
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
+            need_render = true;
+        } else if (m_current_screen == UIScreen::RECOVERY && m_rc &&
+                   m_rc->view(false).layout != m_recovery_drawn) {
+            // Self-heal: never leave an outdated grid on screen (taps on it
+            // would be rejected as stale), even if a notification was lost.
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::BALANCE_VIEW &&
                    !m_bal_fetched) {
