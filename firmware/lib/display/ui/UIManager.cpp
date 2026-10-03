@@ -271,6 +271,17 @@ void UIManager::process_event(const Events::Event& evt) {
             set_screen(UIScreen::TX_CONFIRM);
             break;
 
+        case Events::EventType::UI_RECOVERY_VIEW:
+            m_recovery = evt.data.recovery;
+            m_recovery_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (m_current_screen != UIScreen::TX_CONFIRM &&
+                (m_recovery.active || m_recovery.result != Events::RecoveryResult::NONE)) {
+                if (m_current_screen != UIScreen::RECOVERY) set_screen(UIScreen::RECOVERY);
+            } else if (m_current_screen == UIScreen::RECOVERY) {
+                set_screen(UIScreen::HOME);
+            }
+            break;
+
         case Events::EventType::UI_SHOW_ADDRESS:
             // Companion app "Show on Fuchey": read-only, never interrupts a
             // pending confirmation or the first-boot setup. UsbProtocol has
@@ -740,7 +751,9 @@ void UIManager::render() {
 
     // A pending signature/export confirmation always wins over the setup
     // wizard: B1 must never approve something that is not on screen.
-    if (m_setup_needed && m_current_screen != UIScreen::TX_CONFIRM) {
+    // (Recovery is also drawn over it: restoring a wallet IS a setup step.)
+    if (m_setup_needed && m_current_screen != UIScreen::TX_CONFIRM &&
+        m_current_screen != UIScreen::RECOVERY) {
         render_setup();
         m_display.flush();
         return;
@@ -754,6 +767,7 @@ void UIManager::render() {
         case UIScreen::MENU_MAIN:    render_menu();        break;
         case UIScreen::WALLET_INFO:  render_wallet_info(); break;
         case UIScreen::WALLET_QR:    render_wallet_qr();   break;
+        case UIScreen::RECOVERY:     render_recovery();    break;
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::TX_SUCCESS:
         case UIScreen::TX_FAIL:      render_tx_result();   break;
@@ -1173,6 +1187,58 @@ void UIManager::render_tx_confirm() {
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
     m_display.draw_text_centered(222, "B1 tap:SIGN  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// ─── Scrambled-grid recovery screen ───────────────────────
+// Only this screen knows what each cell means; the app shows 9 blank
+// buttons and sends the position the user clicked.
+void UIManager::render_recovery() {
+    const auto& r = m_recovery;
+    char buf[40];
+    m_display.draw_text_centered(6, r.restore ? "RESTORE WALLET" : "CHECK WORDS",
+                                 Display::FontSize::MEDIUM, TFT_ORANGE);
+
+    if (r.result != Events::RecoveryResult::NONE) {
+        const char* l1 = "Failed";
+        const char* l2 = "";
+        Color c = Colors::RED;
+        switch (r.result) {
+            case Events::RecoveryResult::MATCH:        l1 = "Words MATCH";    l2 = "your wallet";        c = Colors::GREEN; break;
+            case Events::RecoveryResult::MISMATCH:     l1 = "NO MATCH";       l2 = "different wallet";   break;
+            case Events::RecoveryResult::BAD_CHECKSUM: l1 = "Invalid phrase"; l2 = "check the words";    break;
+            case Events::RecoveryResult::RESTORED:     l1 = "Wallet restored"; c = Colors::GREEN;        break;
+            case Events::RecoveryResult::CANCELLED:    l1 = "Cancelled";      c = TFT_GRAY;              break;
+            default: break;
+        }
+        m_display.draw_text_centered(100, l1, Display::FontSize::MEDIUM, c);
+        m_display.draw_text_centered(128, l2, Display::FontSize::SMALL, TFT_SILVER);
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "Word %u of %u", static_cast<unsigned>(r.word),
+             static_cast<unsigned>(r.total));
+    m_display.draw_text_centered(28, buf, Display::FontSize::SMALL, Colors::WHITE);
+    snprintf(buf, sizeof(buf), "%s", r.typed[0] ? r.typed : (r.words_mode ? "" : "pick 1st letter"));
+    m_display.draw_text_centered(42, buf, Display::FontSize::SMALL, TFT_CYAN);
+
+    // 3x3 grid, cells 78x56 from y=58; B1 hint at the bottom.
+    static constexpr int kX0 = 3, kY0 = 58, kW = 78, kH = 56;
+    for (int i = 0; i < 9; ++i) {
+        const int x = kX0 + (i % 3) * kW, y = kY0 + (i / 3) * kH;
+        m_display.draw_rect(x, y, kW - 2, kH - 2, TFT_GRAY);
+        const char* label = r.cells[i];
+        if (!label[0]) continue;
+        const bool back = strcmp(label, "<-") == 0;
+        const size_t n = strlen(label);
+        const Display::FontSize fs = (n <= 4 && !back) ? Display::FontSize::MEDIUM
+                                                       : Display::FontSize::SMALL;
+        const int cw = (fs == Display::FontSize::MEDIUM) ? 12 : 6;   // 5x7 font, scaled
+        const int tx = x + (kW - 2 - static_cast<int>(n) * cw) / 2;
+        const int ty = y + (kH - 2) / 2 - (fs == Display::FontSize::MEDIUM ? 7 : 4);
+        m_display.draw_text(tx, ty, label, fs, back ? Colors::YELLOW : Colors::WHITE);
+    }
+    m_display.draw_text_centered(229, "Click same spot in app  B1:cancel",
+                                 Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_export_confirm() {
@@ -1955,6 +2021,14 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::HID_REMOTE) {
                 // HID remote owns all four buttons while open.
                 handle_hid_button(btn);
+            } else if (m_current_screen == UIScreen::RECOVERY) {
+                // B1 abandons recovery (wipes it on the next app command).
+                if (btn.id == ButtonId::B1_TX_BACK && btn.event == ButtonEvent::PRESS) {
+                    ESP_LOGI(TAG, "[Recovery] cancelled on device");
+                    Events::g_recovery_abort.store(true);
+                    m_recovery = Events::RecoveryView{};
+                    set_screen(UIScreen::HOME);
+                }
             } else if (btn.id == ButtonId::B1_TX_BACK) {
                 // ── B1 = hierarchical Back everywhere else ─────
                 if (btn.event == ButtonEvent::PRESS) go_back();
@@ -2073,6 +2147,16 @@ void UIManager::run() {
             if (now - m_bal_fetch_start_ms >= 15000) {
                 ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> WALLET_INFO hub");
                 set_screen(UIScreen::WALLET_INFO);
+            }
+        } else if (m_current_screen == UIScreen::RECOVERY) {
+            // Result stays 5 s; an abandoned session (page closed) ends after
+            // 3 min without a tap.
+            const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            const bool showing_result = m_recovery.result != Events::RecoveryResult::NONE;
+            if (now - m_recovery_ms >= (showing_result ? 5000u : 180000u)) {
+                if (!showing_result) Events::g_recovery_abort.store(true);
+                m_recovery = Events::RecoveryView{};
+                set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::IDLE_PRICE) {
             // SOL Price now lives under the Wallet hub (not the idle cycle).

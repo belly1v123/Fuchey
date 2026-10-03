@@ -223,6 +223,21 @@ export class FucheyDevice extends EventTarget {
     return this.request("set_location", { city, lat, lon }, { timeoutMs: 5000 });
   }
 
+  // ── Scrambled-grid recovery (cap "recovery_grid") ──
+  // Only cell positions travel over USB; the letters/words are on Fuchey's screen.
+  recoveryStart(purpose, words) {
+    return this.request("recovery_start", { purpose, words }, { timeoutMs: 4000 });
+  }
+
+  recoveryTap(pos) {
+    // The last tap derives keys on the device (PBKDF2) — allow a few seconds.
+    return this.request("recovery_tap", { pos }, { timeoutMs: 15000 });
+  }
+
+  recoveryCancel() {
+    return this.request("recovery_cancel", {}, { timeoutMs: 3000 });
+  }
+
   /** Open the Receive QR screen on the device (firmware with caps "show_address"). */
   showAddress() {
     return this.request("show_address", {}, { timeoutMs: 3000 });

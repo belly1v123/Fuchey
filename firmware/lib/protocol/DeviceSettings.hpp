@@ -45,6 +45,8 @@ public:
     virtual bool set_wifi(const char* ssid, const char* password) = 0;
     // Saves the manual weather location and refreshes the weather.
     virtual bool set_location(const char* city, float lat, float lon) = 0;
+    // A wallet was restored on the device: update the wizard and services.
+    virtual void on_wallet_restored(const std::string& address) = 0;
 };
 
 } // namespace Fuchey

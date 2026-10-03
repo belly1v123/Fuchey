@@ -55,6 +55,7 @@ EventGroupHandle_t g_event_group = nullptr;
 
 namespace Fuchey {
 QueueHandle_t g_tx_confirm_queue = nullptr;
+namespace Events { std::atomic<bool> g_recovery_abort{false}; }
 }
 QueueHandle_t g_button_queue_ref = nullptr;
 
@@ -140,6 +141,16 @@ public:
             vTaskDelete(nullptr);
         }, "wx_now", 8192, nullptr, 3, nullptr);
         return true;
+    }
+
+    // Same follow-up as a successful console wallet_import.
+    void on_wallet_restored(const std::string& address) override {
+        ESP_LOGI(TAG, "[App] Wallet restored on device: %s", address.c_str());
+        Fuchey::Events::Event evt{};
+        evt.type = Fuchey::Events::EventType::WALLET_IMPORTED;
+        Fuchey::Events::post(Fuchey::Events::g_wallet_queue, evt);
+        s_ui.mark_wallet_configured(address.c_str());
+        s_balance_monitor.set_address(address);
     }
 };
 static AppDeviceSettings s_app_settings;

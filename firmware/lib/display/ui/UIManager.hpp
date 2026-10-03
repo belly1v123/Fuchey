@@ -38,6 +38,7 @@ enum class UIScreen {
     BADGE_VIEW,
     FAIR_PASS,
     HID_REMOTE,
+    RECOVERY,      // scrambled-grid phrase entry (driven by the companion app)
     HOME
 };
 
@@ -194,6 +195,10 @@ private:
     // Last home weather readout (change detection for pill updates).
     char        m_home_wbuf[16]{"-- C"};
     uint8_t     m_home_wcode{255};
+    // Scrambled-grid recovery (UI_RECOVERY_VIEW). Labels live only here.
+    Events::RecoveryView m_recovery{};
+    uint32_t    m_recovery_ms{0};     // last update (idle timeout / result timer)
+    void render_recovery();
 
     void render_clock();
     void render_weather();
