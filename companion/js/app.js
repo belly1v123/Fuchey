@@ -50,7 +50,7 @@ const DEVICE_ERRORS = {
   no_session: "The recovery session ended on Fuchey. Start again.",
   not_ready: "Too quick — Fuchey's screen hadn't changed yet. Look at the new grid and click again.",
   failed: "Fuchey could not apply that setting.",
-  no_reply: "Fuchey did not answer. It may still be starting up — wait for its home screen and press Connect again. If it keeps happening, update the firmware.",
+  no_reply: "Fuchey didn't answer. Unplug it, plug it back in, wait for the Yeti on its home screen, then press Connect again.",
 };
 
 // Errors from the browser (Web Serial) and the RPC, in plain words.
@@ -136,6 +136,7 @@ navigator.serial?.addEventListener("connect", () => {
 
 function renderConnected() {
   const { info, network } = state;
+  document.body.classList.remove("offline");
   $("intro").classList.add("hidden");
   $("btn-connect").classList.add("hidden");
   $("btn-disconnect").classList.remove("hidden");
@@ -184,6 +185,7 @@ function renderConnected() {
 }
 
 function renderDisconnected() {
+  document.body.classList.add("offline");
   $("intro").classList.remove("hidden");
   $("btn-connect").classList.remove("hidden");
   $("btn-disconnect").classList.add("hidden");
