@@ -205,6 +205,24 @@ export class FucheyDevice extends EventTarget {
     return base64ToBytes(res.sig);
   }
 
+  // ── Device settings (firmware cap "settings_v1") ──
+  getStatus() {
+    return this.request("get_status", {}, { timeoutMs: 3000 });
+  }
+
+  async wifiScan() {
+    return (await this.request("wifi_scan", {}, { timeoutMs: 12000 })).networks || [];
+  }
+
+  /** The password goes to the device only; it is never returned or stored here. */
+  setWifi(ssid, password) {
+    return this.request("set_wifi", { ssid, password }, { timeoutMs: 8000 });
+  }
+
+  setLocation(city, lat, lon) {
+    return this.request("set_location", { city, lat, lon }, { timeoutMs: 5000 });
+  }
+
   /** Open the Receive QR screen on the device (firmware with caps "show_address"). */
   showAddress() {
     return this.request("show_address", {}, { timeoutMs: 3000 });

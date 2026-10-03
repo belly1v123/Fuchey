@@ -45,6 +45,8 @@ const DEVICE_ERRORS = {
   unsupported_tx: "Fuchey refused this transaction shape.",
   no_wallet: "Fuchey has no wallet yet. Create or import one on the device console.",
   disconnected: "Fuchey was disconnected (unplugged or reset). Nothing was signed. Plug it in, wait for the home screen, then Connect.",
+  scan_failed: "Fuchey's WiFi radio is busy (probably still connecting). Try the scan again in a few seconds.",
+  failed: "Fuchey could not apply that setting.",
   no_reply: "Fuchey did not answer. It may still be starting up — wait for its home screen and press Connect again. If it keeps happening, update the firmware.",
 };
 
@@ -142,6 +144,9 @@ function renderConnected() {
   const canShow = info.has_wallet && Array.isArray(info.caps) && info.caps.includes("show_address");
   $("btn-receive").classList.toggle("hidden", !info.has_wallet);
   $("btn-show-device").classList.toggle("hidden", !canShow);
+  const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
+  $("setup").classList.toggle("hidden", !canSetup);
+  if (canSetup) refreshStatus();
   if (info.has_wallet) {
     $("address").textContent = info.pubkey;
     $("send").classList.remove("hidden");
@@ -159,6 +164,157 @@ function renderDisconnected() {
   $("mainnet-banner").classList.add("hidden");
   $("wallet").classList.add("hidden");
   $("send").classList.add("hidden");
+  $("setup").classList.add("hidden");
+}
+
+// ── device setup (WiFi + weather location) ────────────────
+function setMsg(id, text, ok = false) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = `small ${ok ? "ok-text" : "error"}`;
+  el.classList.toggle("hidden", !text);
+}
+
+async function refreshStatus() {
+  try {
+    const st = await device.getStatus();
+    const dl = $("setup-status");
+    dl.innerHTML = "";
+    const wifi = !st.wifi.configured ? "Not set up"
+      : st.wifi.online ? `Connected to "${st.wifi.ssid}"`
+      : st.wifi.connected ? `Joining "${st.wifi.ssid}"…`
+      : `Not connected ("${st.wifi.ssid}" saved)`;
+    const loc = st.location.configured
+      ? `${st.location.city} (${st.location.lat.toFixed(3)}, ${st.location.lon.toFixed(3)})`
+      : "Not set (using the default)";
+    for (const [k, v] of [["WiFi", wifi], ["Weather location", loc]]) {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    if (!$("wifi-ssid").value && st.wifi.ssid) $("wifi-ssid").value = st.wifi.ssid;
+    return st;
+  } catch (e) {
+    log(`status: ${describe(e)}`);
+    return null;
+  }
+}
+
+async function onScan() {
+  const btn = $("btn-scan");
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+  setMsg("wifi-msg", "");
+  try {
+    const nets = await device.wifiScan();
+    const sel = $("wifi-list");
+    sel.innerHTML = "";
+    const first = document.createElement("option");
+    first.textContent = nets.length ? `${nets.length} networks found — pick one` : "No networks found";
+    first.value = "";
+    sel.append(first);
+    for (const n of nets) {
+      const o = document.createElement("option");
+      const bars = n.rssi > -60 ? "▂▄▆" : n.rssi > -75 ? "▂▄" : "▂";
+      o.value = n.ssid;
+      o.textContent = `${n.ssid}  ${bars}${n.secure ? "" : "  (open — not supported)"}`;
+      o.disabled = !n.secure;
+      sel.append(o);
+    }
+    sel.classList.remove("hidden");
+  } catch (e) {
+    setMsg("wifi-msg", describe(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Scan networks";
+  }
+}
+
+async function onWifiSubmit(ev) {
+  ev.preventDefault();
+  const ssid = $("wifi-ssid").value;
+  const pass = $("wifi-pass").value;
+  const ssidBytes = new TextEncoder().encode(ssid).length;
+  if (ssidBytes < 1 || ssidBytes > 32) return setMsg("wifi-msg", "Network name must be 1–32 bytes.");
+  if (pass.length < 8 || pass.length > 63) return setMsg("wifi-msg", "WiFi password must be 8–63 characters (WPA2).");
+
+  const btn = $("btn-wifi");
+  btn.disabled = true;
+  try {
+    await device.setWifi(ssid, pass);
+    $("wifi-pass").value = "";   // don't keep the secret in the page
+    log(`— WiFi: sent "${ssid}" to Fuchey, waiting for it to join…`);
+    setMsg("wifi-msg", `Connecting to "${ssid}"…`, true);
+    // Poll until it has an IP (or give up after ~25 s).
+    for (let i = 0; i < 17; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const st = await refreshStatus();
+      if (st?.wifi.online && st.wifi.ssid === ssid) {
+        setMsg("wifi-msg", `Fuchey is online on "${ssid}".`, true);
+        return;
+      }
+    }
+    setMsg("wifi-msg", `Fuchey hasn't joined "${ssid}" yet. Check the password and that it's a 2.4 GHz WPA2 network, then try again.`);
+  } catch (e) {
+    setMsg("wifi-msg", describe(e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Fuchey's fonts are ASCII: "Chitwān" → "Chitwan".
+function asciiName(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E]/g, "").trim().slice(0, 31);
+}
+
+async function onLocSearch(ev) {
+  ev.preventDefault();
+  const q = $("loc-query").value.trim();
+  const box = $("loc-results");
+  box.innerHTML = "";
+  setMsg("loc-msg", "");
+  if (q.length < 2) return setMsg("loc-msg", "Type at least 2 letters of a city name.");
+  try {
+    // Open-Meteo geocoding (same provider the device uses for weather).
+    const url = `https://geocoding-api.open-meteo.com/v1/search?count=6&language=en&format=json&name=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Location search failed (HTTP ${res.status}).`);
+    const results = (await res.json()).results || [];
+    if (!results.length) return setMsg("loc-msg", `No places found for "${q}".`);
+    for (const r of results) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ghost";
+      b.textContent = [r.name, r.admin1, r.country].filter(Boolean).join(", ");
+      b.addEventListener("click", () => saveLocation(asciiName(r.name) || "Home", r.latitude, r.longitude));
+      box.append(b);
+    }
+  } catch (e) {
+    setMsg("loc-msg", describe(e));
+  }
+}
+
+function onLocHere() {
+  if (!navigator.geolocation) return setMsg("loc-msg", "This browser can't share its location.");
+  setMsg("loc-msg", "Asking the browser for this computer's location…", true);
+  navigator.geolocation.getCurrentPosition(
+    (pos) => saveLocation(asciiName($("loc-query").value) || "Home",
+                          pos.coords.latitude, pos.coords.longitude),
+    (err) => setMsg("loc-msg", err.code === 1 ? "Location permission was denied." : "Couldn't get this computer's location."),
+    { timeout: 15000, maximumAge: 600000 },
+  );
+}
+
+async function saveLocation(city, lat, lon) {
+  try {
+    await device.setLocation(city, Math.round(lat * 1e4) / 1e4, Math.round(lon * 1e4) / 1e4);
+    $("loc-results").innerHTML = "";
+    setMsg("loc-msg", `Saved: ${city}. Fuchey is fetching its weather now.`, true);
+    log(`— weather location set to ${city} (${lat}, ${lon})`);
+    refreshStatus();
+  } catch (e) {
+    setMsg("loc-msg", describe(e));
+  }
 }
 
 async function refreshBalances() {
@@ -421,6 +577,12 @@ function init() {
     }
   });
   $("send-form").addEventListener("submit", onSend);
+  $("btn-status").addEventListener("click", refreshStatus);
+  $("btn-scan").addEventListener("click", onScan);
+  $("wifi-list").addEventListener("change", (e) => { if (e.target.value) $("wifi-ssid").value = e.target.value; });
+  $("wifi-form").addEventListener("submit", onWifiSubmit);
+  $("loc-form").addEventListener("submit", onLocSearch);
+  $("btn-loc-here").addEventListener("click", onLocHere);
   $("btn-cancel").addEventListener("click", async () => {
     $("modal-status").textContent = "Cancelling…";
     try { await device.cancel(); } catch (e) { log(`cancel: ${describe(e)}`); }
