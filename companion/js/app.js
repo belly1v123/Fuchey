@@ -65,6 +65,9 @@ function describeBrowserError(err) {
   if (/failed to fetch|networkerror when attempting/i.test(msg)) {
     return "Can't reach the Solana RPC. Check your internet connection, or the RPC URL in Settings.";
   }
+  if (msg === "RPC_BLOCKED") {
+    return "This RPC endpoint refuses requests from a web page. Open Settings and set another RPC URL for this network (e.g. your own free Helius/QuickNode URL).";
+  }
   if (/RPC HTTP 429/.test(msg)) return "The public RPC is rate-limiting this page. Wait a minute, or set your own RPC URL in Settings.";
   if (/insufficient (lamports|funds)|no record of a prior credit/i.test(msg)) {
     return "Not enough SOL to cover this transfer and the network fee.";
