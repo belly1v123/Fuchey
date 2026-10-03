@@ -10,7 +10,10 @@ export const NETWORKS = {
     explorerSuffix: "?cluster=devnet",
   },
   mainnet: {
-    rpc: "https://api.mainnet-beta.solana.com",
+    // The official api.mainnet-beta endpoint answers 403 to browser requests
+    // (it allows only server-side calls), so the page defaults to a public
+    // RPC that accepts them. Set your own (e.g. a free Helius key) in Settings.
+    rpc: "https://solana-rpc.publicnode.com",
     usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     explorerSuffix: "",
   },
@@ -225,9 +228,15 @@ export class Rpc {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     });
+    let body = null;
+    try { body = await res.json(); } catch { /* not JSON */ }
+    const msg = body?.error?.message || "";
+    if (res.status === 403 || /access forbidden|personal token|request blocked/i.test(msg)) {
+      throw new Error("RPC_BLOCKED");
+    }
     if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-    const body = await res.json();
-    if (body.error) throw new Error(body.error.message || "RPC error");
+    if (!body) throw new Error("RPC returned an invalid response");
+    if (body.error) throw new Error(msg || "RPC error");
     return body.result;
   }
 
@@ -245,15 +254,30 @@ export class Rpc {
     return BigInt(await this.call("getMinimumBalanceForRentExemption", [size]));
   }
 
-  /** Largest-balance token account of `owner` for `mint` (same rule as the device). */
+  /**
+   * The owner's token account for `mint`: the standard associated token
+   * account (read with getAccountInfo — works on browser-friendly public
+   * RPCs that block "indexed" calls), else the largest other account via
+   * getTokenAccountsByOwner where the RPC allows it. null → none.
+   */
   async getTokenAccount(owner, mint) {
-    const r = await this.call("getTokenAccountsByOwner", [owner, { mint }, { encoding: "jsonParsed", commitment: "confirmed" }]);
-    let best = null;
-    for (const item of r.value) {
-      const amount = BigInt(item.account.data.parsed.info.tokenAmount.amount);
-      if (!best || amount > best.amount) best = { address: item.pubkey, amount };
+    const ata = await findAssociatedTokenAddress(owner, mint);
+    const acc = (await this.call("getAccountInfo", [ata, { encoding: "jsonParsed", commitment: "confirmed" }])).value;
+    const info = acc?.data?.parsed?.info;
+    if (info && info.mint === mint && info.owner === owner) {
+      return { address: ata, amount: BigInt(info.tokenAmount.amount) };
     }
-    return best;   // null → owner has no token account for this mint
+    try {
+      const r = await this.call("getTokenAccountsByOwner", [owner, { mint }, { encoding: "jsonParsed", commitment: "confirmed" }]);
+      let best = null;
+      for (const item of r.value) {
+        const amount = BigInt(item.account.data.parsed.info.tokenAmount.amount);
+        if (!best || amount > best.amount) best = { address: item.pubkey, amount };
+      }
+      return best;
+    } catch {
+      return null;   // RPC doesn't allow owner lookups; no standard account exists
+    }
   }
 
   async sendTransaction(wireBytes) {
