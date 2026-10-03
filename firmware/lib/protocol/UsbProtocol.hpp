@@ -26,6 +26,11 @@
 //   wifi_scan                     → networks [{ssid, rssi, secure}]
 //   set_wifi  ssid, password      → saves + connects (password write-only)
 //   set_location city, lat, lon   → saves the weather location
+//   recovery_start purpose ("check"|"restore"), words (12|24)
+//   recovery_tap pos (0..8)       → {word, total, mode} or {done, result[, address]}
+//   recovery_cancel
+//       Scrambled-grid phrase entry: the grid is drawn on the device only;
+//       the host sends positions and learns progress, never letters/words.
 // hello also returns caps=[...] naming optional features.
 //
 // Command tiers (see docs/ThreatModel.md):
@@ -43,6 +48,7 @@
 #include "../wallet_manager/WalletManager.hpp"
 #include "../price/PriceService.hpp"
 #include "DeviceSettings.hpp"
+#include "../wallet/RecoverySession.hpp"
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -82,6 +88,9 @@ private:
     PriceService&     m_price;
     IsMainnetFn       m_is_mainnet;
     DeviceSettings*   m_settings;
+    RecoverySession   m_recovery;
+    bool              m_recovery_restore{false};
+    bool              m_recovery_active{false};
     std::atomic<bool> m_busy{false};
 
     void cmd_hello(uint32_t id);
@@ -93,6 +102,12 @@ private:
     void cmd_wifi_scan(uint32_t id);
     void cmd_set_wifi(uint32_t id, cJSON* req);
     void cmd_set_location(uint32_t id, cJSON* req);
+    void cmd_recovery_start(uint32_t id, cJSON* req);
+    void cmd_recovery_tap(uint32_t id, cJSON* req);
+    void cmd_recovery_cancel(uint32_t id);
+    void recovery_post_view(Events::RecoveryResult result);
+    void recovery_reply_progress(uint32_t id);
+    void recovery_end();
 
     static void sign_worker(void* arg);
     void run_sign(SignJob& job);

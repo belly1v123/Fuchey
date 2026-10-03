@@ -46,6 +46,8 @@ const DEVICE_ERRORS = {
   no_wallet: "Fuchey has no wallet yet. Create or import one on the device console.",
   disconnected: "Fuchey was disconnected (unplugged or reset). Nothing was signed. Plug it in, wait for the home screen, then Connect.",
   scan_failed: "Fuchey's WiFi radio is busy (probably still connecting). Try the scan again in a few seconds.",
+  wallet_exists: "This Fuchey already has a wallet, so Restore is off (it never overwrites one). Use \"Check my words\" instead.",
+  no_session: "The recovery session ended on Fuchey. Start again.",
   failed: "Fuchey could not apply that setting.",
   no_reply: "Fuchey did not answer. It may still be starting up — wait for its home screen and press Connect again. If it keeps happening, update the firmware.",
 };
@@ -144,6 +146,11 @@ function renderConnected() {
   const canShow = info.has_wallet && Array.isArray(info.caps) && info.caps.includes("show_address");
   $("btn-receive").classList.toggle("hidden", !info.has_wallet);
   $("btn-show-device").classList.toggle("hidden", !canShow);
+  const canRecover = Array.isArray(info.caps) && info.caps.includes("recovery_grid");
+  $("recovery").classList.toggle("hidden", !canRecover);
+  $("btn-rec-check").classList.toggle("hidden", !info.has_wallet);
+  $("btn-rec-restore").classList.toggle("hidden", info.has_wallet);
+  recShow(false);
   const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
   $("setup").classList.toggle("hidden", !canSetup);
   if (canSetup) refreshStatus();
@@ -165,6 +172,91 @@ function renderDisconnected() {
   $("wallet").classList.add("hidden");
   $("send").classList.add("hidden");
   $("setup").classList.add("hidden");
+  $("recovery").classList.add("hidden");
+  rec.active = false;
+}
+
+// ── scrambled-grid recovery ───────────────────────────────
+const rec = { active: false, purpose: null, busy: false };
+
+function recShow(active) {
+  rec.active = active;
+  $("rec-idle").classList.toggle("hidden", active);
+  $("rec-active").classList.toggle("hidden", !active);
+}
+
+function recProgress(r) {
+  const what = r.mode === "words" ? "pick the word" : "pick the letter group";
+  $("rec-progress").textContent = `Word ${r.word} of ${r.total} — ${what}`;
+}
+
+async function recStart(purpose) {
+  setMsg("rec-msg", "");
+  try {
+    const r = await device.recoveryStart(purpose, Number($("rec-words").value));
+    rec.purpose = purpose;
+    recShow(true);
+    recProgress(r);
+    log(`— recovery (${purpose}) started on Fuchey`);
+  } catch (e) {
+    setMsg("rec-msg", describe(e));
+  }
+}
+
+const REC_RESULT = {
+  match: ["Your words match this Fuchey's wallet. Your backup is good.", true],
+  mismatch: ["Those words belong to a DIFFERENT wallet than this Fuchey's. Check your backup.", false],
+  bad_checksum: ["That's not a valid recovery phrase (checksum failed) — a word is probably wrong. Start again.", false],
+  restored: ["Wallet restored on Fuchey.", true],
+  failed: ["Fuchey couldn't finish. Nothing was changed.", false],
+};
+
+async function recTap(pos) {
+  if (!rec.active || rec.busy) return;
+  rec.busy = true;
+  try {
+    const r = await device.recoveryTap(pos);
+    if (!r.done) { recProgress(r); return; }
+    recShow(false);
+    const [text, ok] = REC_RESULT[r.result] || [`Finished: ${r.result}`, false];
+    setMsg("rec-msg", r.address ? `${text} Address: ${r.address}` : text, ok);
+    log(`— recovery finished: ${r.result}`);
+    if (r.result === "restored") {      // refresh wallet + buttons
+      state.info = await device.hello();
+      renderConnected();
+      refreshBalances();
+    }
+  } catch (e) {
+    recShow(false);
+    setMsg("rec-msg", describe(e));
+  } finally {
+    rec.busy = false;
+  }
+}
+
+async function recCancel() {
+  recShow(false);
+  try { await device.recoveryCancel(); } catch { /* already gone */ }
+  setMsg("rec-msg", "Cancelled. Nothing was changed.", true);
+}
+
+function buildRecGrid() {
+  const grid = $("rec-grid");
+  for (let i = 0; i < 9; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("aria-label", `Grid spot ${i + 1}`);
+    b.textContent = "•";
+    b.addEventListener("click", () => recTap(i));
+    grid.append(b);
+  }
+  // Number pad layout: 7 8 9 = top row, 1 2 3 = bottom row.
+  const KEY_TO_POS = { 7: 0, 8: 1, 9: 2, 4: 3, 5: 4, 6: 5, 1: 6, 2: 7, 3: 8 };
+  document.addEventListener("keydown", (e) => {
+    if (!rec.active || e.target.tagName === "INPUT") return;
+    const pos = KEY_TO_POS[e.key];
+    if (pos !== undefined) { e.preventDefault(); recTap(pos); }
+  });
 }
 
 // ── device setup (WiFi + weather location) ────────────────
@@ -583,6 +675,10 @@ function init() {
   $("wifi-form").addEventListener("submit", onWifiSubmit);
   $("loc-form").addEventListener("submit", onLocSearch);
   $("btn-loc-here").addEventListener("click", onLocHere);
+  buildRecGrid();
+  $("btn-rec-check").addEventListener("click", () => recStart("check"));
+  $("btn-rec-restore").addEventListener("click", () => recStart("restore"));
+  $("btn-rec-cancel").addEventListener("click", recCancel);
   $("btn-cancel").addEventListener("click", async () => {
     $("modal-status").textContent = "Cancelling…";
     try { await device.cancel(); } catch (e) { log(`cancel: ${describe(e)}`); }

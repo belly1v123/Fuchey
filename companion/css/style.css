@@ -61,6 +61,11 @@ button.small { padding: 5px 10px; font-size: 13px; }
 .status { margin: 4px 0 0; }
 .ok-text { color: var(--accent); }
 .results { display: grid; gap: 6px; margin-top: 8px; }
+.rec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px auto; max-width: 300px; }
+.rec-grid button { aspect-ratio: 4 / 3; font-size: 13px; color: var(--muted); background: var(--bg); }
+.rec-grid button:hover { border-color: var(--accent); }
+.rec-grid button:active { background: var(--line); }
+.rec-progress { font-weight: 600; margin: 0; }
 .results button { text-align: left; }
 .receive { display: grid; justify-items: center; gap: 8px; margin-top: 12px; text-align: center; }
 .qr svg { display: block; width: min(240px, 70vw); height: auto; border-radius: 8px; }
