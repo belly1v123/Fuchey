@@ -102,6 +102,28 @@
       <p id="loc-msg" class="small hidden"></p>
     </section>
 
+    <section id="recovery" class="card hidden">
+      <h2>Recovery words</h2>
+      <div id="rec-idle">
+        <p class="muted small">Enter your 12 or 24 words <b>without typing them here</b>: Fuchey shows a
+          shuffled grid, and you click the matching spot below. This page only learns which spot you
+          clicked — never the letters or words.</p>
+        <div class="row wrap">
+          <select id="rec-words"><option value="12">12 words</option><option value="24">24 words</option></select>
+          <button id="btn-rec-check" class="ghost">Check my words</button>
+          <button id="btn-rec-restore" class="ghost hidden">Restore wallet</button>
+        </div>
+      </div>
+      <div id="rec-active" class="hidden">
+        <p id="rec-progress" class="rec-progress"></p>
+        <p class="muted small">Look at Fuchey's screen, find your next letter group (or word), and click the
+          <b>same spot</b> here. Number keys work too: 7 8 9 / 4 5 6 / 1 2 3. The layout changes every click.</p>
+        <div id="rec-grid" class="rec-grid"></div>
+        <button id="btn-rec-cancel" class="ghost small">Cancel</button>
+      </div>
+      <p id="rec-msg" class="small hidden"></p>
+    </section>
+
     <section id="send" class="card hidden">
       <h2>Send</h2>
       <form id="send-form" autocomplete="off">

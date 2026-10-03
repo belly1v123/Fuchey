@@ -8,6 +8,8 @@
 #include "../crypto/Base58.hpp"
 #include "../crypto/Base64.hpp"
 #include "../wallet_manager/TxParser.hpp"
+#include "../crypto/BIP39.hpp"
+#include "esp_random.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -27,7 +29,9 @@ UsbProtocol::UsbProtocol(WalletCore& core, WalletManager& manager,
                          PriceService& price, IsMainnetFn is_mainnet,
                          DeviceSettings* settings)
     : m_core(core), m_manager(manager), m_price(price), m_is_mainnet(is_mainnet),
-      m_settings(settings) {}
+      m_settings(settings),
+      m_recovery([](int i) { return Crypto::BIP39::get_word(i); },
+                 Crypto::BIP39::WORDLIST_SIZE, [] { return esp_random(); }) {}
 
 // ─── CRC32 (IEEE 802.3 / zlib) ────────────────────────────
 uint32_t UsbProtocol::crc32(const uint8_t* data, size_t len) {
@@ -126,6 +130,12 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_set_wifi(id, req);
     } else if (m_settings && strcmp(cmd, "set_location") == 0) {
         cmd_set_location(id, req);
+    } else if (m_settings && strcmp(cmd, "recovery_start") == 0) {
+        cmd_recovery_start(id, req);
+    } else if (m_settings && strcmp(cmd, "recovery_tap") == 0) {
+        cmd_recovery_tap(id, req);
+    } else if (m_settings && strcmp(cmd, "recovery_cancel") == 0) {
+        cmd_recovery_cancel(id);
     } else {
         send_error(id, "unknown_cmd", cmd);
     }
@@ -149,7 +159,10 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     cJSON* caps = cJSON_AddArrayToObject(obj, "caps");
     cJSON_AddItemToArray(caps, cJSON_CreateString("show_address"));
     cJSON_AddItemToArray(caps, cJSON_CreateString("usdc_create_ata"));
-    if (m_settings) cJSON_AddItemToArray(caps, cJSON_CreateString("settings_v1"));
+    if (m_settings) {
+        cJSON_AddItemToArray(caps, cJSON_CreateString("settings_v1"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
+    }
     send(obj);
 }
 
@@ -278,6 +291,131 @@ void UsbProtocol::cmd_set_location(uint32_t id, cJSON* req) {
                                   static_cast<float>(lon->valuedouble))) {
         send_error(id, "failed", "could not save the location");
         return;
+    }
+    send(reply(id, true));
+}
+
+// ─── Scrambled-grid recovery ──────────────────────────────
+// The host only ever sends a cell position; the letters/words are drawn
+// on the TFT. Replies carry progress (word n of N, mode) and the result.
+void UsbProtocol::recovery_post_view(Events::RecoveryResult result) {
+    Events::Event evt{};
+    evt.type = Events::EventType::UI_RECOVERY_VIEW;
+    auto& v = evt.data.recovery;
+    v.active     = m_recovery.active() && result == Events::RecoveryResult::NONE;
+    v.restore    = m_recovery_restore;
+    v.words_mode = m_recovery.mode() == RecoverySession::Mode::WORDS;
+    v.word       = static_cast<uint8_t>(m_recovery.word_number());
+    v.total      = static_cast<uint8_t>(m_recovery.total());
+    v.result     = result;
+    snprintf(v.typed, sizeof(v.typed), "%s", m_recovery.typed_groups().c_str());
+    for (int i = 0; i < RecoverySession::CELLS; ++i) {
+        snprintf(v.cells[i], sizeof(v.cells[i]), "%s", m_recovery.cell_label(i).c_str());
+    }
+    Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50));
+}
+
+void UsbProtocol::recovery_reply_progress(uint32_t id) {
+    cJSON* obj = reply(id, true);
+    cJSON_AddBoolToObject(obj, "done", false);
+    cJSON_AddNumberToObject(obj, "word", m_recovery.word_number());
+    cJSON_AddNumberToObject(obj, "total", m_recovery.total());
+    cJSON_AddStringToObject(obj, "mode",
+        m_recovery.mode() == RecoverySession::Mode::WORDS ? "words" : "letters");
+    send(obj);
+}
+
+void UsbProtocol::recovery_end() {
+    m_recovery.wipe();
+    m_recovery_active = false;
+    m_busy.store(false);
+}
+
+void UsbProtocol::cmd_recovery_start(uint32_t id, cJSON* req) {
+    const char* purpose = str_field(req, "purpose");
+    cJSON* words = cJSON_GetObjectItem(req, "words");
+    const bool restore = purpose && strcmp(purpose, "restore") == 0;
+    const bool check   = purpose && strcmp(purpose, "check") == 0;
+    const int  n = (words && cJSON_IsNumber(words)) ? words->valueint : 12;
+    if ((!restore && !check) || (n != 12 && n != 24)) {
+        send_error(id, "bad_request", "purpose check|restore, words 12|24");
+        return;
+    }
+    // Restore never overwrites a wallet; check needs one to compare with.
+    const bool has_wallet = m_core.get_address().has_value();
+    if (restore && has_wallet) { send_error(id, "wallet_exists", "erase it on the device first"); return; }
+    if (check && !has_wallet)  { send_error(id, "no_wallet"); return; }
+
+    bool expected = false;
+    if (!m_recovery_active && !m_busy.compare_exchange_strong(expected, true)) {
+        send_error(id, "busy", "a signature request is pending");
+        return;
+    }
+    Events::g_recovery_abort.store(false);
+    m_recovery_restore = restore;
+    m_recovery_active  = true;
+    m_recovery.start(n);
+    recovery_post_view(Events::RecoveryResult::NONE);
+    recovery_reply_progress(id);
+}
+
+void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
+    if (!m_recovery_active) { send_error(id, "no_session"); return; }
+    if (Events::g_recovery_abort.exchange(false)) {
+        recovery_end();
+        send_error(id, "cancelled", "cancelled on the device");
+        return;
+    }
+    cJSON* pos = cJSON_GetObjectItem(req, "pos");
+    if (!pos || !cJSON_IsNumber(pos) || pos->valueint < 0 || pos->valueint > 8) {
+        send_error(id, "bad_request", "pos 0..8");
+        return;
+    }
+    m_recovery.tap(pos->valueint);           // an empty cell is simply ignored
+    if (!m_recovery.complete()) {
+        recovery_post_view(Events::RecoveryResult::NONE);
+        recovery_reply_progress(id);
+        return;
+    }
+
+    // All words entered: validate, then compare or restore.
+    std::string phrase = m_recovery.phrase();
+    Events::RecoveryResult result = Events::RecoveryResult::FAILED;
+    std::string address;
+    if (!Crypto::BIP39::validate(phrase)) {
+        result = Events::RecoveryResult::BAD_CHECKSUM;
+    } else if (m_recovery_restore) {
+        if (m_core.import(phrase) == WalletResult::OK) {
+            result = Events::RecoveryResult::RESTORED;
+            address = m_core.get_address().value_or("");
+        }
+    } else {
+        bool match = false;
+        if (m_core.matches_mnemonic(phrase, match) == WalletResult::OK) {
+            result = match ? Events::RecoveryResult::MATCH : Events::RecoveryResult::MISMATCH;
+        }
+    }
+    std::fill(phrase.begin(), phrase.end(), '\0');
+    phrase.clear();
+    recovery_post_view(result);
+    recovery_end();
+    if (result == Events::RecoveryResult::RESTORED && m_settings) {
+        m_settings->on_wallet_restored(address);
+    }
+
+    static constexpr const char* NAMES[] = {
+        "none", "match", "mismatch", "bad_checksum", "restored", "failed", "cancelled"};
+    cJSON* obj = reply(id, true);
+    cJSON_AddBoolToObject(obj, "done", true);
+    cJSON_AddStringToObject(obj, "result", NAMES[static_cast<int>(result)]);
+    if (!address.empty()) cJSON_AddStringToObject(obj, "address", address.c_str());
+    send(obj);
+}
+
+void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
+    if (m_recovery_active) {
+        recovery_post_view(Events::RecoveryResult::CANCELLED);
+        recovery_end();
     }
     send(reply(id, true));
 }
