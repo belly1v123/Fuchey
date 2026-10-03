@@ -55,7 +55,6 @@ EventGroupHandle_t g_event_group = nullptr;
 
 namespace Fuchey {
 QueueHandle_t g_tx_confirm_queue = nullptr;
-namespace Events { std::atomic<bool> g_recovery_abort{false}; }
 }
 QueueHandle_t g_button_queue_ref = nullptr;
 
@@ -155,6 +154,7 @@ public:
 };
 static AppDeviceSettings s_app_settings;
 static Fuchey::WalletCreateSession s_wallet_create;   // app "Create wallet" (RAM only)
+static Fuchey::RecoveryController  s_recovery;        // app scrambled-grid phrase entry
 
 // Companion-app protocol ("@@" framed lines on the USB console).
 static Fuchey::UsbProtocol s_usb_protocol(s_wallet_core, s_wallet_manager,
@@ -836,6 +836,8 @@ extern "C" void app_main(void) {
     // App-driven wallet creation: UI draws the words, protocol confirms.
     s_ui.set_create_session(&s_wallet_create);
     s_usb_protocol.set_create_session(&s_wallet_create);
+    s_ui.set_recovery(&s_recovery);
+    s_usb_protocol.set_recovery(&s_recovery);
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {

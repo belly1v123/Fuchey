@@ -29,9 +29,7 @@ UsbProtocol::UsbProtocol(WalletCore& core, WalletManager& manager,
                          PriceService& price, IsMainnetFn is_mainnet,
                          DeviceSettings* settings)
     : m_core(core), m_manager(manager), m_price(price), m_is_mainnet(is_mainnet),
-      m_settings(settings),
-      m_recovery([](int i) { return Crypto::BIP39::get_word(i); },
-                 Crypto::BIP39::WORDLIST_SIZE, [] { return esp_random(); }) {}
+      m_settings(settings) {}
 
 // ─── CRC32 (IEEE 802.3 / zlib) ────────────────────────────
 uint32_t UsbProtocol::crc32(const uint8_t* data, size_t len) {
@@ -132,11 +130,11 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_set_wifi(id, req);
     } else if (m_settings && strcmp(cmd, "set_location") == 0) {
         cmd_set_location(id, req);
-    } else if (m_settings && strcmp(cmd, "recovery_start") == 0) {
+    } else if (m_rc && strcmp(cmd, "recovery_start") == 0) {
         cmd_recovery_start(id, req);
-    } else if (m_settings && strcmp(cmd, "recovery_tap") == 0) {
+    } else if (m_rc && strcmp(cmd, "recovery_tap") == 0) {
         cmd_recovery_tap(id, req);
-    } else if (m_settings && strcmp(cmd, "recovery_cancel") == 0) {
+    } else if (m_rc && strcmp(cmd, "recovery_cancel") == 0) {
         cmd_recovery_cancel(id);
     } else if (m_create && strcmp(cmd, "wallet_create_start") == 0) {
         cmd_wallet_create_start(id, req);
@@ -171,8 +169,8 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     cJSON_AddItemToArray(caps, cJSON_CreateString("usdc_create_ata"));
     if (m_settings) {
         cJSON_AddItemToArray(caps, cJSON_CreateString("settings_v1"));
-        cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     }
+    if (m_rc) cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     if (m_create) cJSON_AddItemToArray(caps, cJSON_CreateString("wallet_create"));
     send(obj);
 }
@@ -309,35 +307,24 @@ void UsbProtocol::cmd_set_location(uint32_t id, cJSON* req) {
 // ─── Scrambled-grid recovery ──────────────────────────────
 // The host only ever sends a cell position; the letters/words are drawn
 // on the TFT. Replies carry progress (word n of N, mode) and the result.
-void UsbProtocol::recovery_post_view(Events::RecoveryResult result) {
+void UsbProtocol::recovery_post_view() {
+    // Notification only: the UI reads the live state from RecoveryController.
     Events::Event evt{};
     evt.type = Events::EventType::UI_RECOVERY_VIEW;
-    auto& v = evt.data.recovery;
-    v.active     = m_recovery.active() && result == Events::RecoveryResult::NONE;
-    v.restore    = m_recovery_restore;
-    v.words_mode = m_recovery.mode() == RecoverySession::Mode::WORDS;
-    v.word       = static_cast<uint8_t>(m_recovery.word_number());
-    v.total      = static_cast<uint8_t>(m_recovery.total());
-    v.result     = result;
-    snprintf(v.typed, sizeof(v.typed), "%s", m_recovery.typed_groups().c_str());
-    for (int i = 0; i < RecoverySession::CELLS; ++i) {
-        snprintf(v.cells[i], sizeof(v.cells[i]), "%s", m_recovery.cell_label(i).c_str());
-    }
     Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50));
 }
 
 void UsbProtocol::recovery_reply_progress(uint32_t id) {
+    const auto v = m_rc->view(false);          // progress only, never words
     cJSON* obj = reply(id, true);
     cJSON_AddBoolToObject(obj, "done", false);
-    cJSON_AddNumberToObject(obj, "word", m_recovery.word_number());
-    cJSON_AddNumberToObject(obj, "total", m_recovery.total());
-    cJSON_AddStringToObject(obj, "mode",
-        m_recovery.mode() == RecoverySession::Mode::WORDS ? "words" : "letters");
+    cJSON_AddNumberToObject(obj, "word", v.word);
+    cJSON_AddNumberToObject(obj, "total", v.total);
+    cJSON_AddStringToObject(obj, "mode", v.words_mode ? "words" : "letters");
     send(obj);
 }
 
 void UsbProtocol::recovery_end() {
-    m_recovery.wipe();
     m_recovery_active = false;
     m_busy.store(false);
 }
@@ -359,60 +346,63 @@ void UsbProtocol::cmd_recovery_start(uint32_t id, cJSON* req) {
 
     bool expected = false;
     if (!m_recovery_active && !m_busy.compare_exchange_strong(expected, true)) {
-        send_error(id, "busy", "a signature request is pending");
+        send_error(id, "busy", "another request is pending");
         return;
     }
-    Events::g_recovery_abort.store(false);
-    m_recovery_restore = restore;
-    m_recovery_active  = true;
-    m_recovery.start(n);
-    recovery_post_view(Events::RecoveryResult::NONE);
+    m_recovery_active = true;
+    m_rc->start(restore, n);
+    recovery_post_view();
     recovery_reply_progress(id);
 }
 
 void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
-    if (!m_recovery_active) { send_error(id, "no_session"); return; }
-    if (Events::g_recovery_abort.exchange(false)) {
-        recovery_end();
-        send_error(id, "cancelled", "cancelled on the device");
-        return;
-    }
+    if (!m_recovery_active || !m_rc->active()) { send_error(id, "no_session"); return; }
     cJSON* pos = cJSON_GetObjectItem(req, "pos");
     if (!pos || !cJSON_IsNumber(pos) || pos->valueint < 0 || pos->valueint > 8) {
         send_error(id, "bad_request", "pos 0..8");
         return;
     }
-    m_recovery.tap(pos->valueint);           // an empty cell is simply ignored
-    if (!m_recovery.complete()) {
-        recovery_post_view(Events::RecoveryResult::NONE);
+    switch (m_rc->tap(pos->valueint)) {
+        case RecoveryController::TapStatus::STALE:
+            // The user clicked while the screen still showed the previous grid.
+            send_error(id, "not_ready", "Fuchey's screen was still updating");
+            return;
+        case RecoveryController::TapStatus::NO_SESSION:
+            send_error(id, "no_session");
+            return;
+        default:
+            break;
+    }
+    if (!m_rc->complete()) {
+        recovery_post_view();
         recovery_reply_progress(id);
         return;
     }
 
     // All words entered: validate, then compare or restore.
-    std::string phrase = m_recovery.phrase();
-    Events::RecoveryResult result = Events::RecoveryResult::FAILED;
+    using R = RecoveryController::Result;
+    std::string phrase = m_rc->phrase();
+    R result = R::FAILED;
     std::string address;
     if (!Crypto::BIP39::validate(phrase)) {
-        result = Events::RecoveryResult::BAD_CHECKSUM;
-    } else if (m_recovery_restore) {
+        result = R::BAD_CHECKSUM;
+    } else if (m_rc->restore()) {
         if (m_core.import(phrase) == WalletResult::OK) {
-            result = Events::RecoveryResult::RESTORED;
+            result = R::RESTORED;
             address = m_core.get_address().value_or("");
         }
     } else {
         bool match = false;
         if (m_core.matches_mnemonic(phrase, match) == WalletResult::OK) {
-            result = match ? Events::RecoveryResult::MATCH : Events::RecoveryResult::MISMATCH;
+            result = match ? R::MATCH : R::MISMATCH;
         }
     }
     std::fill(phrase.begin(), phrase.end(), '\0');
     phrase.clear();
-    recovery_post_view(result);
+    m_rc->set_result(result);       // the device shows the result (and, for a bad phrase, the words)
+    recovery_post_view();
     recovery_end();
-    if (result == Events::RecoveryResult::RESTORED && m_settings) {
-        m_settings->on_wallet_restored(address);
-    }
+    if (result == R::RESTORED && m_settings) m_settings->on_wallet_restored(address);
 
     static constexpr const char* NAMES[] = {
         "none", "match", "mismatch", "bad_checksum", "restored", "failed", "cancelled"};
@@ -425,7 +415,8 @@ void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
 
 void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
     if (m_recovery_active) {
-        recovery_post_view(Events::RecoveryResult::CANCELLED);
+        m_rc->cancel();
+        recovery_post_view();
         recovery_end();
     }
     send(reply(id, true));
@@ -434,9 +425,8 @@ void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
 // Release the "busy" lock for sessions the device already ended (B1,
 // timeout) — otherwise an abandoned session would block signing.
 void UsbProtocol::cleanup_finished_sessions() {
-    if (m_recovery_active && Events::g_recovery_abort.load()) {
-        Events::g_recovery_abort.store(false);
-        recovery_end();
+    if (m_recovery_active && m_rc && !m_rc->active()) {
+        recovery_end();          // cancelled on the device (B1 / timeout)
     }
     if (m_create_active && m_create) {
         const auto st = m_create->stage();

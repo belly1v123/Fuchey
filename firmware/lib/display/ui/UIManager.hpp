@@ -13,6 +13,7 @@
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../buzzer/Buzzer.hpp"
 #include "../../wallet/WalletCreateSession.hpp"
+#include "../../wallet/RecoveryController.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
 #include <atomic>
 #include <cstdint>
@@ -82,6 +83,7 @@ public:
     void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
     void set_buzzer(Buzzer* buzzer)               { m_buzzer = buzzer; }
     void set_create_session(WalletCreateSession* s) { m_create = s; }
+    void set_recovery(RecoveryController* r) { m_rc = r; }
 
 private:
     Display& m_display;
@@ -202,9 +204,10 @@ private:
     // Last home weather readout (change detection for pill updates).
     char        m_home_wbuf[16]{"-- C"};
     uint8_t     m_home_wcode{255};
-    // Scrambled-grid recovery (UI_RECOVERY_VIEW). Labels live only here.
-    Events::RecoveryView m_recovery{};
-    uint32_t    m_recovery_ms{0};     // last update (idle timeout / result timer)
+    // Scrambled-grid recovery: drawn straight from the shared controller.
+    RecoveryController* m_rc{nullptr};
+    uint32_t    m_recovery_ms{0};          // result timer
+    uint32_t    m_recovery_drawn{0};       // layout id in the framebuffer
     void render_recovery();
     // Create-wallet session (shared with UsbProtocol).
     WalletCreateSession* m_create{nullptr};
