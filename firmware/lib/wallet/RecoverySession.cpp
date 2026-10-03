@@ -174,6 +174,15 @@ std::string RecoverySession::typed_groups() const {
     return s;
 }
 
+std::string RecoverySession::entered_word(int i) const {
+    if (i < 0 || i >= static_cast<int>(m_words.size())) return {};
+    return m_word_at(m_words[static_cast<size_t>(i)]);
+}
+
+std::string RecoverySession::last_word() const {
+    return m_words.empty() ? std::string{} : m_word_at(m_words.back());
+}
+
 std::string RecoverySession::phrase() const {
     std::string s;
     for (size_t i = 0; i < m_words.size(); ++i) {
