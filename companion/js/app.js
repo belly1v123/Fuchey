@@ -141,12 +141,18 @@ function renderConnected() {
   badge.className = `badge ${network}`;
   $("mainnet-banner").classList.toggle("hidden", network !== "mainnet");
   $("wallet").classList.remove("hidden");
+  $("wallet").classList.toggle("no-wallet", !info.has_wallet);
+  $("device-empty").classList.add("hidden");
   $("device-info").textContent = `Firmware ${info.fw} · protocol v${info.proto} · max tx ${info.max_tx} bytes`;
-  $("receive").classList.add("hidden");
   $("qr").innerHTML = "";
   const canShow = info.has_wallet && Array.isArray(info.caps) && info.caps.includes("show_address");
-  $("btn-receive").classList.toggle("hidden", !info.has_wallet);
   $("btn-show-device").classList.toggle("hidden", !canShow);
+  $("btn-show-device2").classList.toggle("hidden", !canShow);
+  if (!info.has_wallet) {
+    $("bal-total").textContent = "No wallet yet";
+    $("bal-caption").innerHTML = 'Create or restore one in the <a href="#" id="go-device">Device tab</a>.';
+    $("go-device").addEventListener("click", (e) => { e.preventDefault(); showTab("device"); });
+  }
   const canRecover = Array.isArray(info.caps) && info.caps.includes("recovery_grid");
   $("recovery").classList.toggle("hidden", !canRecover);
   const canCreate = Array.isArray(info.caps) && info.caps.includes("wallet_create");
@@ -155,16 +161,23 @@ function renderConnected() {
   $("btn-rec-restore").classList.toggle("hidden", info.has_wallet);
   $("btn-create").classList.toggle("hidden", info.has_wallet || !canCreate);
   recShow(false);
+  const canNet = Array.isArray(info.caps) && info.caps.includes("network_switch");
+  $("net-row").classList.toggle("hidden", !canNet);
+  $("net-current").textContent = network.toUpperCase();
+  $("net-current").className = network === "mainnet" ? "error" : "note";
+  $("btn-net").textContent = network === "mainnet" ? "Switch to DEVNET" : "Switch to MAINNET";
   const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
   $("setup").classList.toggle("hidden", !canSetup);
   if (canSetup) refreshStatus();
   if (info.has_wallet) {
-    $("address").textContent = info.pubkey;
+    $("address").textContent = shortAddr(info.pubkey);
+    $("recv-address").textContent = info.pubkey;
     $("send").classList.remove("hidden");
   } else {
-    $("address").textContent = "No wallet on this Fuchey yet (use wallet_create / wallet_import on its console).";
+    $("address").textContent = "no wallet";
     $("send").classList.add("hidden");
   }
+  showTab(currentTab);
 }
 
 function renderDisconnected() {
@@ -177,6 +190,10 @@ function renderDisconnected() {
   $("send").classList.add("hidden");
   $("setup").classList.add("hidden");
   $("recovery").classList.add("hidden");
+  $("device-empty").classList.remove("hidden");
+  closeSheet("sheet-send");
+  closeSheet("sheet-receive");
+  showTab(currentTab);
   rec.active = false;
   stopCreatePoll();
 }
@@ -450,6 +467,35 @@ async function onWifiSubmit(ev) {
   }
 }
 
+// ── network switch (approved with B1 on the device) ───────
+async function onNetworkSwitch() {
+  const target = state.network === "mainnet" ? "devnet" : "mainnet";
+  if (target === "mainnet" && !window.confirm(
+    "Switch Fuchey to MAINNET?\n\nOn mainnet, sends move REAL SOL and USDC.\n" +
+    "This Fuchey is a prototype (no PIN, key not encrypted). Use small amounts only.")) {
+    return;
+  }
+  const btn = $("btn-net");
+  btn.disabled = true;
+  setMsg("net-msg", `Look at your Fuchey: press B1 to switch to ${target.toUpperCase()} (double-press or hold B1 to cancel).`, true);
+  try {
+    const r = await device.setNetwork(target);
+    state.info = await device.hello();
+    state.network = state.info.network;
+    renderConnected();
+    refreshBalances();
+    setMsg("net-msg", r.changed ? `Fuchey is now on ${state.network.toUpperCase()}.` : `Already on ${state.network.toUpperCase()}.`, true);
+    log(`— network: ${state.network}`);
+  } catch (e) {
+    const code = e instanceof DeviceError ? e.code : "";
+    setMsg("net-msg", code === "rejected" || code === "cancelled" ? "Cancelled on Fuchey — network not changed."
+      : code === "timeout" ? "No answer on Fuchey within 30 s — network not changed."
+      : describe(e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Fuchey's fonts are ASCII: "Chitwān" → "Chitwan".
 function asciiName(s) {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E]/g, "").trim().slice(0, 31);
@@ -518,10 +564,167 @@ async function refreshBalances() {
     state.balances = { sol, usdc: usdc ? usdc.amount : 0n };
     $("bal-sol").textContent = formatUnits(sol, SOL_DECIMALS);
     $("bal-usdc").textContent = formatUnits(state.balances.usdc, USDC_DECIMALS);
+    await renderValue();
+    updateSendHints();
   } catch (e) {
     $("bal-sol").textContent = $("bal-usdc").textContent = "error";
     log(`balance error: ${describe(e)}`);
   }
+  loadActivity();
+}
+
+// ── Solflare-style wallet chrome ──────────────────────────
+let currentTab = "wallet";
+
+function showTab(name) {
+  currentTab = name;
+  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
+  for (const n of ["wallet", "device", "settings"]) $(`tab-${n}`).classList.toggle("hidden", n !== name);
+  $("intro").classList.toggle("hidden", !!state.info || name !== "wallet");
+}
+
+function openSheet(id) { $(id).classList.remove("hidden"); }
+function closeSheet(id) { $(id).classList.add("hidden"); }
+
+let toastTimer = null;
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hidden"), 1800);
+}
+
+function shortAddr(a) { return a ? `${a.slice(0, 4)}…${a.slice(-4)}` : ""; }
+
+// SOL price for display only (mainnet). Never used for anything signed.
+let price = { usd: null, at: 0 };
+async function solUsd() {
+  if (Date.now() - price.at < 60000 && price.usd) return price.usd;
+  const sources = [
+    async () => (await (await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")).json()).solana.usd,
+    async () => Number((await (await fetch("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT")).json()).price),
+  ];
+  for (const src of sources) {
+    try {
+      const v = await src();
+      if (v > 0) { price = { usd: v, at: Date.now() }; return v; }
+    } catch { /* try the next source */ }
+  }
+  return null;
+}
+
+const fmtUsd = (v) => v.toLocaleString(undefined, { style: "currency", currency: "USD" });
+
+async function renderValue() {
+  const sol = Number(formatUnits(state.balances.sol ?? 0n, SOL_DECIMALS));
+  const usdc = Number(formatUnits(state.balances.usdc ?? 0n, USDC_DECIMALS));
+  if (state.network !== "mainnet") {
+    // Devnet tokens have no value — don't pretend they do.
+    $("bal-total").textContent = `${formatUnits(state.balances.sol ?? 0n, SOL_DECIMALS)} SOL`;
+    $("bal-caption").textContent = `+ ${formatUnits(state.balances.usdc ?? 0n, USDC_DECIMALS)} USDC · devnet test tokens, no real value`;
+    $("bal-sol-usd").textContent = $("bal-usdc-usd").textContent = "";
+    return;
+  }
+  const p = await solUsd();
+  if (!p) {
+    $("bal-total").textContent = `${formatUnits(state.balances.sol ?? 0n, SOL_DECIMALS)} SOL`;
+    $("bal-caption").textContent = "Price unavailable";
+    return;
+  }
+  $("bal-total").textContent = fmtUsd(sol * p + usdc);
+  $("bal-caption").textContent = `1 SOL = ${fmtUsd(p)}`;
+  $("bal-sol-usd").textContent = fmtUsd(sol * p);
+  $("bal-usdc-usd").textContent = fmtUsd(usdc);
+}
+
+// Recent transactions, Solflare-style: direction + amount for this wallet.
+async function loadActivity() {
+  const box = $("activity");
+  if (!state.info?.has_wallet) { box.innerHTML = ""; return; }
+  const owner = state.info.pubkey;
+  const r = rpc();
+  try {
+    const sigs = await r.call("getSignaturesForAddress", [owner, { limit: 8, commitment: "confirmed" }]);
+    if (!sigs.length) { box.innerHTML = '<p class="muted small">No activity yet.</p>'; return; }
+    const txs = await Promise.all(sigs.slice(0, 8).map((s) =>
+      r.call("getTransaction", [s.signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0, commitment: "confirmed" }])
+        .catch(() => null)));
+    box.innerHTML = "";
+    sigs.forEach((s, i) => box.append(activityRow(s, txs[i], owner)));
+  } catch (e) {
+    box.innerHTML = `<p class="muted small">Couldn't load activity (${describe(e)}).</p>`;
+  }
+}
+
+function activityRow(sig, tx, owner) {
+  const a = document.createElement("a");
+  a.className = "tx";
+  a.href = `https://explorer.solana.com/tx/${sig.signature}${NETWORKS[state.network]?.explorerSuffix ?? ""}`;
+  a.target = "_blank";
+  a.rel = "noopener";
+  let dir = "", amount = "";
+  if (tx?.meta) {
+    const keys = tx.transaction.message.accountKeys.map((k) => (typeof k === "string" ? k : k.pubkey));
+    const idx = keys.indexOf(owner);
+    const mint = NETWORKS[state.network].usdcMint;
+    const tok = (list) => (list || []).filter((b) => b.owner === owner && b.mint === mint)
+      .reduce((s, b) => s + BigInt(b.uiTokenAmount.amount), 0n);
+    const dUsdc = tok(tx.meta.postTokenBalances) - tok(tx.meta.preTokenBalances);
+    let dSol = idx >= 0 ? BigInt(tx.meta.postBalances[idx]) - BigInt(tx.meta.preBalances[idx]) : 0n;
+    if (idx === 0) dSol += BigInt(tx.meta.fee);   // show the transfer, not the fee
+    if (dUsdc !== 0n) {
+      dir = dUsdc > 0n ? "in" : "out";
+      amount = `${dUsdc > 0n ? "+" : "−"}${formatUnits(dUsdc < 0n ? -dUsdc : dUsdc, USDC_DECIMALS)} USDC`;
+    } else if (dSol !== 0n) {
+      dir = dSol > 0n ? "in" : "out";
+      amount = `${dSol > 0n ? "+" : "−"}${formatUnits(dSol < 0n ? -dSol : dSol, SOL_DECIMALS)} SOL`;
+    }
+  }
+  const failed = !!sig.err;
+  const title = failed ? "Failed" : dir === "in" ? "Received" : dir === "out" ? "Sent" : "Transaction";
+  const when = sig.blockTime ? timeAgo(sig.blockTime * 1000) : "";
+  a.innerHTML = `
+    <span class="tx-icon ${failed ? "err" : dir}">${failed ? "!" : dir === "in" ? "↓" : dir === "out" ? "↑" : "•"}</span>
+    <div class="tx-main"><div class="tx-title"></div><div class="muted small"></div></div>
+    <div class="tx-amt ${dir}"></div>`;
+  a.querySelector(".tx-title").textContent = title;
+  a.querySelector(".tx-main .muted").textContent = `${when} · ${sig.signature.slice(0, 6)}…`;
+  a.querySelector(".tx-amt").textContent = amount;
+  return a;
+}
+
+function timeAgo(ms) {
+  const s = Math.max(1, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+// Send sheet helpers: token toggle → hidden <select id="asset">, Max, USD hint.
+function sendAsset() { return $("asset").value; }
+function updateSendHints() {
+  const asset = sendAsset();
+  const bal = asset === "SOL" ? state.balances.sol : state.balances.usdc;
+  $("send-avail").textContent = bal == null ? "Available: —"
+    : `Available: ${formatUnits(bal, asset === "SOL" ? SOL_DECIMALS : USDC_DECIMALS)} ${asset}`;
+  const amt = Number($("amount").value);
+  let usd = "";
+  if (amt > 0 && state.network === "mainnet") {
+    usd = asset === "USDC" ? `≈ ${fmtUsd(amt)}` : price.usd ? `≈ ${fmtUsd(amt * price.usd)}` : "";
+  }
+  $("send-usd").textContent = usd;
+}
+function onMax() {
+  const asset = sendAsset();
+  if (asset === "SOL") {
+    const max = (state.balances.sol ?? 0n) - BASE_FEE_LAMPORTS;
+    $("amount").value = max > 0n ? formatUnits(max, SOL_DECIMALS) : "0";
+  } else {
+    $("amount").value = formatUnits(state.balances.usdc ?? 0n, USDC_DECIMALS);
+  }
+  updateSendHints();
 }
 
 // ── send ──────────────────────────────────────────────────
@@ -728,8 +931,10 @@ function closeModal() {
 
 function showResult(ok, text, txSig) {
   const el = $("result");
-  el.className = `card ${ok ? "ok" : "fail"}`;
+  el.className = `banner ${ok ? "ok" : "fail"}`;
   el.textContent = text;
+  if (ok) closeSheet("sheet-send");
+  window.scrollTo({ top: 0, behavior: "smooth" });
   if (txSig) {
     const a = document.createElement("a");
     a.href = `https://explorer.solana.com/tx/${txSig}${NETWORKS[state.network]?.explorerSuffix ?? ""}`;
@@ -749,23 +954,56 @@ function init() {
   $("btn-connect").addEventListener("click", connect);
   $("btn-disconnect").addEventListener("click", () => device.disconnect());
   $("btn-refresh").addEventListener("click", refreshBalances);
-  $("btn-copy").addEventListener("click", () => navigator.clipboard?.writeText(state.info?.pubkey || ""));
+  const copyAddr = async () => {
+    try { await navigator.clipboard.writeText(state.info?.pubkey || ""); toast("Address copied"); }
+    catch { toast("Couldn't copy"); }
+  };
+  $("btn-copy").addEventListener("click", copyAddr);
+  $("btn-copy-recv").addEventListener("click", copyAddr);
   $("btn-receive").addEventListener("click", () => {
-    const panel = $("receive");
-    const open = panel.classList.toggle("hidden") === false;
+    if (!state.info?.has_wallet) return;
     // Plain address (not a solana: URI) — every wallet app scans it.
-    if (open && state.info?.pubkey) $("qr").innerHTML = qrSvg(state.info.pubkey);
+    $("qr").innerHTML = qrSvg(state.info.pubkey);
+    openSheet("sheet-receive");
   });
-  $("btn-show-device").addEventListener("click", async () => {
+  const showOnDevice = async () => {
     try {
       await device.showAddress();
+      toast("Fuchey is showing its Receive QR");
       log("— Fuchey is showing its Receive QR");
     } catch (e) {
       showResult(false, `Could not show the address on Fuchey: ${describe(e)}`);
     }
+  };
+  $("btn-show-device").addEventListener("click", showOnDevice);
+  $("btn-show-device2").addEventListener("click", showOnDevice);
+  $("act-send").addEventListener("click", () => {
+    if (!state.info?.has_wallet) return;
+    updateSendHints();
+    openSheet("sheet-send");
+    $("recipient").focus();
   });
+  for (const r of document.querySelectorAll('input[name="asset-pick"]')) {
+    r.addEventListener("change", () => { $("asset").value = r.value; updateSendHints(); });
+  }
+  $("amount").addEventListener("input", updateSendHints);
+  $("btn-max").addEventListener("click", onMax);
+  for (const b of document.querySelectorAll("[data-close]")) {
+    b.addEventListener("click", () => closeSheet(b.dataset.close));
+  }
+  for (const id of ["sheet-send", "sheet-receive"]) {
+    $(id).addEventListener("click", (e) => { if (e.target.id === id) closeSheet(id); });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeSheet("sheet-send"); closeSheet("sheet-receive"); }
+  });
+  for (const t of document.querySelectorAll(".tab")) {
+    t.addEventListener("click", () => showTab(t.dataset.tab));
+  }
+  showTab("wallet");
   $("send-form").addEventListener("submit", onSend);
   $("btn-status").addEventListener("click", refreshStatus);
+  $("btn-net").addEventListener("click", onNetworkSwitch);
   $("btn-scan").addEventListener("click", onScan);
   $("wifi-list").addEventListener("change", (e) => { if (e.target.value) $("wifi-ssid").value = e.target.value; });
   $("wifi-form").addEventListener("submit", onWifiSubmit);

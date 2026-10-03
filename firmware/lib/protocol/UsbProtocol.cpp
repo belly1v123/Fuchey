@@ -136,6 +136,8 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_recovery_tap(id, req);
     } else if (m_rc && strcmp(cmd, "recovery_cancel") == 0) {
         cmd_recovery_cancel(id);
+    } else if (m_settings && strcmp(cmd, "set_network") == 0) {
+        cmd_set_network(id, req);
     } else if (m_create && strcmp(cmd, "wallet_create_start") == 0) {
         cmd_wallet_create_start(id, req);
     } else if (m_create && strcmp(cmd, "wallet_create_state") == 0) {
@@ -172,6 +174,7 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     }
     if (m_rc) cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     if (m_create) cJSON_AddItemToArray(caps, cJSON_CreateString("wallet_create"));
+    if (m_settings) cJSON_AddItemToArray(caps, cJSON_CreateString("network_switch"));
     send(obj);
 }
 
@@ -420,6 +423,83 @@ void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
         recovery_end();
     }
     send(reply(id, true));
+}
+
+// ─── Network switch (device-confirmed tier) ───────────────
+// The app can only ASK. Fuchey shows "SWITCH NETWORK?" and applies it
+// only after a hardware B1 tap (WalletManager::request_confirmation:
+// console-injected buttons can reject but never approve).
+namespace {
+struct NetworkJob {
+    UsbProtocol* self;
+    uint32_t     id;
+    bool         mainnet;
+};
+}
+
+void UsbProtocol::cmd_set_network(uint32_t id, cJSON* req) {
+    const char* net = str_field(req, "network");
+    const bool to_mainnet = net && strcmp(net, "mainnet") == 0;
+    if (!net || (!to_mainnet && strcmp(net, "devnet") != 0)) {
+        send_error(id, "bad_request", "network devnet|mainnet");
+        return;
+    }
+    if (to_mainnet == m_is_mainnet()) {
+        cJSON* obj = reply(id, true);
+        cJSON_AddStringToObject(obj, "network", net);
+        cJSON_AddBoolToObject(obj, "changed", false);
+        send(obj);
+        return;
+    }
+    bool expected = false;
+    if (!m_busy.compare_exchange_strong(expected, true)) {
+        send_error(id, "busy", "another request is pending");
+        return;
+    }
+    auto* job = new NetworkJob{this, id, to_mainnet};
+    if (xTaskCreate(network_worker, "usb_net_task", 6144, job, SIGN_WORKER_PRIO, nullptr) != pdPASS) {
+        delete job;
+        m_busy.store(false);
+        send_error(id, "failed", "out of memory");
+    }
+}
+
+void UsbProtocol::network_worker(void* arg) {
+    auto* job = static_cast<NetworkJob*>(arg);
+    UsbProtocol* self = job->self;
+    const uint32_t id = job->id;
+    const bool mainnet = job->mainnet;
+    delete job;
+
+    {
+        cJSON* evt = cJSON_CreateObject();
+        cJSON_AddNumberToObject(evt, "id", id);
+        cJSON_AddStringToObject(evt, "event", "awaiting_confirmation");
+        cJSON_AddStringToObject(evt, "network", mainnet ? "mainnet" : "devnet");
+        cJSON_AddNumberToObject(evt, "timeout_ms", WalletManager::CONFIRM_TIMEOUT_MS);
+        send(evt);
+    }
+
+    Events::TxSummary summary{};
+    summary.kind = Events::ConfirmKind::NETWORK_SWITCH;
+    summary.mainnet = mainnet;                       // the TARGET network
+    const SignStatus st = self->m_manager.request_confirmation(summary,
+                                                               WalletManager::CONFIRM_TIMEOUT_MS);
+    if (st == SignStatus::APPROVED) {
+        self->m_settings->set_network(mainnet);
+        cJSON* obj = reply(id, true);
+        cJSON_AddStringToObject(obj, "network", mainnet ? "mainnet" : "devnet");
+        cJSON_AddBoolToObject(obj, "changed", true);
+        send(obj);
+    } else {
+        const char* code = st == SignStatus::REJECTED  ? "rejected"
+                         : st == SignStatus::CANCELLED ? "cancelled"
+                         : st == SignStatus::TIMED_OUT ? "timeout"
+                         : st == SignStatus::BUSY      ? "busy" : "failed";
+        send_error(id, code, "network not changed");
+    }
+    self->m_busy.store(false);
+    vTaskDelete(nullptr);
 }
 
 // Release the "busy" lock for sessions the device already ended (B1,
