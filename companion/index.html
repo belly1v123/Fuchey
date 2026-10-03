@@ -6,7 +6,7 @@
   <title>Fuchey Wallet</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body class="offline">
   <div class="app">
     <!-- ── Header ─────────────────────────────────────────── -->
     <header class="top">
@@ -15,7 +15,6 @@
       </div>
       <div class="conn">
         <span id="net-badge" class="badge hidden"></span>
-        <button id="btn-connect" class="primary small">Connect</button>
         <button id="btn-disconnect" class="chip hidden" title="Disconnect">
           <span class="dot"></span>Connected
         </button>
@@ -39,12 +38,17 @@
 
       <!-- Not connected -->
       <section id="intro" class="empty">
-        <img class="wordmark big" src="img/fuchey-logo.png" alt="Fuchey">
-        <h1>Your hardware wallet</h1>
-        <p class="muted">Plug Fuchey in over USB and press <b>Connect</b>. This page builds transactions;
-          Fuchey shows each one on its screen and signs only after you tap <b>B1</b>.
-          Your keys never leave the device.</p>
-        <button class="primary big" onclick="document.getElementById('btn-connect').click()">Connect Fuchey</button>
+        <div class="yeti" role="img" aria-label="Fuchey's Yeti"></div>
+        <img class="wordmark" src="img/fuchey-logo.png" alt="Fuchey">
+        <p class="tagline">Hardware wallet · desk buddy</p>
+        <div class="steps">
+          <div class="step"><b>1</b>Plug Fuchey into this computer with USB</div>
+          <div class="step"><b>2</b>Wait for the Yeti on its home screen</div>
+          <div class="step"><b>3</b>Press Connect and pick its port</div>
+        </div>
+        <button id="btn-connect" class="primary big">Connect Fuchey</button>
+        <p class="muted small">Every transaction is shown on Fuchey and signed only when you press
+          <b>B1</b>. Your keys never leave the device.</p>
       </section>
 
       <!-- ── Wallet tab ───────────────────────────────────── -->
