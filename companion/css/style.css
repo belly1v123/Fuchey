@@ -46,6 +46,8 @@ code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
   background: rgba(11,13,18,.85); backdrop-filter: blur(10px);
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; }
+.wordmark { height: 22px; width: auto; display: block; image-rendering: pixelated; }
+.wordmark.big { height: 34px; margin-bottom: 4px; }
 .logo {
   width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
   background: linear-gradient(135deg, var(--accent-2), var(--accent)); color: #0b0d12; font-weight: 800;
@@ -118,7 +120,7 @@ button.big { width: 100%; padding: 14px; font-size: 16px; border-radius: 14px; }
 .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 0; }
 .tokens, .activity { display: grid; gap: 8px; }
 .token, .tx { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
-.token-icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 18px; flex: none; }
+.token-icon { width: 40px; height: 40px; flex: none; object-fit: contain; image-rendering: pixelated; }
 .token-icon.sol { background: linear-gradient(135deg, var(--accent-2), var(--accent)); color: #0b0d12; }
 .token-icon.usdc { background: #2775ca; color: #fff; }
 .token-main { flex: 1; min-width: 0; }
@@ -147,7 +149,8 @@ input:focus, select:focus { outline: 2px solid var(--accent-2); border-color: tr
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--bg-2); padding: 4px; border-radius: 12px; border: 1px solid var(--line); }
 .seg label { display: block; }
 .seg input { position: absolute; opacity: 0; width: 0; }
-.seg span { display: block; text-align: center; padding: 9px; border-radius: 9px; color: var(--muted); font-weight: 600; cursor: pointer; }
+.seg span { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px; border-radius: 9px; color: var(--muted); font-weight: 600; cursor: pointer; }
+.seg span img { width: 20px; height: 20px; image-rendering: pixelated; }
 .seg input:checked + span { background: var(--card-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
 
 .status { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 4px 0 0; }
@@ -201,3 +204,6 @@ details label { margin-top: 12px; }
 @media (min-width: 700px) {
   .app { margin-top: 0; }
 }
+.hero-coins { display: flex; margin-bottom: 4px; }
+.hero-coins img { width: 72px; height: 72px; image-rendering: pixelated; }
+.hero-coins img + img { margin-left: -18px; }
