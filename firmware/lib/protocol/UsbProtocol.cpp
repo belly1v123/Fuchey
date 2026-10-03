@@ -24,8 +24,10 @@ static constexpr uint32_t SIGN_WORKER_STACK = 20480;  // TLS price fetch + signi
 static constexpr int      SIGN_WORKER_PRIO  = 4;
 
 UsbProtocol::UsbProtocol(WalletCore& core, WalletManager& manager,
-                         PriceService& price, IsMainnetFn is_mainnet)
-    : m_core(core), m_manager(manager), m_price(price), m_is_mainnet(is_mainnet) {}
+                         PriceService& price, IsMainnetFn is_mainnet,
+                         DeviceSettings* settings)
+    : m_core(core), m_manager(manager), m_price(price), m_is_mainnet(is_mainnet),
+      m_settings(settings) {}
 
 // ─── CRC32 (IEEE 802.3 / zlib) ────────────────────────────
 uint32_t UsbProtocol::crc32(const uint8_t* data, size_t len) {
@@ -116,6 +118,14 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_cancel(id);
     } else if (strcmp(cmd, "show_address") == 0) {
         cmd_show_address(id);
+    } else if (m_settings && strcmp(cmd, "get_status") == 0) {
+        cmd_get_status(id);
+    } else if (m_settings && strcmp(cmd, "wifi_scan") == 0) {
+        cmd_wifi_scan(id);
+    } else if (m_settings && strcmp(cmd, "set_wifi") == 0) {
+        cmd_set_wifi(id, req);
+    } else if (m_settings && strcmp(cmd, "set_location") == 0) {
+        cmd_set_location(id, req);
     } else {
         send_error(id, "unknown_cmd", cmd);
     }
@@ -139,6 +149,7 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     cJSON* caps = cJSON_AddArrayToObject(obj, "caps");
     cJSON_AddItemToArray(caps, cJSON_CreateString("show_address"));
     cJSON_AddItemToArray(caps, cJSON_CreateString("usdc_create_ata"));
+    if (m_settings) cJSON_AddItemToArray(caps, cJSON_CreateString("settings_v1"));
     send(obj);
 }
 
@@ -166,6 +177,106 @@ void UsbProtocol::cmd_show_address(uint32_t id) {
     evt.type = Events::EventType::UI_SHOW_ADDRESS;
     if (!Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50))) {
         send_error(id, "busy", "UI queue full");
+        return;
+    }
+    send(reply(id, true));
+}
+
+// ─── Device settings (tier "settings": never keys, never signing) ───
+namespace {
+
+// Printable ASCII only: it is drawn with the device's ASCII fonts.
+bool is_printable_ascii(const char* s, size_t max_len) {
+    size_t n = 0;
+    for (; s[n]; ++n) {
+        if (n >= max_len) return false;
+        const unsigned char c = static_cast<unsigned char>(s[n]);
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    return n > 0;
+}
+
+const char* str_field(cJSON* req, const char* name) {
+    cJSON* it = cJSON_GetObjectItem(req, name);
+    return (it && cJSON_IsString(it)) ? it->valuestring : nullptr;
+}
+
+} // namespace
+
+void UsbProtocol::cmd_get_status(uint32_t id) {
+    const DeviceStatus st = m_settings->status();
+    cJSON* obj = reply(id, true);
+    cJSON* wifi = cJSON_AddObjectToObject(obj, "wifi");
+    cJSON_AddBoolToObject(wifi, "configured", st.wifi_configured);
+    cJSON_AddBoolToObject(wifi, "connected", st.wifi_connected);
+    cJSON_AddBoolToObject(wifi, "online", st.online);
+    cJSON_AddStringToObject(wifi, "ssid", st.wifi_ssid.c_str());
+    cJSON* loc = cJSON_AddObjectToObject(obj, "location");
+    cJSON_AddBoolToObject(loc, "configured", st.location_configured);
+    cJSON_AddStringToObject(loc, "city", st.city.c_str());
+    cJSON_AddNumberToObject(loc, "lat", st.lat);
+    cJSON_AddNumberToObject(loc, "lon", st.lon);
+    cJSON_AddBoolToObject(obj, "setup_done", st.setup_done);
+    cJSON_AddStringToObject(obj, "network", m_is_mainnet() ? "mainnet" : "devnet");
+    send(obj);
+}
+
+void UsbProtocol::cmd_wifi_scan(uint32_t id) {
+    std::vector<WifiNetwork> nets;
+    if (!m_settings->scan_wifi(nets)) {
+        send_error(id, "scan_failed", "WiFi radio busy — try again in a few seconds");
+        return;
+    }
+    cJSON* obj = reply(id, true);
+    cJSON* arr = cJSON_AddArrayToObject(obj, "networks");
+    for (const auto& n : nets) {
+        cJSON* e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "ssid", n.ssid.c_str());
+        cJSON_AddNumberToObject(e, "rssi", n.rssi);
+        cJSON_AddBoolToObject(e, "secure", n.secure);
+        cJSON_AddItemToArray(arr, e);
+    }
+    send(obj);
+}
+
+void UsbProtocol::cmd_set_wifi(uint32_t id, cJSON* req) {
+    if (m_busy.load()) {
+        send_error(id, "busy", "a signature request is pending");
+        return;
+    }
+    const char* ssid = str_field(req, "ssid");
+    const char* pass = str_field(req, "password");
+    const size_t sl = ssid ? strlen(ssid) : 0;
+    const size_t pl = pass ? strlen(pass) : 0;
+    // 802.11: SSID 1..32 bytes; WPA2 passphrase 8..63 (the device requires WPA2).
+    if (sl < 1 || sl > 32 || !pass || pl < 8 || pl > 63) {
+        send_error(id, "bad_request", "ssid 1-32 bytes, password 8-63 characters");
+        return;
+    }
+    if (!m_settings->set_wifi(ssid, pass)) {
+        send_error(id, "failed", "could not save or start the connection");
+        return;
+    }
+    send(reply(id, true));   // connection result: poll get_status
+}
+
+void UsbProtocol::cmd_set_location(uint32_t id, cJSON* req) {
+    if (m_busy.load()) {
+        send_error(id, "busy", "a signature request is pending");
+        return;
+    }
+    const char* city = str_field(req, "city");
+    cJSON* lat = cJSON_GetObjectItem(req, "lat");
+    cJSON* lon = cJSON_GetObjectItem(req, "lon");
+    if (!city || !is_printable_ascii(city, 31) || !cJSON_IsNumber(lat) || !cJSON_IsNumber(lon) ||
+        lat->valuedouble < -90 || lat->valuedouble > 90 ||
+        lon->valuedouble < -180 || lon->valuedouble > 180) {
+        send_error(id, "bad_request", "city 1-31 printable ASCII, lat -90..90, lon -180..180");
+        return;
+    }
+    if (!m_settings->set_location(city, static_cast<float>(lat->valuedouble),
+                                  static_cast<float>(lon->valuedouble))) {
+        send_error(id, "failed", "could not save the location");
         return;
     }
     send(reply(id, true));

@@ -63,6 +63,45 @@
       <p class="muted small" id="device-info"></p>
     </section>
 
+    <section id="setup" class="card hidden">
+      <div class="row between">
+        <h2>Device setup</h2>
+        <button id="btn-status" class="ghost small">Refresh</button>
+      </div>
+      <dl class="status" id="setup-status"></dl>
+
+      <h3>WiFi</h3>
+      <div class="row wrap">
+        <button id="btn-scan" class="ghost small">Scan networks</button>
+        <select id="wifi-list" class="grow hidden"></select>
+      </div>
+      <form id="wifi-form" autocomplete="off">
+        <label>Network name (SSID)
+          <input id="wifi-ssid" spellcheck="false" maxlength="32">
+        </label>
+        <label>Password
+          <input id="wifi-pass" type="password" autocomplete="new-password" maxlength="63">
+        </label>
+        <p class="muted small">Sent only to Fuchey over USB. This page never stores it, and Fuchey
+          never sends it back.</p>
+        <p id="wifi-msg" class="small hidden"></p>
+        <button id="btn-wifi" class="primary" type="submit">Connect Fuchey to WiFi</button>
+      </form>
+
+      <h3>Weather location</h3>
+      <form id="loc-form" autocomplete="off">
+        <div class="row">
+          <input id="loc-query" class="grow" placeholder="City, e.g. Chitwan" spellcheck="false">
+          <button id="btn-loc-search" class="ghost" type="submit">Search</button>
+        </div>
+      </form>
+      <button id="btn-loc-here" class="ghost small" type="button">Use this computer's location</button>
+      <p class="muted small">Search a town, or use this computer's location (the browser asks first; the
+        coordinates go only to Fuchey, which uses them for weather). The name typed above is shown on Fuchey.</p>
+      <div id="loc-results" class="results"></div>
+      <p id="loc-msg" class="small hidden"></p>
+    </section>
+
     <section id="send" class="card hidden">
       <h2>Send</h2>
       <form id="send-form" autocomplete="off">

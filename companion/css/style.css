@@ -55,6 +55,13 @@ button.small { padding: 5px 10px; font-size: 13px; }
 .addr-row { display: flex; gap: 10px; align-items: center; }
 .addr-row code { overflow-wrap: anywhere; font-size: 13px; }
 .receive-actions { margin-top: 12px; flex-wrap: wrap; }
+.card h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1 1 160px; min-width: 0; }
+.status { margin: 4px 0 0; }
+.ok-text { color: var(--accent); }
+.results { display: grid; gap: 6px; margin-top: 8px; }
+.results button { text-align: left; }
 .receive { display: grid; justify-items: center; gap: 8px; margin-top: 12px; text-align: center; }
 .qr svg { display: block; width: min(240px, 70vw); height: auto; border-radius: 8px; }
 .balances { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0 8px; }
