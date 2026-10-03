@@ -31,6 +31,12 @@
 //   recovery_cancel
 //       Scrambled-grid phrase entry: the grid is drawn on the device only;
 //       the host sends positions and learns progress, never letters/words.
+//   wallet_create_start words (12|24) → device generates + shows the words
+//   wallet_create_state           → {stage, page, pages, verify_n, wrong[, address]}
+//   wallet_create_tap pos (0..8)  → confirm a word on the device's grid
+//   wallet_create_cancel
+//       Only when no wallet exists. The words are shown on the device
+//       screen only; nothing is stored until 3 words are confirmed.
 // hello also returns caps=[...] naming optional features.
 //
 // Command tiers (see docs/ThreatModel.md):
@@ -49,6 +55,7 @@
 #include "../price/PriceService.hpp"
 #include "DeviceSettings.hpp"
 #include "../wallet/RecoverySession.hpp"
+#include "../wallet/WalletCreateSession.hpp"
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -74,6 +81,9 @@ public:
     // malformed frames); false for ordinary console commands.
     bool handle_line(const char* line);
 
+    // Shared with the UI (which draws the words and handles B1/B3/B4).
+    void set_create_session(WalletCreateSession* s) { m_create = s; }
+
     static uint32_t crc32(const uint8_t* data, size_t len);
 
 private:
@@ -91,6 +101,8 @@ private:
     RecoverySession   m_recovery;
     bool              m_recovery_restore{false};
     bool              m_recovery_active{false};
+    WalletCreateSession* m_create{nullptr};
+    bool              m_create_active{false};
     std::atomic<bool> m_busy{false};
 
     void cmd_hello(uint32_t id);
@@ -108,6 +120,12 @@ private:
     void recovery_post_view(Events::RecoveryResult result);
     void recovery_reply_progress(uint32_t id);
     void recovery_end();
+    void cleanup_finished_sessions();
+    void cmd_wallet_create_start(uint32_t id, cJSON* req);
+    void cmd_wallet_create_state(uint32_t id);
+    void cmd_wallet_create_tap(uint32_t id, cJSON* req);
+    void cmd_wallet_create_cancel(uint32_t id);
+    void create_reply_state(uint32_t id);
 
     static void sign_worker(void* arg);
     void run_sign(SignJob& job);

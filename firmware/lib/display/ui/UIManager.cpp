@@ -282,6 +282,19 @@ void UIManager::process_event(const Events::Event& evt) {
             }
             break;
 
+        case Events::EventType::UI_WALLET_CREATE:
+            if (m_create && m_current_screen != UIScreen::TX_CONFIRM) {
+                using St = WalletCreateSession::Stage;
+                const St st = m_create->stage();
+                if (st == St::INTRO || st == St::WORDS || st == St::VERIFY) {
+                    if (m_current_screen != UIScreen::WALLET_CREATE) set_screen(UIScreen::WALLET_CREATE);
+                } else if (st == St::DONE || st == St::FAILED || st == St::CANCELLED) {
+                    if (m_current_screen != UIScreen::WALLET_CREATE) set_screen(UIScreen::WALLET_CREATE);
+                    m_create_result_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                }
+            }
+            break;
+
         case Events::EventType::UI_SHOW_ADDRESS:
             // Companion app "Show on Fuchey": read-only, never interrupts a
             // pending confirmation or the first-boot setup. UsbProtocol has
@@ -635,106 +648,80 @@ void UIManager::pomo_tick(uint32_t now_ms) {
 
 // ─── Setup wizard ─────────────────────────────────────────
 void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing, bool location_missing) {
-    m_setup_needed    = wifi_missing || wallet_missing || location_missing;
+    m_wifi_missing     = wifi_missing;
+    m_wallet_missing   = wallet_missing;
     m_location_missing = location_missing;
-    request_redraw();
+    m_setup_needed     = wifi_missing || wallet_missing || location_missing;
+    advance_setup();
+}
 
-    if (!m_setup_needed) {
-        m_setup_stage = SetupStage::DONE;
+// The wizard always shows the FIRST step that is still missing, so the
+// steps can be completed in any order (console or companion app).
+void UIManager::advance_setup() {
+    if (!m_setup_needed) return;
+    request_redraw();
+    SetupStage next;
+    if (m_wifi_missing) {
+        next = m_wifi_connecting ? SetupStage::WIFI_CONNECTING : SetupStage::WIFI_PROMPT;
+    } else if (m_wallet_missing) {
+        next = SetupStage::WALLET_PROMPT;
+    } else if (m_location_missing) {
+        next = SetupStage::LOCATION_PROMPT;
+    } else {
+        m_setup_needed = false;
+        m_setup_stage  = SetupStage::DONE;
+        ESP_LOGI(TAG, "=================================================");
+        ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
+        ESP_LOGI(TAG, "=================================================");
+        set_screen(UIScreen::HOME);
         return;
     }
-
-    // Determine starting stage
-    if (wifi_missing) {
-        m_setup_stage = SetupStage::WIFI_PROMPT;
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Step 1 — Enter WiFi credentials");
-        ESP_LOGI(TAG, "  Serial command:  w <SSID> <PASSWORD>");
-        ESP_LOGI(TAG, "=================================================");
-    } else if (wallet_missing) {
-        // WiFi already saved, skip to wallet
-        m_setup_stage = SetupStage::WALLET_PROMPT;
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: WiFi OK — Step 2: Wallet setup");
-        ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
-        ESP_LOGI(TAG, "=================================================");
-    } else {
-        // WiFi + wallet already present, only location is missing
-        m_setup_stage = SetupStage::LOCATION_PROMPT;
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Wallet OK — Step 3: Set your location");
-        ESP_LOGI(TAG, "  Serial command:  setloc <CITY> <LAT> <LON>");
-        ESP_LOGI(TAG, "  Example:         setloc Chitwan 27.68 84.43");
-        ESP_LOGI(TAG, "=================================================");
+    if (next == m_setup_stage) return;
+    m_setup_stage = next;
+    ESP_LOGI(TAG, "=================================================");
+    switch (next) {
+        case SetupStage::WIFI_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: WiFi — Fuchey app (Device setup) or: w <SSID> <PASSWORD>");
+            break;
+        case SetupStage::WIFI_CONNECTING:
+            ESP_LOGI(TAG, "  SETUP: connecting to '%s' — waiting for IP...", m_connecting_ssid.c_str());
+            break;
+        case SetupStage::WALLET_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: Wallet — Fuchey app (Create / Restore) or: wallet_create");
+            break;
+        case SetupStage::LOCATION_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: Location — Fuchey app (Device setup) or: setloc <CITY> <LAT> <LON>");
+            break;
+        default:
+            break;
     }
+    ESP_LOGI(TAG, "=================================================");
 }
 
 void UIManager::mark_wifi_configured(const char* ssid) {
     if (ssid) m_connecting_ssid = ssid;
     m_connecting_dots_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     m_connecting_dots = 0;
-    // Advance to connecting state — wait for actual IP before moving to wallet setup
-    if (m_setup_stage == SetupStage::WIFI_PROMPT) {
-        m_setup_stage = SetupStage::WIFI_CONNECTING;
-        ESP_LOGI(TAG, "-------------------------------------------------");
-        ESP_LOGI(TAG, "  [WiFi] Connecting to '%s' ...", m_connecting_ssid.c_str());
-        ESP_LOGI(TAG, "  Waiting for IP address...");
-        ESP_LOGI(TAG, "-------------------------------------------------");
-        request_redraw();
-    }
+    m_wifi_connecting = true;           // wait for an IP before calling WiFi done
+    advance_setup();
 }
 
 void UIManager::on_wifi_got_ip() {
-    if (m_setup_stage == SetupStage::WIFI_CONNECTING) {
-        m_setup_stage = SetupStage::WALLET_PROMPT;
-        request_redraw();
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  [WiFi] CONNECTED! IP obtained.");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Step 2 — Wallet setup");
-        ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
-        ESP_LOGI(TAG, "=================================================");
-    }
+    m_wifi_connecting = false;
+    m_wifi_missing = false;
+    advance_setup();
 }
 
 void UIManager::mark_wallet_configured(const char* address) {
     if (address) m_wallet_address = address;
-
-    // Wallet done — move on to the location step if it is still missing.
-    if (m_location_missing) {
-        m_setup_stage = SetupStage::LOCATION_PROMPT;
-        request_redraw();
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Wallet OK — Step 3: Set your location");
-        ESP_LOGI(TAG, "  Serial command:  setloc <CITY> <LAT> <LON>");
-        ESP_LOGI(TAG, "  Example:         setloc Chitwan 27.68 84.43");
-        ESP_LOGI(TAG, "=================================================");
-        return;
-    }
-
-    m_setup_needed = false;
-    m_setup_stage  = SetupStage::DONE;
-    ESP_LOGI(TAG, "=================================================");
-    ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
-    if (!m_wallet_address.empty()) {
-        ESP_LOGI(TAG, "  Wallet: %s", m_wallet_address.c_str());
-    }
-    ESP_LOGI(TAG, "=================================================");
-    set_screen(UIScreen::HOME);
+    m_wallet_missing = false;
+    advance_setup();
 }
 
 void UIManager::mark_location_configured(const char* city) {
     if (city) m_location_city = city;
-    m_setup_needed = false;
-    m_setup_stage  = SetupStage::DONE;
-    ESP_LOGI(TAG, "=================================================");
-    ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
-    ESP_LOGI(TAG, "  Location: %s", m_location_city.empty() ? "set" : m_location_city.c_str());
-    ESP_LOGI(TAG, "=================================================");
-    set_screen(UIScreen::HOME);
+    m_location_missing = false;
+    advance_setup();
 }
 
 // ─── Render dispatch ──────────────────────────────────────
@@ -753,7 +740,8 @@ void UIManager::render() {
     // wizard: B1 must never approve something that is not on screen.
     // (Recovery is also drawn over it: restoring a wallet IS a setup step.)
     if (m_setup_needed && m_current_screen != UIScreen::TX_CONFIRM &&
-        m_current_screen != UIScreen::RECOVERY) {
+        m_current_screen != UIScreen::RECOVERY &&
+        m_current_screen != UIScreen::WALLET_CREATE) {
         render_setup();
         m_display.flush();
         return;
@@ -768,6 +756,7 @@ void UIManager::render() {
         case UIScreen::WALLET_INFO:  render_wallet_info(); break;
         case UIScreen::WALLET_QR:    render_wallet_qr();   break;
         case UIScreen::RECOVERY:     render_recovery();    break;
+        case UIScreen::WALLET_CREATE: render_wallet_create(); break;
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::TX_SUCCESS:
         case UIScreen::TX_FAIL:      render_tx_result();   break;
@@ -1239,6 +1228,80 @@ void UIManager::render_recovery() {
     }
     m_display.draw_text_centered(229, "Click same spot in app  B1:cancel",
                                  Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// ─── Create wallet (words on the device only) ─────────────
+void UIManager::render_wallet_create() {
+    if (!m_create) return;
+    using St = WalletCreateSession::Stage;
+    const auto v = m_create->view(true);
+    char buf[40];
+    m_display.draw_text_centered(6, "NEW WALLET", Display::FontSize::MEDIUM, TFT_ORANGE);
+
+    switch (v.stage) {
+        case St::INTRO:
+            snprintf(buf, sizeof(buf), "Write down %u words", static_cast<unsigned>(v.total));
+            m_display.draw_text_centered(44, buf, Display::FontSize::MEDIUM, Colors::WHITE);
+            m_display.draw_text_centered(80, "on paper, in order.", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(104, "Anyone with these words", Display::FontSize::SMALL, Colors::YELLOW);
+            m_display.draw_text_centered(118, "owns your funds.", Display::FontSize::SMALL, Colors::YELLOW);
+            m_display.draw_text_centered(142, "Never type them into", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(156, "a phone or computer.", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(186, "Make sure no one is watching.", Display::FontSize::SMALL, TFT_GRAY);
+            m_display.draw_text_centered(222, "B4: show words   B1: cancel", Display::FontSize::SMALL, TFT_GRAY);
+            break;
+
+        case St::WORDS: {
+            snprintf(buf, sizeof(buf), "Words %u-%u of %u", static_cast<unsigned>(v.first),
+                     static_cast<unsigned>(v.first + WalletCreateSession::WORDS_PER_PAGE - 1),
+                     static_cast<unsigned>(v.total));
+            m_display.draw_text_centered(30, buf, Display::FontSize::SMALL, TFT_SILVER);
+            for (int i = 0; i < WalletCreateSession::WORDS_PER_PAGE; ++i) {
+                snprintf(buf, sizeof(buf), "%2u. %s", static_cast<unsigned>(v.first + i), v.words[i]);
+                m_display.draw_text(10, 52 + i * 34, buf, Display::FontSize::LARGE, Colors::WHITE);
+            }
+            if (v.wrong) {
+                m_display.draw_text_centered(194, "Wrong word - check your paper", Display::FontSize::SMALL, Colors::RED);
+            }
+            const bool last = v.page + 1 >= v.pages;
+            m_display.draw_text_centered(222, last ? "B3:back  B4:confirm  B1:cancel"
+                                                   : "B3:back  B4:next  B1:cancel",
+                                         Display::FontSize::SMALL, TFT_GRAY);
+            break;
+        }
+
+        case St::VERIFY: {
+            snprintf(buf, sizeof(buf), "Confirm word #%u  (%u/%u)", static_cast<unsigned>(v.verify_word),
+                     static_cast<unsigned>(v.verify_n),
+                     static_cast<unsigned>(WalletCreateSession::VERIFY_COUNT));
+            m_display.draw_text_centered(30, buf, Display::FontSize::SMALL, Colors::WHITE);
+            m_display.draw_text_centered(44, "find it, click its spot in the app", Display::FontSize::SMALL, TFT_CYAN);
+            static constexpr int kX0 = 3, kY0 = 58, kW = 78, kH = 56;
+            for (int i = 0; i < 9; ++i) {
+                const int x = kX0 + (i % 3) * kW, y = kY0 + (i / 3) * kH;
+                m_display.draw_rect(x, y, kW - 2, kH - 2, TFT_GRAY);
+                const size_t n = strlen(v.cells[i]);
+                if (!n) continue;
+                m_display.draw_text(x + (kW - 2 - static_cast<int>(n) * 6) / 2, y + (kH - 2) / 2 - 4,
+                                    v.cells[i], Display::FontSize::SMALL, Colors::WHITE);
+            }
+            m_display.draw_text_centered(229, "B3: see words again   B1: cancel", Display::FontSize::SMALL, TFT_GRAY);
+            break;
+        }
+
+        case St::DONE:
+            m_display.draw_text_centered(84, "Wallet created", Display::FontSize::MEDIUM, Colors::GREEN);
+            if (v.address[0]) draw_address_rows(m_display, 120, v.address, TFT_CYAN);
+            break;
+        case St::CANCELLED:
+            m_display.draw_text_centered(100, "Cancelled", Display::FontSize::MEDIUM, TFT_GRAY);
+            m_display.draw_text_centered(128, "nothing was saved", Display::FontSize::SMALL, TFT_SILVER);
+            break;
+        default:
+            m_display.draw_text_centered(100, "Failed", Display::FontSize::MEDIUM, Colors::RED);
+            m_display.draw_text_centered(128, "nothing was saved", Display::FontSize::SMALL, TFT_SILVER);
+            break;
+    }
 }
 
 void UIManager::render_export_confirm() {
@@ -1862,10 +1925,9 @@ void UIManager::render_setup() {
             setup_header(m_display);
             gfx_centered(m_display, 46, "Step 1", &PoppinsBold9pt7b, TFT_ORANGE);
             gfx_centered(m_display, 72, "Connect to WiFi", &PoppinsBold9pt7b, Colors::WHITE);
-            gfx_centered(m_display, 104, "Go to serial monitor", &PoppinsRegular9pt7b, TFT_SILVER);
-            gfx_centered(m_display, 130, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 158, "type:", &PoppinsRegular9pt7b, TFT_GRAY);
-            command_pill(m_display, 182, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 104, "Fuchey app: Device setup", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 134, "or serial @ 115200:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 164, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
             gfx_centered(m_display, 222, "Step 1 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
@@ -1894,9 +1956,10 @@ void UIManager::render_setup() {
             gfx_centered(m_display, 44, "WiFi: OK", &PoppinsBold9pt7b, Colors::GREEN);
             gfx_centered(m_display, 72, "Step 2", &PoppinsBold9pt7b, TFT_ORANGE);
             gfx_centered(m_display, 96, "Create Your Wallet", &PoppinsBold9pt7b, Colors::WHITE);
-            command_pill(m_display, 126, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
-            command_pill(m_display, 154, "wallet_import <key>", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 186, "<mnemonic / key>", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 124, "Fuchey app: Create", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 144, "or Restore wallet", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 170, "or serial:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 194, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
             gfx_centered(m_display, 222, "Step 2 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
@@ -1905,11 +1968,9 @@ void UIManager::render_setup() {
             gfx_centered(m_display, 44, "Wallet: OK", &PoppinsBold9pt7b, Colors::GREEN);
             gfx_centered(m_display, 72, "Step 3", &PoppinsBold9pt7b, TFT_ORANGE);
             gfx_centered(m_display, 96, "Set Your Location", &PoppinsBold9pt7b, Colors::WHITE);
-            gfx_centered(m_display, 116, "Go to serial monitor", &PoppinsRegular9pt7b, TFT_SILVER);
-            gfx_centered(m_display, 134, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
-            command_pill(m_display, 160, "setloc City lat lon", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 184, "ex. setloc Chitwan", &PoppinsRegular9pt7b, TFT_GRAY);
-            gfx_centered(m_display, 200, "27.68 84.43", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 122, "Fuchey app: Device setup", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 150, "or serial @ 115200:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 178, "setloc City lat lon", &PoppinsRegular9pt7b, TFT_CYAN);
             gfx_centered(m_display, 222, "Step 3 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
@@ -2021,6 +2082,25 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::HID_REMOTE) {
                 // HID remote owns all four buttons while open.
                 handle_hid_button(btn);
+            } else if (m_current_screen == UIScreen::WALLET_CREATE && m_create) {
+                // B4 next page, B3 back, B1 cancel (nothing is stored yet).
+                if (btn.event == ButtonEvent::PRESS) {
+                    using St = WalletCreateSession::Stage;
+                    const St st = m_create->stage();
+                    const bool live = st == St::INTRO || st == St::WORDS || st == St::VERIFY;
+                    if (btn.id == ButtonId::B4_NEXT && live) {
+                        m_create->next();
+                    } else if (btn.id == ButtonId::B3_PREV && live) {
+                        m_create->prev();
+                    } else if (btn.id == ButtonId::B1_TX_BACK) {
+                        if (live) {
+                            ESP_LOGI(TAG, "[Create] cancelled on device");
+                            m_create->cancel();
+                        }
+                        set_screen(UIScreen::HOME);
+                    }
+                    request_redraw();
+                }
             } else if (m_current_screen == UIScreen::RECOVERY) {
                 // B1 abandons recovery (wipes it on the next app command).
                 if (btn.id == ButtonId::B1_TX_BACK && btn.event == ButtonEvent::PRESS) {
@@ -2147,6 +2227,17 @@ void UIManager::run() {
             if (now - m_bal_fetch_start_ms >= 15000) {
                 ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> WALLET_INFO hub");
                 set_screen(UIScreen::WALLET_INFO);
+            }
+        } else if (m_current_screen == UIScreen::WALLET_CREATE && m_create) {
+            // Result screen 5 s; an abandoned session ends after 5 min idle.
+            using St = WalletCreateSession::Stage;
+            const St st = m_create->stage();
+            const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (st == St::DONE || st == St::FAILED || st == St::CANCELLED || st == St::IDLE) {
+                if (now - m_create_result_ms >= 5000) set_screen(UIScreen::HOME);
+            } else if (now - m_create->last_activity_ms() >= 300000) {
+                m_create->cancel();
+                set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::RECOVERY) {
             // Result stays 5 s; an abandoned session (page closed) ends after

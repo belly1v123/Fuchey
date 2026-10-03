@@ -41,6 +41,10 @@ restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
 - **Cancel request** withdraws a pending confirmation from the device.
 - **Receive (QR)** shows the address as a QR code; **Show on Fuchey** opens
   the device's own Receive QR screen (firmware cap `show_address`).
+- **Set up a wallet** (no wallet on the device): **Create new wallet**
+  (cap `wallet_create`) — Fuchey generates the words and shows them only
+  on its screen; the page shows progress and, at the end, the grid for
+  confirming 3 words. **Restore wallet** — the scrambled grid below.
 - **Recovery words** (firmware cap `recovery_grid`): Trezor-style
   scrambled grid. Fuchey shows a shuffled 3×3 grid of keypad letter groups
   (`abc … wxyz` + ⌫), switching to the matching words once ≤ 8 remain; you
@@ -98,6 +102,10 @@ One line per message on the USB console, mixed with log lines:
 | `{"id":10,"cmd":"recovery_start","purpose":"check","words":12}` | `ok, done:false, word, total, mode` — Fuchey shows a shuffled 3×3 grid (`restore` only when no wallet exists) |
 | `{"id":11,"cmd":"recovery_tap","pos":4}` | next `word/mode`, or `done:true, result` (`match`, `mismatch`, `bad_checksum`, `restored` + `address`, `failed`) |
 | `{"id":12,"cmd":"recovery_cancel"}` | `ok` |
+| `{"id":13,"cmd":"wallet_create_start","words":12}` | `ok, stage:"intro", …` — only without a wallet; Fuchey shows a warning, then the words (B4/B3) |
+| `{"id":14,"cmd":"wallet_create_state"}` | `stage` (`intro`, `words`, `verify`, `done`, `cancelled`, `failed`), `page/pages`, `verify_n/verify_word`, `wrong`, `address` when done — **never words** |
+| `{"id":15,"cmd":"wallet_create_tap","pos":3}` | confirm the asked word on the device's grid; after 3 correct the wallet is stored |
+| `{"id":16,"cmd":"wallet_create_cancel"}` | `ok` (nothing stored) |
 
 ### Command tiers
 
@@ -105,6 +113,7 @@ One line per message on the USB console, mixed with log lines:
 |---|---|---|
 | Read-only | `hello`, `get_pubkey`, `get_status`, `wifi_scan`, `show_address` | Always allowed. Never returns secrets (no WiFi password, no keys). |
 | Device settings | `set_wifi`, `set_location` (later: pet / wearable settings) | Allowed without a button press: they cannot move funds or touch keys. Refused while a signature is pending. Inputs are length/charset-checked. Secrets are write-only and never logged. |
+| Wallet creation | `wallet_create_*` | Only without a wallet. Words generated on the device and shown only on its screen (4 per page, B4/B3); the user confirms 3 random words via the grid (positions only). Stored only after confirmation; RAM wiped after. B1 or 5 min idle cancels. |
 | Phrase entry (grid) | `recovery_start`, `recovery_tap`, `recovery_cancel` | Only cell positions (0–8) travel over USB; letters/words exist only on the device screen and are reshuffled every tap. Check = compare with the stored wallet (changes nothing). Restore = only when no wallet exists. B1 on the device or 3 min idle cancels. |
 | Signing | `sign_tx`, `cancel` | Parsed by TxParser, shown on the TFT, approved only by a hardware B1 tap. |
 | Device-confirmed (future) | e.g. `network devnet/mainnet` | Would need a physical B1 confirmation on a dedicated screen. Not exposed today. |

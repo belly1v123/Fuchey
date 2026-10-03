@@ -98,6 +98,8 @@ bool UsbProtocol::handle_line(const char* line) {
         return true;
     }
 
+    cleanup_finished_sessions();
+
     cJSON* req = cJSON_ParseWithLength(json, json_len);
     if (!req) {
         send_error(0, "bad_json");
@@ -136,6 +138,14 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_recovery_tap(id, req);
     } else if (m_settings && strcmp(cmd, "recovery_cancel") == 0) {
         cmd_recovery_cancel(id);
+    } else if (m_create && strcmp(cmd, "wallet_create_start") == 0) {
+        cmd_wallet_create_start(id, req);
+    } else if (m_create && strcmp(cmd, "wallet_create_state") == 0) {
+        cmd_wallet_create_state(id);
+    } else if (m_create && strcmp(cmd, "wallet_create_tap") == 0) {
+        cmd_wallet_create_tap(id, req);
+    } else if (m_create && strcmp(cmd, "wallet_create_cancel") == 0) {
+        cmd_wallet_create_cancel(id);
     } else {
         send_error(id, "unknown_cmd", cmd);
     }
@@ -163,6 +173,7 @@ void UsbProtocol::cmd_hello(uint32_t id) {
         cJSON_AddItemToArray(caps, cJSON_CreateString("settings_v1"));
         cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     }
+    if (m_create) cJSON_AddItemToArray(caps, cJSON_CreateString("wallet_create"));
     send(obj);
 }
 
@@ -416,6 +427,123 @@ void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
     if (m_recovery_active) {
         recovery_post_view(Events::RecoveryResult::CANCELLED);
         recovery_end();
+    }
+    send(reply(id, true));
+}
+
+// Release the "busy" lock for sessions the device already ended (B1,
+// timeout) — otherwise an abandoned session would block signing.
+void UsbProtocol::cleanup_finished_sessions() {
+    if (m_recovery_active && Events::g_recovery_abort.load()) {
+        Events::g_recovery_abort.store(false);
+        recovery_end();
+    }
+    if (m_create_active && m_create) {
+        const auto st = m_create->stage();
+        if (st == WalletCreateSession::Stage::CANCELLED || st == WalletCreateSession::Stage::FAILED ||
+            st == WalletCreateSession::Stage::IDLE) {
+            m_create_active = false;
+            m_busy.store(false);
+        }
+    }
+}
+
+// ─── Create wallet (words shown on the device only) ───────
+namespace {
+const char* create_stage_name(WalletCreateSession::Stage s) {
+    switch (s) {
+        case WalletCreateSession::Stage::INTRO:     return "intro";
+        case WalletCreateSession::Stage::WORDS:     return "words";
+        case WalletCreateSession::Stage::VERIFY:    return "verify";
+        case WalletCreateSession::Stage::VERIFIED:  return "verified";
+        case WalletCreateSession::Stage::DONE:      return "done";
+        case WalletCreateSession::Stage::CANCELLED: return "cancelled";
+        case WalletCreateSession::Stage::FAILED:    return "failed";
+        default:                                    return "idle";
+    }
+}
+} // namespace
+
+void UsbProtocol::create_reply_state(uint32_t id) {
+    const auto v = m_create->view(false);           // no words, ever
+    cJSON* obj = reply(id, true);
+    cJSON_AddStringToObject(obj, "stage", create_stage_name(v.stage));
+    cJSON_AddNumberToObject(obj, "total", v.total);
+    cJSON_AddNumberToObject(obj, "page", v.page + 1);
+    cJSON_AddNumberToObject(obj, "pages", v.pages);
+    cJSON_AddNumberToObject(obj, "verify_n", v.verify_n);
+    cJSON_AddNumberToObject(obj, "verify_total", WalletCreateSession::VERIFY_COUNT);
+    cJSON_AddNumberToObject(obj, "verify_word", v.verify_word);
+    cJSON_AddBoolToObject(obj, "wrong", v.wrong);
+    if (v.address[0]) cJSON_AddStringToObject(obj, "address", v.address);
+    send(obj);
+}
+
+static void post_create_changed() {
+    Events::Event evt{};
+    evt.type = Events::EventType::UI_WALLET_CREATE;
+    Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50));
+}
+
+void UsbProtocol::cmd_wallet_create_start(uint32_t id, cJSON* req) {
+    if (m_core.get_address().has_value()) {
+        send_error(id, "wallet_exists", "this Fuchey already has a wallet");
+        return;
+    }
+    cJSON* words = cJSON_GetObjectItem(req, "words");
+    const int n = (words && cJSON_IsNumber(words)) ? words->valueint : 12;
+    if (n != 12 && n != 24) { send_error(id, "bad_request", "words 12|24"); return; }
+    bool expected = false;
+    if (!m_create_active && !m_busy.compare_exchange_strong(expected, true)) {
+        send_error(id, "busy", "another request is pending");
+        return;
+    }
+    m_create->reset_if_terminal();
+    if (!m_create->begin(n)) {
+        m_create_active = false;
+        m_busy.store(false);
+        send_error(id, "failed", "could not generate words");
+        return;
+    }
+    m_create_active = true;
+    post_create_changed();
+    create_reply_state(id);
+}
+
+void UsbProtocol::cmd_wallet_create_state(uint32_t id) {
+    create_reply_state(id);
+}
+
+void UsbProtocol::cmd_wallet_create_tap(uint32_t id, cJSON* req) {
+    if (!m_create_active) { send_error(id, "no_session"); return; }
+    cJSON* pos = cJSON_GetObjectItem(req, "pos");
+    if (!pos || !cJSON_IsNumber(pos) || pos->valueint < 0 || pos->valueint > 8) {
+        send_error(id, "bad_request", "pos 0..8");
+        return;
+    }
+    m_create->tap(pos->valueint);
+    if (m_create->stage() == WalletCreateSession::Stage::VERIFIED) {
+        // Confirmed: only now is anything stored.
+        std::string phrase = m_create->phrase_if_verified();
+        const bool ok = !phrase.empty() && m_core.import(phrase) == WalletResult::OK;
+        std::fill(phrase.begin(), phrase.end(), '\0');
+        phrase.clear();
+        const std::string address = ok ? m_core.get_address().value_or("") : "";
+        m_create->finish(ok, address);
+        m_create_active = false;
+        m_busy.store(false);
+        if (ok && m_settings) m_settings->on_wallet_restored(address);
+    }
+    post_create_changed();
+    create_reply_state(id);
+}
+
+void UsbProtocol::cmd_wallet_create_cancel(uint32_t id) {
+    if (m_create_active) {
+        m_create->cancel();
+        m_create_active = false;
+        m_busy.store(false);
+        post_create_changed();
     }
     send(reply(id, true));
 }

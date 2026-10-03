@@ -234,6 +234,24 @@ export class FucheyDevice extends EventTarget {
     return this.request("recovery_tap", { pos }, { timeoutMs: 15000 });
   }
 
+  // ── Create wallet (cap "wallet_create") — words shown on the device only ──
+  walletCreateStart(words) {
+    return this.request("wallet_create_start", { words }, { timeoutMs: 5000 });
+  }
+
+  walletCreateState() {
+    return this.request("wallet_create_state", {}, { timeoutMs: 3000 });
+  }
+
+  walletCreateTap(pos) {
+    // The final confirm stores the wallet (PBKDF2 + NVS) — allow a few seconds.
+    return this.request("wallet_create_tap", { pos }, { timeoutMs: 15000 });
+  }
+
+  walletCreateCancel() {
+    return this.request("wallet_create_cancel", {}, { timeoutMs: 3000 });
+  }
+
   recoveryCancel() {
     return this.request("recovery_cancel", {}, { timeoutMs: 3000 });
   }

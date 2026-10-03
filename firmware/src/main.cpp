@@ -154,6 +154,7 @@ public:
     }
 };
 static AppDeviceSettings s_app_settings;
+static Fuchey::WalletCreateSession s_wallet_create;   // app "Create wallet" (RAM only)
 
 // Companion-app protocol ("@@" framed lines on the USB console).
 static Fuchey::UsbProtocol s_usb_protocol(s_wallet_core, s_wallet_manager,
@@ -831,6 +832,10 @@ extern "C" void app_main(void) {
 
     // Wire buzzer to UIManager for Pomodoro finish alerts (non-blocking pattern)
     s_ui.set_buzzer(&s_buzzer);
+
+    // App-driven wallet creation: UI draws the words, protocol confirms.
+    s_ui.set_create_session(&s_wallet_create);
+    s_usb_protocol.set_create_session(&s_wallet_create);
 
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {
