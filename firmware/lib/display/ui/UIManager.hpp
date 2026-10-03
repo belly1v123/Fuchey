@@ -12,6 +12,7 @@
 #include "../../balance/BalanceMonitor.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../buzzer/Buzzer.hpp"
+#include "../../wallet/WalletCreateSession.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
 #include <atomic>
 #include <cstdint>
@@ -39,6 +40,7 @@ enum class UIScreen {
     FAIR_PASS,
     HID_REMOTE,
     RECOVERY,      // scrambled-grid phrase entry (driven by the companion app)
+    WALLET_CREATE, // new wallet: words shown on device only, confirmed via app grid
     HOME
 };
 
@@ -79,6 +81,7 @@ public:
     void set_price_service(PriceService* ps);
     void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
     void set_buzzer(Buzzer* buzzer)               { m_buzzer = buzzer; }
+    void set_create_session(WalletCreateSession* s) { m_create = s; }
 
 private:
     Display& m_display;
@@ -152,7 +155,11 @@ private:
 
     // Setup wizard
     bool        m_setup_needed{false};
-    bool        m_location_missing{false}; // snapshot from set_setup_needed
+    bool        m_location_missing{false}; // still missing (setup wizard)
+    bool        m_wifi_missing{false};
+    bool        m_wallet_missing{false};
+    bool        m_wifi_connecting{false};  // credentials sent, waiting for IP
+    void        advance_setup();           // show the first missing step
     SetupStage  m_setup_stage{SetupStage::WIFI_PROMPT};
     std::string m_connecting_ssid{};    // SSID being connected to (shown on OLED)
     std::string m_wallet_address{};     // Cached after wallet created/imported
@@ -199,6 +206,10 @@ private:
     Events::RecoveryView m_recovery{};
     uint32_t    m_recovery_ms{0};     // last update (idle timeout / result timer)
     void render_recovery();
+    // Create-wallet session (shared with UsbProtocol).
+    WalletCreateSession* m_create{nullptr};
+    uint32_t    m_create_result_ms{0};
+    void render_wallet_create();
 
     void render_clock();
     void render_weather();

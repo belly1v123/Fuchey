@@ -148,8 +148,11 @@ function renderConnected() {
   $("btn-show-device").classList.toggle("hidden", !canShow);
   const canRecover = Array.isArray(info.caps) && info.caps.includes("recovery_grid");
   $("recovery").classList.toggle("hidden", !canRecover);
+  const canCreate = Array.isArray(info.caps) && info.caps.includes("wallet_create");
+  $("rec-title").textContent = info.has_wallet ? "Recovery words" : "Set up a wallet";
   $("btn-rec-check").classList.toggle("hidden", !info.has_wallet);
   $("btn-rec-restore").classList.toggle("hidden", info.has_wallet);
+  $("btn-create").classList.toggle("hidden", info.has_wallet || !canCreate);
   recShow(false);
   const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
   $("setup").classList.toggle("hidden", !canSetup);
@@ -174,10 +177,11 @@ function renderDisconnected() {
   $("setup").classList.add("hidden");
   $("recovery").classList.add("hidden");
   rec.active = false;
+  stopCreatePoll();
 }
 
 // ── scrambled-grid recovery ───────────────────────────────
-const rec = { active: false, purpose: null, busy: false };
+const rec = { active: false, purpose: null, busy: false, kind: "recovery", poll: null };
 
 function recShow(active) {
   rec.active = active;
@@ -191,6 +195,9 @@ function recProgress(r) {
 }
 
 async function recStart(purpose) {
+  rec.kind = "recovery";
+  $("rec-grid").classList.remove("hidden");
+  $("rec-help").innerHTML = 'Look at Fuchey\'s screen, find your next letter group (or word), and click the <b>same spot</b> here. Number keys work too: 7 8 9 / 4 5 6 / 1 2 3. The layout changes every click.';
   setMsg("rec-msg", "");
   try {
     const r = await device.recoveryStart(purpose, Number($("rec-words").value));
@@ -212,6 +219,7 @@ const REC_RESULT = {
 };
 
 async function recTap(pos) {
+  if (rec.kind === "create") return createTap(pos);
   if (!rec.active || rec.busy) return;
   rec.busy = true;
   try {
@@ -236,8 +244,90 @@ async function recTap(pos) {
 
 async function recCancel() {
   recShow(false);
+  if (rec.kind === "create") {
+    stopCreatePoll();
+    try { await device.walletCreateCancel(); } catch { /* already gone */ }
+    setMsg("rec-msg", "Cancelled. No wallet was created.", true);
+    return;
+  }
   try { await device.recoveryCancel(); } catch { /* already gone */ }
   setMsg("rec-msg", "Cancelled. Nothing was changed.", true);
+}
+
+// ── create wallet: words on the Fuchey, 3 confirmations via the grid ──
+function stopCreatePoll() {
+  clearInterval(rec.poll);
+  rec.poll = null;
+}
+
+async function createStart() {
+  setMsg("rec-msg", "");
+  rec.kind = "create";
+  try {
+    const st = await device.walletCreateStart(Number($("rec-words").value));
+    recShow(true);
+    createRender(st);
+    log("— create wallet: words are on the Fuchey screen only");
+    stopCreatePoll();
+    rec.poll = setInterval(async () => {
+      if (rec.busy) return;
+      try { createRender(await device.walletCreateState()); } catch { /* keep polling */ }
+    }, 1000);
+  } catch (e) {
+    setMsg("rec-msg", describe(e));
+  }
+}
+
+function createRender(st) {
+  const grid = $("rec-grid");
+  const help = $("rec-help");
+  if (st.stage === "intro" || st.stage === "words") {
+    grid.classList.add("hidden");
+    $("rec-progress").textContent = st.stage === "intro"
+      ? "Look at your Fuchey"
+      : `Write down your words — page ${st.page} of ${st.pages}`;
+    help.innerHTML = "Your new recovery words are shown <b>only on the Fuchey</b>. Write them on paper, in order. " +
+      "Press <b>B4</b> on the Fuchey for the next page (<b>B3</b> back). Never type them into a computer or phone.";
+    if (st.wrong) setMsg("rec-msg", "That wasn't the right word — the Fuchey went back to your words. Check your paper.");
+  } else if (st.stage === "verify") {
+    grid.classList.remove("hidden");
+    $("rec-progress").textContent = `Confirm word #${st.verify_word} (${st.verify_n} of ${st.verify_total})`;
+    help.innerHTML = "Find word #" + st.verify_word + " from your paper among the words on the <b>Fuchey</b>, then click the <b>same spot</b> here " +
+      "(or number keys 7 8 9 / 4 5 6 / 1 2 3). Press B3 on the Fuchey to see the words again.";
+    setMsg("rec-msg", "");
+  } else {
+    createFinish(st);
+  }
+}
+
+async function createTap(pos) {
+  if (rec.busy) return;
+  rec.busy = true;
+  try {
+    createRender(await device.walletCreateTap(pos));
+  } catch (e) {
+    setMsg("rec-msg", describe(e));
+  } finally {
+    rec.busy = false;
+  }
+}
+
+async function createFinish(st) {
+  stopCreatePoll();
+  recShow(false);
+  rec.kind = "recovery";
+  $("rec-grid").classList.remove("hidden");
+  if (st.stage === "done") {
+    setMsg("rec-msg", `Wallet created. Address: ${st.address}. Keep your paper backup safe — it's the only way to recover this wallet.`, true);
+    log(`— wallet created on Fuchey: ${st.address}`);
+    state.info = await device.hello();
+    renderConnected();
+    refreshBalances();
+  } else if (st.stage === "cancelled") {
+    setMsg("rec-msg", "Cancelled on the Fuchey. No wallet was created.", true);
+  } else {
+    setMsg("rec-msg", "Creating the wallet failed. Nothing was saved — try again.");
+  }
 }
 
 function buildRecGrid() {
@@ -678,6 +768,7 @@ function init() {
   buildRecGrid();
   $("btn-rec-check").addEventListener("click", () => recStart("check"));
   $("btn-rec-restore").addEventListener("click", () => recStart("restore"));
+  $("btn-create").addEventListener("click", createStart);
   $("btn-rec-cancel").addEventListener("click", recCancel);
   $("btn-cancel").addEventListener("click", async () => {
     $("modal-status").textContent = "Cancelling…";
