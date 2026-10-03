@@ -35,6 +35,10 @@
 //   wallet_create_state           → {stage, page, pages, verify_n, wrong[, address]}
 //   wallet_create_tap pos (0..8)  → confirm a word on the device's grid
 //   wallet_create_cancel
+//   set_network network ("devnet"|"mainnet")
+//       → event awaiting_confirmation {network}; applied only after a
+//         hardware B1 tap on Fuchey's "SWITCH NETWORK?" screen
+//       → {ok, network, changed} or error rejected|timeout|busy
 //       Only when no wallet exists. The words are shown on the device
 //       screen only; nothing is stored until 3 words are confirmed.
 // hello also returns caps=[...] naming optional features.
@@ -121,6 +125,8 @@ private:
     void recovery_reply_progress(uint32_t id);
     void recovery_end();
     void cleanup_finished_sessions();
+    void cmd_set_network(uint32_t id, cJSON* req);
+    static void network_worker(void* arg);
     void cmd_wallet_create_start(uint32_t id, cJSON* req);
     void cmd_wallet_create_state(uint32_t id);
     void cmd_wallet_create_tap(uint32_t id, cJSON* req);

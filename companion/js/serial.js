@@ -256,6 +256,11 @@ export class FucheyDevice extends EventTarget {
     return this.request("recovery_cancel", {}, { timeoutMs: 3000 });
   }
 
+  /** Ask Fuchey to switch devnet/mainnet. Applied only after B1 on the device. */
+  setNetwork(network, onEvent) {
+    return this.request("set_network", { network }, { timeoutMs: 45000, onEvent });
+  }
+
   /** Open the Receive QR screen on the device (firmware with caps "show_address"). */
   showAddress() {
     return this.request("show_address", {}, { timeoutMs: 3000 });

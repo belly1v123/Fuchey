@@ -96,6 +96,8 @@ static bool is_mainnet() { return !s_is_devnet; }
 
 // Device settings the companion app may change (WiFi, weather location).
 // Same services and side effects as the console `w` / `setloc` commands.
+static void apply_network_to_services();
+
 class AppDeviceSettings final : public Fuchey::DeviceSettings {
 public:
     Fuchey::DeviceStatus status() override {
@@ -140,6 +142,18 @@ public:
             vTaskDelete(nullptr);
         }, "wx_now", 8192, nullptr, 3, nullptr);
         return true;
+    }
+
+    void set_network(bool mainnet) override {
+        s_is_devnet = !mainnet;
+        Fuchey::Storage::Handle cfg(Fuchey::NVS::CONFIG_NS, NVS_READWRITE);
+        if (cfg.is_open()) {
+            cfg.set_str(Fuchey::NVS::KEY_NETWORK, mainnet ? "mainnet" : "devnet");
+            cfg.commit();
+        }
+        ESP_LOGI(TAG, "[App] Network switched to %s (approved on device)",
+                 mainnet ? "MAINNET-BETA" : "DEVNET");
+        apply_network_to_services();
     }
 
     // Same follow-up as a successful console wallet_import.
