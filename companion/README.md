@@ -52,6 +52,9 @@ restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
   The page never sees letters or words. **Check my words** verifies your
   backup against the device's wallet; **Restore wallet** appears only on a
   Fuchey without a wallet. ~4.5 clicks per word on average.
+- **Network switch** (cap `network_switch`): Device setup shows the current
+  network with "Switch to MAINNET / DEVNET". Mainnet asks for an extra
+  confirmation in the page, then Fuchey must approve with B1.
 - **Device setup** (firmware cap `settings_v1`) replaces the serial-console
   setup: shows WiFi + weather-location status, scans WiFi networks, sends
   SSID + password (WPA2, 8–63 chars; the password is write-only — never
@@ -106,6 +109,7 @@ One line per message on the USB console, mixed with log lines:
 | `{"id":14,"cmd":"wallet_create_state"}` | `stage` (`intro`, `words`, `verify`, `done`, `cancelled`, `failed`), `page/pages`, `verify_n/verify_word`, `wrong`, `address` when done — **never words** |
 | `{"id":15,"cmd":"wallet_create_tap","pos":3}` | confirm the asked word on the device's grid; after 3 correct the wallet is stored |
 | `{"id":16,"cmd":"wallet_create_cancel"}` | `ok` (nothing stored) |
+| `{"id":17,"cmd":"set_network","network":"mainnet"}` | event `awaiting_confirmation {network}`, then `ok, network, changed` after B1 — or `rejected` / `timeout` / `busy` |
 
 ### Command tiers
 
@@ -116,7 +120,7 @@ One line per message on the USB console, mixed with log lines:
 | Wallet creation | `wallet_create_*` | Only without a wallet. Words generated on the device and shown only on its screen (4 per page, B4/B3); the user confirms 3 random words via the grid (positions only). Stored only after confirmation; RAM wiped after. B1 or 5 min idle cancels. |
 | Phrase entry (grid) | `recovery_start`, `recovery_tap`, `recovery_cancel` | Only cell positions (0–8) travel over USB; letters/words exist only on the device screen and are reshuffled every tap. Check = compare with the stored wallet (changes nothing). Restore = only when no wallet exists. B1 on the device or 3 min idle cancels. |
 | Signing | `sign_tx`, `cancel` | Parsed by TxParser, shown on the TFT, approved only by a hardware B1 tap. |
-| Device-confirmed (future) | e.g. `network devnet/mainnet` | Would need a physical B1 confirmation on a dedicated screen. Not exposed today. |
+| Device-confirmed | `set_network` (devnet ↔ mainnet) | The app only asks; Fuchey shows "SWITCH NETWORK?" (mainnet in red with a real-money warning) and applies it only after a hardware B1 tap. Console-injected input can reject but never approve. 30 s timeout = no change. |
 | Never over USB | approve, wallet create / import / export / reset, reading keys | Device or console only (and export/reset are slated for removal). |
 
 

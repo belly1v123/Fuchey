@@ -1119,6 +1119,10 @@ void UIManager::render_tx_confirm() {
         render_export_confirm();
         return;
     }
+    if (m_confirm.kind == Events::ConfirmKind::NETWORK_SWITCH) {
+        render_network_confirm();
+        return;
+    }
 
     char buf[48];
     snprintf(buf, sizeof(buf), "SEND %s?", m_confirm.asset);
@@ -1329,6 +1333,29 @@ void UIManager::render_wallet_create() {
             m_display.draw_text_centered(128, "nothing was saved", Display::FontSize::SMALL, TFT_SILVER);
             break;
     }
+}
+
+// Network switch requested by the companion app (target = m_confirm.mainnet).
+void UIManager::render_network_confirm() {
+    const bool main = m_confirm.mainnet;
+    m_display.draw_text_centered(8, "SWITCH NETWORK?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(44, "to", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(60, main ? "MAINNET" : "DEVNET", Display::FontSize::LARGE,
+                                 main ? Colors::RED : Colors::YELLOW);
+    if (main) {
+        m_display.draw_text_centered(104, "REAL SOL and USDC.", Display::FontSize::SMALL, Colors::RED);
+        m_display.draw_text_centered(124, "This Fuchey is a prototype:", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(138, "no PIN, key not encrypted.", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(160, "Use small amounts only.", Display::FontSize::SMALL, Colors::YELLOW);
+    } else {
+        m_display.draw_text_centered(110, "Test network:", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(124, "free test tokens,", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(138, "no real value.", Display::FontSize::SMALL, TFT_SILVER);
+    }
+    m_display.draw_text_centered(186, "Requested by the Fuchey app", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SWITCH  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_export_confirm() {
