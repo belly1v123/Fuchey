@@ -53,7 +53,8 @@ body.offline .top { display: none; }
 .brand { display: flex; align-items: center; }
 .wordmark { height: 22px; width: auto; display: block; image-rendering: pixelated; }
 .conn { display: flex; gap: 8px; align-items: center; }
-main { flex: 1; padding: 16px 16px 104px; display: grid; gap: 16px; align-content: start; }
+/* Right padding = left + shadow offset, so shadowed cards look centred. */
+main { flex: 1; padding: 16px 20px 104px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-content: start; }
 
 /* ── Buttons ───────────────────────────────────────────── */
 button {
@@ -96,24 +97,21 @@ button.big:active:not(:disabled) { transform: translate(4px, 4px); }
 .card h3 { margin: 20px 0 8px; font: 700 12px/1 var(--mono); color: var(--ink-2); text-transform: uppercase; letter-spacing: .08em; }
 
 /* ── Connect screen ────────────────────────────────────── */
-.empty { text-align: center; padding: 28px 4px 8px; display: grid; gap: 14px; justify-items: center; }
-.yeti {
-  width: 180px; height: 180px; image-rendering: pixelated;
-  background: url("../img/yeti-idle.png") 0 0 / 2160px 180px no-repeat;
-  animation: yeti 1.2s steps(12) infinite;
+/* One centred column: every block shares the same width and left/right edges. */
+.empty {
+  display: grid; gap: 18px; justify-items: stretch; text-align: center;
+  min-height: calc(100vh - 140px); align-content: center; padding: 8px 0;
 }
-@keyframes yeti { to { background-position: -2160px 0; } }
-@media (prefers-reduced-motion: reduce) { .yeti { animation: none; } }
-.empty .wordmark { height: 40px; }
+.empty .wordmark { height: 44px; justify-self: center; }
 .tagline { margin: 0; font: 700 13px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .12em; }
-.empty p.muted { margin: 0; line-height: 1.55; font-size: 14px; max-width: 34ch; }
-.steps { display: grid; gap: 8px; width: 100%; margin: 4px 0 6px; text-align: left; }
+.empty p.muted { margin: 0; line-height: 1.55; font-size: 13px; }
+.steps { display: grid; gap: 8px; text-align: left; }
 .step { display: flex; gap: 10px; align-items: center; font-size: 14px; padding: 10px 12px; background: var(--card); border: var(--line); border-radius: var(--r); }
 .step b { font-family: var(--mono); background: var(--ink); color: var(--paper); width: 22px; height: 22px; display: grid; place-items: center; border-radius: 3px; flex: none; font-size: 12px; }
 
 /* ── Wallet ────────────────────────────────────────────── */
 .account { display: flex; align-items: center; gap: 12px; }
-.avatar { width: 40px; height: 40px; border: var(--line); border-radius: var(--r); background: var(--gold) url("../img/yeti-idle.png") -6px -2px / 600px 50px no-repeat; image-rendering: pixelated; }
+.avatar { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border: var(--line); border-radius: var(--r); background: var(--gold); font: 800 18px/1 var(--mono); box-shadow: var(--shadow-sm); }
 .account-name { font: 800 13px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .addr-btn { display: inline-flex; gap: 6px; align-items: center; padding: 4px 0 0; border: none; background: none; box-shadow: none; color: var(--ink-2); font-weight: 500; }
 .addr-btn:hover { background: none; color: var(--ink); }
