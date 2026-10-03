@@ -204,6 +204,3 @@ details label { margin-top: 12px; }
 @media (min-width: 700px) {
   .app { margin-top: 0; }
 }
-.hero-coins { display: flex; margin-bottom: 4px; }
-.hero-coins img { width: 72px; height: 72px; image-rendering: pixelated; }
-.hero-coins img + img { margin-left: -18px; }
