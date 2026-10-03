@@ -41,6 +41,13 @@ restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
 - **Cancel request** withdraws a pending confirmation from the device.
 - **Receive (QR)** shows the address as a QR code; **Show on Fuchey** opens
   the device's own Receive QR screen (firmware cap `show_address`).
+- **Device setup** (firmware cap `settings_v1`) replaces the serial-console
+  setup: shows WiFi + weather-location status, scans WiFi networks, sends
+  SSID + password (WPA2, 8–63 chars; the password is write-only — never
+  stored by the page or returned by the device), and sets the weather
+  location by town search (Open-Meteo geocoding, from the browser) or this
+  computer's location (browser permission). Names are converted to ASCII
+  for the device's font.
 
 USDC to a wallet that already has a USDC account: the device screen shows
 the destination **token account**; the page shows both it and the wallet.
@@ -77,6 +84,21 @@ One line per message on the USB console, mixed with log lines:
 | `{"id":3,"cmd":"sign_tx","msg":"<base64 message>","network":"devnet"}` | event `awaiting_confirmation {asset, amount, fee, to, timeout_ms[, creates_account, rent]}`, then `ok, sig` (base64, 64 bytes) |
 | `{"id":4,"cmd":"cancel"}` | `ok, cancelled` |
 | `{"id":5,"cmd":"show_address"}` | `ok` (device opens its Receive QR screen) |
+| `{"id":6,"cmd":"get_status"}` | `ok, wifi {configured, connected, online, ssid}, location {configured, city, lat, lon}, setup_done, network` |
+| `{"id":7,"cmd":"wifi_scan"}` | `ok, networks [{ssid, rssi, secure}]` (strongest first, ≤ 20) or `scan_failed` |
+| `{"id":8,"cmd":"set_wifi","ssid":"…","password":"…"}` | `ok` once the connection attempt started — poll `get_status` |
+| `{"id":9,"cmd":"set_location","city":"Chitwan","lat":27.68,"lon":84.43}` | `ok` (saved; weather refreshes) |
+
+### Command tiers
+
+| Tier | Commands | Rule |
+|---|---|---|
+| Read-only | `hello`, `get_pubkey`, `get_status`, `wifi_scan`, `show_address` | Always allowed. Never returns secrets (no WiFi password, no keys). |
+| Device settings | `set_wifi`, `set_location` (later: pet / wearable settings) | Allowed without a button press: they cannot move funds or touch keys. Refused while a signature is pending. Inputs are length/charset-checked. Secrets are write-only and never logged. |
+| Signing | `sign_tx`, `cancel` | Parsed by TxParser, shown on the TFT, approved only by a hardware B1 tap. |
+| Device-confirmed (future) | e.g. `network devnet/mainnet` | Would need a physical B1 confirmation on a dedicated screen. Not exposed today. |
+| Never over USB | approve, wallet create / import / export / reset, reading keys | Device or console only (and export/reset are slated for removal). |
+
 
 Errors: `{"id":n,"ok":false,"err":"rejected|cancelled|timeout|busy|network_mismatch|unsupported_tx|no_wallet|bad_request|bad_crc|bad_frame|bad_json|unknown_cmd|sign_failed","detail":"..."}`.
 

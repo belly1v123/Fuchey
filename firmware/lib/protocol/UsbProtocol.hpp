@@ -21,7 +21,19 @@
 //            → {"ok":true,"sig":"<base64 64-byte signature>"}
 //   cancel                        → withdraws the pending sign_tx
 //   show_address                  → opens the Receive QR screen (read-only)
+//   get_status                    → wifi {configured, connected, online, ssid},
+//                                   location {configured, city, lat, lon}, setup_done
+//   wifi_scan                     → networks [{ssid, rssi, secure}]
+//   set_wifi  ssid, password      → saves + connects (password write-only)
+//   set_location city, lat, lon   → saves the weather location
 // hello also returns caps=[...] naming optional features.
+//
+// Command tiers (see docs/ThreatModel.md):
+//   read-only   hello, get_pubkey, get_status, wifi_scan, show_address
+//   settings    set_wifi, set_location — device config only; refused while
+//               a signature is pending; secrets never echoed or logged
+//   signing     sign_tx — always parsed, shown, and approved by hardware B1
+//   never here  approve, network switch, wallet create/import/export/reset
 //
 // The app can never approve: signing always goes through
 // WalletManager::sign_transaction() (parse → TFT → physical B1).
@@ -30,6 +42,7 @@
 #include "../wallet/WalletCore.hpp"
 #include "../wallet_manager/WalletManager.hpp"
 #include "../price/PriceService.hpp"
+#include "DeviceSettings.hpp"
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -48,7 +61,8 @@ public:
     using IsMainnetFn = bool (*)();
 
     UsbProtocol(WalletCore& core, WalletManager& manager,
-                PriceService& price, IsMainnetFn is_mainnet);
+                PriceService& price, IsMainnetFn is_mainnet,
+                DeviceSettings* settings = nullptr);
 
     // Returns true when `line` is a protocol frame (handled here, including
     // malformed frames); false for ordinary console commands.
@@ -67,6 +81,7 @@ private:
     WalletManager&    m_manager;
     PriceService&     m_price;
     IsMainnetFn       m_is_mainnet;
+    DeviceSettings*   m_settings;
     std::atomic<bool> m_busy{false};
 
     void cmd_hello(uint32_t id);
@@ -74,6 +89,10 @@ private:
     void cmd_sign_tx(uint32_t id, cJSON* req);
     void cmd_cancel(uint32_t id);
     void cmd_show_address(uint32_t id);
+    void cmd_get_status(uint32_t id);
+    void cmd_wifi_scan(uint32_t id);
+    void cmd_set_wifi(uint32_t id, cJSON* req);
+    void cmd_set_location(uint32_t id, cJSON* req);
 
     static void sign_worker(void* arg);
     void run_sign(SignJob& job);

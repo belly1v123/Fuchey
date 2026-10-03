@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_crt_bundle.h"
+#include <algorithm>
 #include <cstring>
 
 namespace Fuchey {
@@ -84,8 +85,20 @@ bool WiFiManager::connect(const char* ssid, const char* password) {
     wifi_cfg.sta.pmf_cfg.capable    = true;
     wifi_cfg.sta.pmf_cfg.required   = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
-    esp_err_t err = esp_wifi_connect();
+    // Not ESP_ERROR_CHECK: while the station is still connecting (e.g. the
+    // auto-reconnect is running) set_config returns ESP_ERR_WIFI_STATE, and
+    // aborting there would reboot the device on a credentials change.
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    if (err == ESP_ERR_WIFI_STATE) {
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(200));
+        err = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_config failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    err = esp_wifi_connect();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
         return false;
@@ -115,6 +128,43 @@ bool WiFiManager::has_credentials() const {
     if (!nvs.is_open()) return false;
     auto ssid = nvs.get_str(NVS::KEY_WIFI_SSID);
     return ssid.has_value() && !ssid->empty();
+}
+
+std::string WiFiManager::saved_ssid() const {
+    Storage::Handle nvs(NVS::WIFI_NS, NVS_READONLY);
+    if (!nvs.is_open()) return {};
+    auto ssid = nvs.get_str(NVS::KEY_WIFI_SSID);
+    return ssid ? *ssid : std::string{};
+}
+
+bool WiFiManager::scan(std::vector<ScanResult>& out, size_t max_results) {
+    out.clear();
+    if (!m_initialized) return false;
+    wifi_scan_config_t cfg{};
+    cfg.show_hidden = false;
+    esp_err_t err = esp_wifi_scan_start(&cfg, true);   // blocking
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    std::vector<wifi_ap_record_t> recs(n);
+    if (n > 0 && esp_wifi_scan_get_ap_records(&n, recs.data()) != ESP_OK) return false;
+    recs.resize(n);
+    std::sort(recs.begin(), recs.end(),
+              [](const wifi_ap_record_t& a, const wifi_ap_record_t& b) { return a.rssi > b.rssi; });
+    for (const auto& r : recs) {
+        std::string ssid(reinterpret_cast<const char*>(r.ssid),
+                         strnlen(reinterpret_cast<const char*>(r.ssid), sizeof(r.ssid)));
+        if (ssid.empty()) continue;
+        bool dup = std::any_of(out.begin(), out.end(),
+                               [&](const ScanResult& s) { return s.ssid == ssid; });
+        if (dup) continue;
+        out.push_back({ssid, r.rssi, r.authmode != WIFI_AUTH_OPEN});
+        if (out.size() >= max_results) break;
+    }
+    return true;
 }
 
 void WiFiManager::disconnect() {

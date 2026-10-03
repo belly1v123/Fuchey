@@ -29,6 +29,8 @@ public:
 
     const std::string& city_name() const { return m_city_name; }
     const std::string& location_source() const { return m_location_source; }
+    float lat() const { return m_lat; }
+    float lon() const { return m_lon; }
     void set_location(const char* city, float lat, float lon);
     bool has_configured_location() const { return m_location_configured; }
     bool set_manual_location(const char* city, float lat, float lon);

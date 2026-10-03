@@ -94,9 +94,60 @@ static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_min
 
 static bool is_mainnet() { return !s_is_devnet; }
 
+// Device settings the companion app may change (WiFi, weather location).
+// Same services and side effects as the console `w` / `setloc` commands.
+class AppDeviceSettings final : public Fuchey::DeviceSettings {
+public:
+    Fuchey::DeviceStatus status() override {
+        Fuchey::DeviceStatus st;
+        st.wifi_configured     = s_wifi_manager.has_credentials();
+        st.wifi_connected      = s_wifi_manager.is_connected();
+        st.online              = s_wifi_manager.has_ip();
+        st.wifi_ssid           = s_wifi_manager.saved_ssid();
+        st.location_configured = s_weather_service.has_configured_location();
+        st.city                = s_weather_service.city_name();
+        st.lat                 = s_weather_service.lat();
+        st.lon                 = s_weather_service.lon();
+        st.setup_done = st.wifi_configured && st.location_configured &&
+                        s_wallet_core.get_address().has_value();
+        return st;
+    }
+
+    bool scan_wifi(std::vector<Fuchey::WifiNetwork>& out) override {
+        std::vector<Fuchey::WiFiManager::ScanResult> res;
+        if (!s_wifi_manager.scan(res)) return false;
+        out.clear();
+        for (auto& r : res) out.push_back({r.ssid, r.rssi, r.secure});
+        return true;
+    }
+
+    bool set_wifi(const char* ssid, const char* password) override {
+        ESP_LOGI(TAG, "[App] WiFi: saving credentials and connecting to SSID: %s", ssid);
+        if (!s_wifi_manager.save_credentials(ssid, password)) return false;
+        s_wifi_manager.disconnect();                 // drop any old network first
+        const bool ok = s_wifi_manager.connect_from_nvs();
+        s_ui.mark_wifi_configured(ssid);
+        return ok;
+    }
+
+    bool set_location(const char* city, float lat, float lon) override {
+        ESP_LOGI(TAG, "[App] Weather location: %s (%.4f, %.4f)", city, lat, lon);
+        if (!s_weather_service.set_manual_location(city, lat, lon)) return false;
+        s_ui.mark_location_configured(city);
+        // Refresh off the console task (blocking HTTP).
+        xTaskCreate([](void*) {
+            s_weather_service.update_now();
+            vTaskDelete(nullptr);
+        }, "wx_now", 8192, nullptr, 3, nullptr);
+        return true;
+    }
+};
+static AppDeviceSettings s_app_settings;
+
 // Companion-app protocol ("@@" framed lines on the USB console).
 static Fuchey::UsbProtocol s_usb_protocol(s_wallet_core, s_wallet_manager,
-                                          s_price_service, is_mainnet);
+                                          s_price_service, is_mainnet,
+                                          &s_app_settings);
 
 // Re-point network-dependent services at the current s_is_devnet selection.
 // The monitor snapshots its URL/mint at construction (devnet default, before
