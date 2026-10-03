@@ -50,6 +50,7 @@ enum class EventType : uint32_t {
     UI_SCREEN_CHANGE     = 0x0054,
     UI_SHOW_ADDRESS      = 0x0055,  // Companion app: open the Receive QR screen
     UI_RECOVERY_VIEW     = 0x0056,  // Scrambled-grid recovery: what to draw
+    UI_WALLET_CREATE     = 0x0057,  // Create-wallet session changed (redraw / open)
 
     // System
     SYSTEM_BOOT_DONE     = 0x0060,
