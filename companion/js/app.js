@@ -237,7 +237,8 @@ const REC_RESULT = {
   match: ["Your words match this Fuchey's wallet. Your backup is good.", true],
   mismatch: ["Those words belong to a DIFFERENT wallet than this Fuchey's. Check your backup.", false],
   bad_checksum: ["Not a valid recovery phrase — at least one word differs from your paper. Fuchey's screen now lists the words it recorded (only there): compare them with your paper, press B1 on Fuchey to close, then start again.", false],
-  restored: ["Wallet restored on Fuchey.", true],
+  restored: ["Wallet restored and saved on Fuchey.", true],
+  cancelled: ["Not saved — you cancelled on Fuchey (or it timed out). Nothing was stored.", false],
   failed: ["Fuchey couldn't finish. Nothing was changed.", false],
 };
 
@@ -246,8 +247,14 @@ async function recTap(pos) {
   if (!rec.active || rec.busy) return;
   rec.busy = true;
   try {
-    const r = await device.recoveryTap(pos);
-    setMsg("rec-msg", "");
+    const r = await device.recoveryTap(pos, (evt) => {
+      if (evt.event === "awaiting_confirmation") {
+        $("rec-progress").textContent = "Confirm on Fuchey";
+        setMsg("rec-msg", `Fuchey shows the wallet these words restore: ${evt.address}. ` +
+          "If that's the address you expect, press B1 on Fuchey to save it (double-press to cancel).", true);
+      }
+    });
+    if (!r.done) setMsg("rec-msg", "");
     if (!r.done) { recProgress(r); return; }
     recShow(false);
     const [text, ok] = REC_RESULT[r.result] || [`Finished: ${r.result}`, false];

@@ -358,7 +358,17 @@ void UsbProtocol::cmd_recovery_start(uint32_t id, cJSON* req) {
     recovery_reply_progress(id);
 }
 
+namespace {
+// Restore waiting for B1: owns a copy of the phrase until it is wiped.
+struct RestoreJob {
+    UsbProtocol* self;
+    uint32_t     id;
+    std::string  phrase;
+};
+} // namespace
+
 void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
+    if (m_recovery_confirming.load()) { send_error(id, "busy", "confirm on Fuchey first"); return; }
     if (!m_recovery_active || !m_rc->active()) { send_error(id, "no_session"); return; }
     cJSON* pos = cJSON_GetObjectItem(req, "pos");
     if (!pos || !cJSON_IsNumber(pos) || pos->valueint < 0 || pos->valueint > 8) {
@@ -385,24 +395,75 @@ void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
     // All words entered: validate, then compare or restore.
     using R = RecoveryController::Result;
     std::string phrase = m_rc->phrase();
-    R result = R::FAILED;
-    std::string address;
+    auto wipe = [&phrase] { std::fill(phrase.begin(), phrase.end(), '\0'); phrase.clear(); };
+
     if (!Crypto::BIP39::validate(phrase)) {
-        result = R::BAD_CHECKSUM;
-    } else if (m_rc->restore()) {
-        if (m_core.import(phrase) == WalletResult::OK) {
-            result = R::RESTORED;
-            address = m_core.get_address().value_or("");
-        }
-    } else {
+        wipe();
+        finish_recovery(id, R::BAD_CHECKSUM, "");
+        return;
+    }
+    if (!m_rc->restore()) {
         bool match = false;
+        R result = R::FAILED;
         if (m_core.matches_mnemonic(phrase, match) == WalletResult::OK) {
             result = match ? R::MATCH : R::MISMATCH;
         }
+        wipe();
+        finish_recovery(id, result, "");
+        return;
     }
-    std::fill(phrase.begin(), phrase.end(), '\0');
-    phrase.clear();
-    m_rc->set_result(result);       // the device shows the result (and, for a bad phrase, the words)
+
+    // Restore: show the address on Fuchey and wait for a hardware B1 tap
+    // (off the console task — the confirmation blocks up to 30 s).
+    auto* job = new RestoreJob{this, id, std::move(phrase)};
+    m_recovery_confirming.store(true);
+    if (xTaskCreate(restore_worker, "usb_restore", 8192, job, SIGN_WORKER_PRIO, nullptr) != pdPASS) {
+        std::fill(job->phrase.begin(), job->phrase.end(), '\0');
+        delete job;
+        m_recovery_confirming.store(false);
+        finish_recovery(id, R::FAILED, "");
+    }
+}
+
+void UsbProtocol::restore_worker(void* arg) {
+    auto* job = static_cast<RestoreJob*>(arg);
+    UsbProtocol* self = job->self;
+    using R = RecoveryController::Result;
+    R result = R::FAILED;
+    std::string address;
+
+    if (self->m_core.address_from_mnemonic(job->phrase, address) == WalletResult::OK) {
+        cJSON* evt = cJSON_CreateObject();
+        cJSON_AddNumberToObject(evt, "id", job->id);
+        cJSON_AddStringToObject(evt, "event", "awaiting_confirmation");
+        cJSON_AddStringToObject(evt, "address", address.c_str());
+        cJSON_AddNumberToObject(evt, "timeout_ms", WalletManager::CONFIRM_TIMEOUT_MS);
+        send(evt);
+
+        Events::TxSummary summary{};
+        summary.kind = Events::ConfirmKind::RESTORE_WALLET;
+        snprintf(summary.recipient, sizeof(summary.recipient), "%s", address.c_str());
+        const SignStatus st = self->m_manager.request_confirmation(summary,
+                                                                   WalletManager::CONFIRM_TIMEOUT_MS);
+        if (st == SignStatus::APPROVED) {
+            result = self->m_core.import(job->phrase) == WalletResult::OK ? R::RESTORED : R::FAILED;
+        } else {
+            result = R::CANCELLED;      // rejected / timed out: nothing stored
+            address.clear();
+        }
+    }
+    std::fill(job->phrase.begin(), job->phrase.end(), '\0');
+    const uint32_t id = job->id;
+    delete job;
+    self->m_recovery_confirming.store(false);
+    self->finish_recovery(id, result, result == R::RESTORED ? address : "");
+    vTaskDelete(nullptr);
+}
+
+void UsbProtocol::finish_recovery(uint32_t id, RecoveryController::Result result,
+                                  const std::string& address) {
+    using R = RecoveryController::Result;
+    m_rc->set_result(result);       // device shows the result (bad phrase: the words, for review)
     recovery_post_view();
     recovery_end();
     if (result == R::RESTORED && m_settings) m_settings->on_wallet_restored(address);
@@ -417,6 +478,11 @@ void UsbProtocol::cmd_recovery_tap(uint32_t id, cJSON* req) {
 }
 
 void UsbProtocol::cmd_recovery_cancel(uint32_t id) {
+    if (m_recovery_confirming.load()) {
+        m_manager.cancel_pending();     // worker sees CANCELLED, stores nothing
+        send(reply(id, true));
+        return;
+    }
     if (m_recovery_active) {
         m_rc->cancel();
         recovery_post_view();

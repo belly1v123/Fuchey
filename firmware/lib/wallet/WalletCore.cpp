@@ -142,6 +142,24 @@ WalletResult WalletCore::matches_mnemonic(std::string_view mnemonic, bool& out_m
     return WalletResult::OK;
 }
 
+WalletResult WalletCore::address_from_mnemonic(std::string_view mnemonic,
+                                               std::string& out_address) const {
+    out_address.clear();
+    if (!Crypto::BIP39::validate(mnemonic)) return WalletResult::ERR_INVALID_MNEMONIC;
+    Crypto::Seed seed{};
+    if (!Crypto::BIP39::to_seed(mnemonic, "", seed)) return WalletResult::ERR_CRYPTO_FAILURE;
+    auto kp = Crypto::SLIP0010::derive_solana(seed);
+    seed.fill(0);
+    if (!kp) return WalletResult::ERR_CRYPTO_FAILURE;
+    Crypto::PubKey pub{};
+    if (!Crypto::Ed25519::get_pubkey(std::span<const uint8_t, 32>(kp->priv_key.data(), 32),
+                                     std::span<uint8_t, 32>(pub.data(), 32))) {
+        return WalletResult::ERR_CRYPTO_FAILURE;
+    }
+    out_address = Crypto::Base58::pubkey_to_address(std::span<const uint8_t, 32>(pub.data(), 32));
+    return WalletResult::OK;
+}
+
 // ─── Import from raw private key (hex) ───────────────────
 WalletResult WalletCore::import_privkey_hex(std::string_view hex64) {
     if (m_state != WalletState::UNINITIALIZED) {

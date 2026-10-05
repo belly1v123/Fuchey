@@ -29,6 +29,9 @@
 //   recovery_start purpose ("check"|"restore"), words (12|24)
 //   recovery_tap pos (0..8)       → {word, total, mode} or {done, result[, address]}
 //   recovery_cancel
+//       Restore: after the last word Fuchey shows "SAVE WALLET?" with the
+//       derived address (event awaiting_confirmation {address}) and stores
+//       the wallet only after a hardware B1 tap.
 //       Scrambled-grid phrase entry: the grid is drawn on the device only;
 //       the host sends positions and learns progress, never letters/words.
 //   wallet_create_start words (12|24) → device generates + shows the words
@@ -105,6 +108,7 @@ private:
     DeviceSettings*   m_settings;
     RecoveryController* m_rc{nullptr};
     bool              m_recovery_active{false};
+    std::atomic<bool> m_recovery_confirming{false};   // restore: waiting for B1
     WalletCreateSession* m_create{nullptr};
     bool              m_create_active{false};
     std::atomic<bool> m_busy{false};
@@ -124,6 +128,8 @@ private:
     void recovery_post_view();
     void recovery_reply_progress(uint32_t id);
     void recovery_end();
+    static void restore_worker(void* arg);
+    void finish_recovery(uint32_t id, RecoveryController::Result result, const std::string& address);
     void cleanup_finished_sessions();
     void cmd_set_network(uint32_t id, cJSON* req);
     static void network_worker(void* arg);

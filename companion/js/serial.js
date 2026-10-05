@@ -229,9 +229,10 @@ export class FucheyDevice extends EventTarget {
     return this.request("recovery_start", { purpose, words }, { timeoutMs: 4000 });
   }
 
-  recoveryTap(pos) {
-    // The last tap derives keys on the device (PBKDF2) — allow a few seconds.
-    return this.request("recovery_tap", { pos }, { timeoutMs: 15000 });
+  recoveryTap(pos, onEvent) {
+    // The last tap derives keys on the device and, for a restore, waits for
+    // B1 on Fuchey's "SAVE WALLET?" screen (30 s) — allow enough time.
+    return this.request("recovery_tap", { pos }, { timeoutMs: 45000, onEvent });
   }
 
   // ── Create wallet (cap "wallet_create") — words shown on the device only ──

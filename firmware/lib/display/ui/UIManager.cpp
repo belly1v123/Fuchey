@@ -1127,6 +1127,10 @@ void UIManager::render_tx_confirm() {
         render_network_confirm();
         return;
     }
+    if (m_confirm.kind == Events::ConfirmKind::RESTORE_WALLET) {
+        render_restore_confirm();
+        return;
+    }
 
     char buf[48];
     snprintf(buf, sizeof(buf), "SEND %s?", m_confirm.asset);
@@ -1360,6 +1364,19 @@ void UIManager::render_network_confirm() {
     m_display.draw_text_centered(186, "Requested by the Fuchey app", Display::FontSize::SMALL, TFT_GRAY);
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
     m_display.draw_text_centered(222, "B1 tap:SWITCH  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// Restore via the grid: show the wallet the words produce before saving.
+void UIManager::render_restore_confirm() {
+    m_display.draw_text_centered(8, "SAVE WALLET?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(44, "Your words restore", Display::FontSize::SMALL, TFT_SILVER);
+    m_display.draw_text_centered(58, "this wallet:", Display::FontSize::SMALL, TFT_SILVER);
+    draw_address_rows(m_display, 82, m_confirm.recipient, TFT_CYAN);
+    m_display.draw_text_centered(150, "Check it matches the address", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(164, "you expect before saving.", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SAVE  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_export_confirm() {
