@@ -8,3 +8,6 @@ docs/
 Agent.md
 Memory.md
 
+
+# Art sources stay local (converted copies live in firmware/ as .hpp)
+Assets/
