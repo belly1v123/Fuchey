@@ -67,6 +67,7 @@ public:
     void mark_wallet_configured(const char* address = nullptr); // address cached for WALLET_INFO screen
     void mark_location_configured(const char* city = nullptr); // city cached for weather label
     void on_wifi_got_ip();   // Called when WIFI_GOT_IP event received
+    void set_wifi_up(bool up) { m_wifi_up = up; }   // initial state at boot
 
     // Render loop processing
     void render();
@@ -203,6 +204,10 @@ private:
     int         m_home_tx{0}, m_home_ty{0}, m_home_tw{0}, m_home_th{0};
     // Last home weather readout (change detection for pill updates).
     char        m_home_wbuf[16]{"-- C"};
+    char        m_home_dbuf[16]{};
+    // WiFi has an IP (WIFI_GOT_IP / WIFI_DISCONNECTED). HOME shows
+    // "No WiFi" instead of empty time/weather while it is down.
+    bool        m_wifi_up{false};
     uint8_t     m_home_wcode{255};
     // Scrambled-grid recovery: drawn straight from the shared controller.
     RecoveryController* m_rc{nullptr};

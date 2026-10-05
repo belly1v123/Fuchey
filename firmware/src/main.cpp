@@ -8,6 +8,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -15,7 +16,9 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
+#include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <cctype>
 #include <cmath>
 #include <string>
@@ -683,6 +686,64 @@ static void run_send_usdc(const SendArgs& args) {
     sign_and_broadcast(T, msg, "USDC", recipient);
 }
 
+// ─── Boot screen ───────────────────────────────────────────
+// WiFi, NTP and the weather task all run in the background; this only
+// shows their progress and returns once all three are ready (or after
+// BOOT_MAX_MS, so a bad network never blocks the device). Without WiFi it
+// tells the user to connect it from the Fuchey app.
+static void boot_screen() {
+    static constexpr uint32_t FRAME_MS    = 150;
+    static constexpr uint32_t BOOT_MIN_MS = 1500;
+    static constexpr uint32_t BOOT_MAX_MS = 15000;
+    static constexpr uint32_t NOTICE_MS   = 3000;
+    static constexpr time_t   TIME_VALID  = 1700000000;   // any date after 2023
+
+    auto no_wifi_notice = [](const char* status) {
+        ESP_LOGW(TAG, "[Boot] %s — connect WiFi from the Fuchey app", status);
+        s_display.draw_boot(100, status, "Connect using the Fuchey app", Fuchey::TFT_YELLOW);
+        vTaskDelay(pdMS_TO_TICKS(NOTICE_MS));
+    };
+
+    if (!s_wifi_manager.has_credentials()) {
+        for (uint32_t t = 0; t <= BOOT_MIN_MS; t += FRAME_MS) {
+            s_display.draw_boot(static_cast<uint8_t>(t * 100 / BOOT_MIN_MS), "Initializing");
+            vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+        }
+        no_wifi_notice("No WiFi set up");
+        return;
+    }
+
+    const int64_t start_us = esp_timer_get_time();
+    int pct = 0;
+    while (true) {
+        const uint32_t elapsed = static_cast<uint32_t>((esp_timer_get_time() - start_us) / 1000);
+        const bool ip      = s_wifi_manager.has_ip();
+        const bool time_ok = time(nullptr) > TIME_VALID;
+        const bool wx_ok   = Fuchey::Events::g_event_group &&
+            (xEventGroupGetBits(Fuchey::Events::g_event_group) & Fuchey::Events::BIT_WEATHER_OK);
+        const int done = int(ip) + int(time_ok) + int(wx_ok);
+
+        if (done == 3 && elapsed >= BOOT_MIN_MS) {
+            s_display.draw_boot(100, "Initializing");
+            ESP_LOGI(TAG, "[Boot] WiFi, time and weather ready in %u ms", (unsigned)elapsed);
+            return;
+        }
+        if (elapsed >= BOOT_MAX_MS) {
+            ESP_LOGW(TAG, "[Boot] Timeout — ip=%d time=%d weather=%d", ip, time_ok, wx_ok);
+            if (!ip) no_wifi_notice("WiFi not connected");
+            return;   // with WiFi up, HOME fills in as time/weather arrive
+        }
+
+        // Each finished step is a third of the bar; creep within the step.
+        const int floor_pct = done * 100 / 3;
+        const int cap       = (done == 3) ? 100 : floor_pct + 30;
+        pct = std::max(pct, floor_pct);
+        if (pct < cap) pct += 2;
+        s_display.draw_boot(static_cast<uint8_t>(pct), "Initializing");
+        vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+    }
+}
+
 extern "C" void app_main(void) {
     // Console = USB-Serial-JTAG. Install its driver so stdin reads block
     // (fgets in the console task) and long companion frames (~2.4 KB) fit.
@@ -801,8 +862,18 @@ extern "C" void app_main(void) {
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
 
-    // Boot animation — WiFi is already connecting in the background
-    s_display.animate_boot(3000);
+    // Weather + price start now so they fetch while the boot screen runs
+    // (Core 1 — TLS won't starve IDLE0 on CPU 0).
+    xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
+                            Fuchey::Tasks::WEATHER_STACK, &s_weather_service,
+                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::WEATHER_CORE);
+    xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
+                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
+                             Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
+
+    // Boot screen: wait for WiFi, time and weather (in parallel) so HOME
+    // opens complete.
+    boot_screen();
 
     // 5. Detect first-boot state for UIManager setup screen
     {
@@ -810,6 +881,7 @@ extern "C" void app_main(void) {
         bool wallet_missing  = !s_wallet_core.has_wallet();
         bool location_missing = !s_weather_service.has_configured_location();
         s_ui.set_setup_needed(wifi_missing, wallet_missing, location_missing);
+        s_ui.set_wifi_up(s_wifi_manager.has_ip());
 
         ESP_LOGI(TAG, "-------------------------------------------------");
         ESP_LOGI(TAG, "  Boot State:");
@@ -831,16 +903,6 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(Fuchey::WalletManager::task_entry, "wallet_mgr_task",
                             Fuchey::Tasks::WALLET_STACK, &s_wallet_manager,
                             Fuchey::Tasks::WALLET_PRIORITY, nullptr, Fuchey::Tasks::WALLET_CORE);
-
-    // Weather Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
-    xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
-                            Fuchey::Tasks::WEATHER_STACK, &s_weather_service,
-                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::WEATHER_CORE);
-
-    // Price Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
-    xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
-                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
-                             Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
     // RGB LED Indicator Task (Core 0 — idle until a TX result arrives)
     xTaskCreatePinnedToCore(Fuchey::LedIndicator::task_entry, "led_task",

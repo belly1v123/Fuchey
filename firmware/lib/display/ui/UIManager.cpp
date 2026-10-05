@@ -224,7 +224,12 @@ void UIManager::process_event(const Events::Event& evt) {
     switch (evt.type) {
         case Events::EventType::WIFI_GOT_IP:
             ESP_LOGI(TAG, "WIFI_GOT_IP received — advancing setup stage");
+            m_wifi_up = true;
             on_wifi_got_ip();
+            break;
+
+        case Events::EventType::WIFI_DISCONNECTED:
+            m_wifi_up = false;
             break;
 
         case Events::EventType::WEATHER_UPDATED:
@@ -1884,6 +1889,17 @@ void UIManager::render_home() {
         wcode = m_weather_code;
         wbits = home_weather_bits(wcode);
     }
+    if (!m_wifi_up) {
+        // Offline: say so (and where to fix it) instead of blank rows.
+        if (!synced) {
+            snprintf(dbuf, sizeof(dbuf), "No WiFi");
+            snprintf(wbuf, sizeof(wbuf), "Use app");
+        } else {
+            snprintf(wbuf, sizeof(wbuf), "No WiFi");
+        }
+        wcode = 254;
+        wbits = nullptr;
+    }
 
     // Fixed lopaka geometry: time size 3 left-aligned (even the widest
     // "12:59 PM" fits from x=0), date/temp size 2 below it.
@@ -1958,10 +1974,11 @@ void UIManager::render_home() {
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
         m_home_wcode = wcode;
+        snprintf(m_home_dbuf, sizeof(m_home_dbuf), "%s", dbuf);
         return;
     }
 
-    if (minute != m_home_last_minute ||
+    if (minute != m_home_last_minute || strcmp(dbuf, m_home_dbuf) != 0 ||
         strcmp(wbuf, m_home_wbuf) != 0 || wcode != m_home_wcode) {
         // Union old + new frosted bands, sharp-restore it, then frost the
         // new band — shrunken strings leave no blurred remnants.
@@ -1978,6 +1995,7 @@ void UIManager::render_home() {
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
         m_home_wcode = wcode;
+        snprintf(m_home_dbuf, sizeof(m_home_dbuf), "%s", dbuf);
     }
 
     if (!m_home_yeti.tick(now)) return; // frame unchanged → zero SPI
