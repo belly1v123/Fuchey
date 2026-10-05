@@ -54,6 +54,11 @@ export class FucheyDevice extends EventTarget {
     return this.port !== null;
   }
 
+  /** Show the browser's port picker (Espressif devices). */
+  static pick() {
+    return navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+  }
+
   /** A Fuchey this site was already allowed to use (no picker), or null. */
   static async knownPort() {
     const ports = await navigator.serial.getPorts();
