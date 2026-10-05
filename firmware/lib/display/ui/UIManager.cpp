@@ -99,18 +99,21 @@ void setup_header(Display& d) {
     d.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 }
 
-// Open-Meteo weathercode -> home icon (30x32 RGB565, null = no data yet).
+// Open-Meteo (WMO) weathercode -> home icon (30x32 RGB565, null = no data yet).
 const SpritePixel* home_weather_bits(uint8_t code) {
     switch (code) {
-        case 0:
-        case 1:  return image_weather_sunny_bits;       // clear / mainly clear
-        case 2:  return image_weather_cloud_sunny_bits; // partly cloudy
+        case 0:  return image_weather_sunny_bits;         // clear sky
+        case 1:
+        case 2:  return image_weather_partly_sunny_bits;  // mainly clear / partly cloudy
         case 3:
         case 45:
-        case 48: return image_weather_cloud_bits;       // overcast / fog
+        case 48: return image_weather_cloud_bits;         // overcast / fog
+        case 95:
+        case 96:
+        case 99: return image_weather_thunder_bits;       // thunderstorm (± hail)
         default:
-            if (code > 99) return nullptr;              // 255 = unknown
-            return image_weather_rain_bits;             // drizzle / rain / snow / storm
+            if (code > 99) return nullptr;                // 255 = unknown
+            return image_weather_rain_bits;               // drizzle / rain / showers / snow
     }
 }
 } // namespace
