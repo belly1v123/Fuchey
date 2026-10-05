@@ -23,6 +23,11 @@ monitor` first — only one program can hold the serial port. Connecting can
 restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
 **DEVNET** before sending. Hard-reload (Ctrl+Shift+R) after updating files.
 
+**Auto-reconnect:** after the first Connect, Chrome remembers the
+permission, so on reload (or when a Fuchey is plugged back in, after ~8 s
+for it to boot) the page reconnects by itself. Pressing *Disconnect*
+turns that off for the tab until the next Connect click.
+
 ## What it does
 
 - Reads the device's network (devnet/mainnet), firmware and address (`hello`).

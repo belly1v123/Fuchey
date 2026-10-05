@@ -93,12 +93,21 @@ function log(line) {
 device.addEventListener("log", (e) => log(e.detail));
 
 // ── connection ────────────────────────────────────────────
-async function connect() {
+// Remember an explicit Disconnect so a reload doesn't reconnect behind
+// the user's back (per tab; cleared by the next Connect click).
+const autoPref = {
+  get off() { try { return sessionStorage.getItem("fuchey.noAuto") === "1"; } catch { return false; } },
+  set off(v) { try { v ? sessionStorage.setItem("fuchey.noAuto", "1") : sessionStorage.removeItem("fuchey.noAuto"); } catch { /* ignore */ } },
+};
+
+async function connect(port = null) {
+  if (state.info || $("btn-connect").disabled) return;
+  if (!port) autoPref.off = false;          // a manual Connect re-enables auto-reconnect
   $("btn-connect").disabled = true;
   $("plug-hint").classList.add("hidden");
   $("result").classList.add("hidden");
   try {
-    await device.connect();
+    await device.connect(port);
     log("— port opened, saying hello…");
     const info = await device.hello();
     if (info.proto !== 1) throw new Error(`Unsupported protocol v${info.proto}; update the page or firmware.`);
@@ -108,11 +117,30 @@ async function connect() {
     await refreshBalances();
   } catch (e) {
     if (e?.name === "NotFoundError") { $("btn-connect").disabled = false; return; }  // picker closed
-    showResult(false, `Could not connect: ${describe(e)}`);
+    if (port) {
+      // Silent auto-reconnect failed (e.g. port busy): just offer Connect.
+      log(`— auto-reconnect failed: ${describe(e)}`);
+    } else {
+      showResult(false, `Could not connect: ${describe(e)}`);
+    }
     await device.disconnect();
   } finally {
     $("btn-connect").disabled = false;
+    $("btn-connect").textContent = "Connect Fuchey";
   }
+}
+
+// Reconnect to an already-allowed Fuchey without a click (page load,
+// replug). Skipped after an explicit Disconnect in this tab.
+async function autoReconnect(delayMs = 0) {
+  if (!FucheyDevice.supported() || state.info || autoPref.off) return;
+  const port = await FucheyDevice.knownPort().catch(() => null);
+  if (!port) return;
+  if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+  if (state.info || autoPref.off) return;
+  $("btn-connect").textContent = "Reconnecting…";
+  log("— reconnecting to your Fuchey…");
+  await connect(port);
 }
 
 device.addEventListener("disconnect", (e) => {
@@ -131,7 +159,11 @@ device.addEventListener("disconnect", (e) => {
 // A previously allowed Fuchey was plugged back in. Don't auto-connect
 // (opening the port can restart it) — just say it's there.
 navigator.serial?.addEventListener("connect", () => {
-  if (!state.info) $("plug-hint").classList.remove("hidden");
+  if (state.info) return;
+  if (autoPref.off) { $("plug-hint").classList.remove("hidden"); return; }
+  // Just plugged in: give it time to boot (~7 s), then reconnect.
+  $("plug-hint").classList.remove("hidden");
+  autoReconnect(8000);
 });
 
 function renderConnected() {
@@ -963,8 +995,8 @@ function init() {
     $("unsupported").classList.remove("hidden");
     $("btn-connect").disabled = true;
   }
-  $("btn-connect").addEventListener("click", connect);
-  $("btn-disconnect").addEventListener("click", () => device.disconnect());
+  $("btn-connect").addEventListener("click", () => connect());
+  $("btn-disconnect").addEventListener("click", () => { autoPref.off = true; device.disconnect(); });
   $("btn-refresh").addEventListener("click", refreshBalances);
   const copyAddr = async () => {
     try { await navigator.clipboard.writeText(state.info?.pubkey || ""); toast("Address copied"); }
@@ -1042,3 +1074,4 @@ function init() {
 }
 
 init();
+autoReconnect();
