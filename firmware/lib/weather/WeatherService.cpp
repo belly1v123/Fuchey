@@ -162,18 +162,24 @@ void WeatherService::save_config() {
 
 void WeatherService::run() {
     ESP_LOGI(TAG, "WeatherService task running");
+    // Polls has_ip() instead of consuming BIT_WIFI_IP: PriceService also
+    // waits on that bit (clear-on-exit), so sharing it made one of the two
+    // miss the boot IP and leave HOME empty for a whole cycle.
+    static constexpr uint32_t POLL_MS  = 250;
+    static constexpr uint32_t RETRY_MS = 30000;   // after a failed fetch
     while (true) {
-        if (Events::g_event_group) {
-            // Woke on fresh IP signal or timer tick — just loop and fetch.
-            xEventGroupWaitBits(Events::g_event_group, Events::BIT_WIFI_IP,
-                                pdTRUE, pdFALSE,
-                                pdMS_TO_TICKS(Timing::WEATHER_UPDATE_MS));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(Timing::WEATHER_UPDATE_MS));
-        }
-        if (!m_wifi.has_ip()) continue;
+        while (!m_wifi.has_ip()) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
 
-        update_now();
+        const bool ok = update_now();
+
+        // Sleep until the next cycle; refetch right away after a reconnect.
+        const uint32_t wait_ms = ok ? Timing::WEATHER_UPDATE_MS : RETRY_MS;
+        bool dropped = false;
+        for (uint32_t t = 0; t < wait_ms; t += POLL_MS) {
+            vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+            if (!m_wifi.has_ip()) dropped = true;
+            else if (dropped) break;
+        }
     }
 }
 
