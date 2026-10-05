@@ -100,16 +100,45 @@ const autoPref = {
   set off(v) { try { v ? sessionStorage.setItem("fuchey.noAuto", "1") : sessionStorage.removeItem("fuchey.noAuto"); } catch { /* ignore */ } },
 };
 
+// Connecting screen: live status while the port opens and Fuchey answers.
+let connectingTimer = null;
+let connectCancelled = false;
+function setConnecting(on, text = "") {
+  clearInterval(connectingTimer);
+  $("intro").classList.toggle("is-connecting", on);
+  $("connecting").classList.toggle("hidden", !on);
+  if (!on) return;
+  $("connecting-status").textContent = text;
+}
+function waitingForAnswer() {
+  const t0 = Date.now();
+  const tick = () => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    $("connecting-status").textContent = s < 3
+      ? "Waiting for Fuchey to answer…"
+      : `Waiting for Fuchey to answer… ${s} s — it may be restarting, give it a moment.`;
+  };
+  tick();
+  clearInterval(connectingTimer);
+  connectingTimer = setInterval(tick, 1000);
+}
+
 async function connect(port = null) {
   if (state.info || $("btn-connect").disabled) return;
   if (!port) autoPref.off = false;          // a manual Connect re-enables auto-reconnect
   $("btn-connect").disabled = true;
   $("plug-hint").classList.add("hidden");
   $("result").classList.add("hidden");
+  connectCancelled = false;
+  const auto = !!port;                        // started by auto-reconnect (no click)
   try {
+    if (!port) port = await FucheyDevice.pick();      // picker first, then the status screen
+    setConnecting(true, auto ? "Reconnecting to your Fuchey…" : "Opening the USB port…");
     await device.connect(port);
     log("— port opened, saying hello…");
+    waitingForAnswer();
     const info = await device.hello();
+    setConnecting(true, "Connected — loading your wallet…");
     if (info.proto !== 1) throw new Error(`Unsupported protocol v${info.proto}; update the page or firmware.`);
     state.info = info;
     state.network = info.network;
@@ -117,7 +146,9 @@ async function connect(port = null) {
     await refreshBalances();
   } catch (e) {
     if (e?.name === "NotFoundError") { $("btn-connect").disabled = false; return; }  // picker closed
-    if (port) {
+    if (connectCancelled) {
+      log("— connect cancelled");
+    } else if (auto) {
       // Silent auto-reconnect failed (e.g. port busy): just offer Connect.
       log(`— auto-reconnect failed: ${describe(e)}`);
     } else {
@@ -125,6 +156,7 @@ async function connect(port = null) {
     }
     await device.disconnect();
   } finally {
+    setConnecting(false);
     $("btn-connect").disabled = false;
     $("btn-connect").textContent = "Connect Fuchey";
   }
@@ -996,6 +1028,12 @@ function init() {
     $("btn-connect").disabled = true;
   }
   $("btn-connect").addEventListener("click", () => connect());
+  $("btn-connect-cancel").addEventListener("click", async () => {
+    connectCancelled = true;
+    autoPref.off = true;                    // don't immediately auto-reconnect again
+    setConnecting(false);
+    await device.disconnect();
+  });
   $("btn-disconnect").addEventListener("click", () => { autoPref.off = true; device.disconnect(); });
   $("btn-refresh").addEventListener("click", refreshBalances);
   const copyAddr = async () => {

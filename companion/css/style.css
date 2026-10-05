@@ -237,3 +237,17 @@ details label { margin-top: 12px; }
 #setup .row.wrap { margin-bottom: 14px; }
 #btn-loc-here { margin: 12px 0 4px; }
 #loc-form + #btn-loc-here { display: inline-block; }
+
+/* Connecting state (replaces steps + button while a connection is in progress) */
+.connecting {
+  display: grid; justify-items: center; gap: 12px; padding: 22px 16px;
+  background: var(--card); border: var(--line); border-radius: var(--r); box-shadow: var(--shadow);
+}
+.connecting-title { font: 800 14px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.loader { display: flex; gap: 6px; }
+.loader i { width: 12px; height: 12px; background: var(--ink); animation: blink 0.9s steps(1) infinite; }
+.loader i:nth-child(2) { animation-delay: .3s; }
+.loader i:nth-child(3) { animation-delay: .6s; }
+@keyframes blink { 0%, 100% { background: var(--ink); } 33% { background: var(--gold); } }
+@media (prefers-reduced-motion: reduce) { .loader i { animation: none; } }
+.empty.is-connecting .steps, .empty.is-connecting #btn-connect { display: none; }

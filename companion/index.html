@@ -40,6 +40,12 @@
       <section id="intro" class="empty">
         <img class="wordmark" src="img/fuchey-logo.png" alt="Fuchey">
         <p class="tagline">Hardware wallet · desk buddy</p>
+        <div id="connecting" class="connecting hidden" role="status" aria-live="polite">
+          <div class="loader" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="connecting-title">Connecting to Fuchey</div>
+          <div id="connecting-status" class="muted small">Opening the USB port…</div>
+          <button id="btn-connect-cancel" class="ghost small" type="button">Cancel</button>
+        </div>
         <div class="steps">
           <div class="step"><b>1</b>Plug Fuchey into this computer with USB</div>
           <div class="step"><b>2</b>Wait for the Yeti on its home screen</div>
