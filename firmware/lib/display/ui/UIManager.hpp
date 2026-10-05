@@ -210,6 +210,7 @@ private:
     uint32_t    m_recovery_drawn{0};       // layout id in the framebuffer
     void render_recovery();
     void render_network_confirm();
+    void render_restore_confirm();
     // Create-wallet session (shared with UsbProtocol).
     WalletCreateSession* m_create{nullptr};
     uint32_t    m_create_result_ms{0};

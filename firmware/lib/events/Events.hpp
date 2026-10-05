@@ -64,6 +64,7 @@ enum class ConfirmKind : uint8_t {
     TRANSFER   = 0,  // Sign a parsed transfer (SOL / USDC)
     EXPORT_KEY = 1,  // Debug: print the private key to the serial log
     NETWORK_SWITCH = 2,  // Companion app asks to switch devnet/mainnet (mainnet = target)
+    RESTORE_WALLET = 3,  // Save a wallet restored via the grid (recipient = its address)
 };
 
 struct TxSummary {

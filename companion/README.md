@@ -63,6 +63,11 @@ restart Fuchey; the page waits ~12 s for it to boot. Check the badge shows
   computer's location (browser permission). Names are converted to ASCII
   for the device's font.
 
+**Restore** asks for confirmation on the device: after the last word,
+Fuchey shows "SAVE WALLET?" with the address the words produce and stores
+the wallet only after a hardware **B1** tap (double-press/hold or 30 s =
+nothing stored).
+
 USDC to a wallet that already has a USDC account: the device screen shows
 the destination **token account**; the page shows both it and the wallet.
 
@@ -78,7 +83,8 @@ ATA, then shows **TO WALLET** + the wallet address and a yellow
 | Symptom | Cause / fix |
 |---|---|
 | "The USB port is busy" | Another program has COM5 (pio monitor, `fuchey_usb.py`, another tab). Close it. |
-| "Fuchey did not answer" | Still booting after connect — wait for the home screen, Connect again. |
+| "Fuchey didn't answer" | Unplug, plug back in, wait for the home screen, Connect again. |
+| Port not found after a firmware update | Since the USB-Serial-JTAG console the Fuchey is a different USB device (PID 0x1001), so its COM number may have changed — check Device Manager → Ports. |
 | "Blockhash not found" | Tx expired before broadcast (devnet blockhash ≈ 35 s). Nothing was sent; send again and tap B1 promptly. |
 | "Rejected" / "expired" | B1 double/long press, or no answer in 30 s. Nothing was signed. |
 | Script hears nothing | Raise DTR after opening the port (the device only transmits with DTR set). |

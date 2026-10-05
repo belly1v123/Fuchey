@@ -4,6 +4,8 @@
 // subsystem initialization, and FreeRTOS task pinning.
 // ============================================================
 
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "nvs_flash.h"
@@ -682,6 +684,16 @@ static void run_send_usdc(const SendArgs& args) {
 }
 
 extern "C" void app_main(void) {
+    // Console = USB-Serial-JTAG. Install its driver so stdin reads block
+    // (fgets in the console task) and long companion frames (~2.4 KB) fit.
+    {
+        usb_serial_jtag_driver_config_t usj = {};
+        usj.tx_buffer_size = 4096;
+        usj.rx_buffer_size = 4096;
+        if (usb_serial_jtag_driver_install(&usj) == ESP_OK) {
+            usb_serial_jtag_vfs_use_driver();
+        }
+    }
     ESP_LOGI(TAG, "=================================================");
     ESP_LOGI(TAG, "  Fuchey Firmware v%s", Fuchey::FW_VERSION);
     ESP_LOGI(TAG, "  Target: ESP32-S3 (16MB Flash, 8MB OPI PSRAM)");
