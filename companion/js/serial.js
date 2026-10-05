@@ -54,9 +54,16 @@ export class FucheyDevice extends EventTarget {
     return this.port !== null;
   }
 
-  async connect() {
-    // Espressif USB VID (native USB CDC). The picker still lists others if absent.
-    this.port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+  /** A Fuchey this site was already allowed to use (no picker), or null. */
+  static async knownPort() {
+    const ports = await navigator.serial.getPorts();
+    return ports.find((p) => p.getInfo().usbVendorId === 0x303a) || null;
+  }
+
+  /** Open `port` (auto-reconnect) or ask the user to pick one. */
+  async connect(port = null) {
+    // Espressif USB VID. The picker still lists others if absent.
+    this.port = port || await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
     await this.port.open({ baudRate: 115200, bufferSize: 16384 });
     try {
       // "Run" line state: never the DTR/RTS pattern that resets into the bootloader.
