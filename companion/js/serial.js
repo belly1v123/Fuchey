@@ -282,6 +282,38 @@ export class FucheyDevice extends EventTarget {
   cancel() {
     return this.request("cancel", {}, { timeoutMs: 3000 });
   }
+
+  // ── Wardrobe (cap "wardrobe_v1") — cosmetic data only ──
+  /** → { items: [{id, slot, z, bytes, crc}], used, total } */
+  itemList() {
+    return this.request("item_list", {}, { timeoutMs: 8000 });
+  }
+
+  /** Upload one FWR1 item file (Uint8Array). Fuchey checks size, CRC and format before saving. */
+  async itemInstall(id, bytes, onProgress) {
+    const begin = await this.request("item_begin", { id, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
+    const step = Math.min(begin.chunk || 1024, 1024);
+    let seq = 0;
+    for (let off = 0; off < bytes.length; off += step, seq++) {
+      await this.request("item_chunk", { id, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
+      onProgress?.(Math.min(off + step, bytes.length), bytes.length);
+    }
+    return this.request("item_end", { id }, { timeoutMs: 8000 });
+  }
+
+  /** Deletes the item and takes it off any slot. */
+  itemDelete(id) {
+    return this.request("item_delete", { id }, { timeoutMs: 5000 });
+  }
+
+  /** → { "wear.<slot>": id|"none", …, linked_wallets: [address] } */
+  async getSettings() {
+    return (await this.request("get_settings", {}, { timeoutMs: 3000 })).settings || {};
+  }
+
+  setSetting(key, value) {
+    return this.request("set_setting", { key, value }, { timeoutMs: 5000 });
+  }
 }
 
 export function bytesToBase64(bytes) {

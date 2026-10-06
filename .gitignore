@@ -13,3 +13,6 @@ __pycache__/
 
 # Art sources stay local (converted copies live in firmware/ as .hpp)
 Assets/
+
+# Companion marketplace config (copy companion/config.example.js)
+companion/config.local.js

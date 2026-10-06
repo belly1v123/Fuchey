@@ -177,6 +177,26 @@
           </div>
           <p id="rec-msg" class="small hidden"></p>
         </section>
+        <section id="wardrobe" class="card hidden">
+          <div class="row between">
+            <h2>Wardrobe</h2>
+            <button id="btn-wr-sync" class="ghost small">Sync</button>
+          </div>
+          <div class="wr-stage"><canvas id="wr-preview" class="wr-preview" width="116" height="116"
+            aria-label="What Yeti is wearing"></canvas></div>
+          <p id="wr-status" class="muted small center"></p>
+          <div id="wr-items" class="wr-items"></div>
+          <div class="row wrap">
+            <button id="btn-wr-website" class="ghost small">Use my website look</button>
+            <button id="btn-wr-phantom" class="ghost small">Add my Phantom wallet</button>
+          </div>
+          <h3>Linked wallets</h3>
+          <div id="wr-wallets"></div>
+          <p class="muted small">Items owned by this Fuchey's wallet and by linked wallets can be worn.
+            Linking asks your wallet to sign a short message (no transaction). Wearables are only
+            drawn on Fuchey; the NFTs never leave your wallet.</p>
+          <p id="wr-msg" class="small hidden"></p>
+        </section>
         <p id="device-empty" class="muted small center">Connect your Fuchey to set it up.</p>
       </div>
 

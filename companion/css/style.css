@@ -251,3 +251,15 @@ details label { margin-top: 12px; }
 @keyframes blink { 0%, 100% { background: var(--ink); } 33% { background: var(--gold); } }
 @media (prefers-reduced-motion: reduce) { .loader i { animation: none; } }
 .empty.is-connecting .steps, .empty.is-connecting #btn-connect { display: none; }
+
+/* ── Wardrobe ──────────────────────────────────────────── */
+.wr-stage { display: grid; place-items: center; background: var(--paper-2); border: var(--line); border-radius: var(--r); padding: 8px; }
+.wr-preview { width: 232px; height: 232px; image-rendering: pixelated; }
+.wr-items { display: grid; gap: 8px; margin: 8px 0 12px; }
+.wr-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: var(--line); border-radius: var(--r); background: var(--card); }
+.wr-item.wearing { background: #fff3c4; }
+.wr-thumb { width: 58px; height: 58px; flex: none; image-rendering: pixelated; background: var(--paper-2); border-radius: 3px; }
+.wr-text { flex: 1; min-width: 0; }
+.wr-name { font-weight: 700; font-size: 14px; }
+.wr-wallet { padding: 4px 0; }
+.wr-wallet code { font-size: 13px; }
