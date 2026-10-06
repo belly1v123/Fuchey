@@ -49,6 +49,11 @@ export class Catalog {
     });
   }
 
+  /** Published characters (Yeti, …) with their per-network NFT info. */
+  characters() {
+    return this.select("characters", { select: "id,name,title,nft", published: "eq.true" });
+  }
+
   /** { slot: wearableId } a wallet saved for the Yeti on the website, or null. */
   async loadout(wallet, character = CHARACTER) {
     const rows = await this.select("loadouts", {
@@ -107,19 +112,59 @@ export function collectionIndex(wearables, network) {
   return index;
 }
 
-/** Owned, Yeti-compatible wearables across wallets → Map(id → { wearable, assets[] }). */
-export async function ownedWearables(rpc, wallets, wearables, network) {
+/** Every Core asset the wallets hold → [{ address, collection, wallet }] (one chain read per wallet). */
+export async function walletAssets(rpc, wallets) {
+  const out = [];
+  for (const wallet of wallets) {
+    for (const asset of await coreAssetsOwnedBy(rpc, wallet)) out.push({ ...asset, wallet });
+  }
+  return out;
+}
+
+/** Owned, Yeti-compatible wearables → Map(id → { wearable, assets[] }). */
+export function ownedWearablesFrom(assets, wearables, network) {
   const index = collectionIndex(wearables, network);
   const owned = new Map();
-  for (const wallet of wallets) {
-    for (const asset of await coreAssetsOwnedBy(rpc, wallet)) {
-      const w = asset.collection && index.get(asset.collection);
-      if (!w || !fitsCharacter(w)) continue;
-      if (!owned.has(w.id)) owned.set(w.id, { wearable: w, assets: [] });
-      owned.get(w.id).assets.push({ ...asset, wallet });
-    }
+  for (const asset of assets) {
+    const w = asset.collection && index.get(asset.collection);
+    if (!w || !fitsCharacter(w)) continue;
+    if (!owned.has(w.id)) owned.set(w.id, { wearable: w, assets: [] });
+    owned.get(w.id).assets.push(asset);
   }
   return owned;
+}
+
+export async function ownedWearables(rpc, wallets, wearables, network) {
+  return ownedWearablesFrom(await walletAssets(rpc, wallets), wearables, network);
+}
+
+/**
+ * Everything Fuchey the wallets own: characters and wearables of every
+ * slot (also ones that don't fit the Yeti) →
+ * [{ kind: "character"|"wearable", id, name, type, fits, assets[] }],
+ * characters first, then wearables in slot order.
+ */
+export function fucheyCollection(assets, { wearables, characters }, network) {
+  const index = new Map();
+  for (const c of characters) {
+    const e = c.nft?.[network];
+    if (e?.collection && (e.status === undefined || e.status === "minted")) {
+      index.set(e.collection, { kind: "character", id: c.id, name: c.name, type: "character", fits: c.id === CHARACTER });
+    }
+  }
+  for (const [col, w] of collectionIndex(wearables, network)) {
+    index.set(col, { kind: "wearable", id: w.id, name: w.name, type: w.type, fits: fitsCharacter(w) });
+  }
+  const byId = new Map();
+  for (const a of assets) {
+    const meta = a.collection && index.get(a.collection);
+    if (!meta) continue;
+    const key = `${meta.kind}:${meta.id}`;
+    if (!byId.has(key)) byId.set(key, { ...meta, assets: [] });
+    byId.get(key).assets.push(a);
+  }
+  const rank = (e) => (e.kind === "character" ? -1 : Math.max(0, SLOTS.indexOf(e.type)));
+  return [...byId.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
 export const fitsCharacter = (w, character = CHARACTER) =>
