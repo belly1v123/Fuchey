@@ -76,6 +76,11 @@ public:
     // Same, but skips pixels matching transparent (color-key).
     void draw_rgb565_image_transparent(int x, int y, int w, int h,
                                        const uint16_t* data, uint16_t transparent);
+    // Same, scaled by num/den with nearest-neighbour (pixel art: source px
+    // (c,r) covers screen [x + c*num/den, x + (c+1)*num/den) rounded down).
+    void draw_rgb565_image_scaled_transparent(int x, int y, int w, int h,
+                                              const uint16_t* data, uint16_t transparent,
+                                              int num, int den);
     // Blits a w*h crop taken at (sx,sy) out of a srcW-wide source image.
     // Used to restore background regions under animated overlays.
     void draw_rgb565_subimage(int x, int y, int srcW, int sx, int sy,

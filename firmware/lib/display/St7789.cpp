@@ -514,6 +514,24 @@ void St7789::draw_rgb565_image(int x, int y, int w, int h, const uint16_t* data)
     }
 }
 
+void St7789::draw_rgb565_image_scaled_transparent(int x, int y, int w, int h,
+                                                  const uint16_t* data, uint16_t transparent,
+                                                  int num, int den) {
+    if (!m_fb || !data || w <= 0 || h <= 0 || num <= 0 || den <= 0) return;
+    for (int r = 0; r < h; ++r) {
+        const int y0 = y + r * num / den, y1 = y + (r + 1) * num / den;
+        if (y1 <= 0 || y0 >= DisplayConfig::HEIGHT) continue;
+        const uint16_t* src = data + static_cast<size_t>(r) * static_cast<size_t>(w);
+        for (int c = 0; c < w; ++c) {
+            const uint16_t px = src[c];
+            if (px == transparent) continue;
+            const int x0 = x + c * num / den, x1 = x + (c + 1) * num / den;
+            for (int yy = y0; yy < y1; ++yy)
+                for (int xx = x0; xx < x1; ++xx) put_px(xx, yy, px);
+        }
+    }
+}
+
 void St7789::draw_rgb565_image_transparent(int x, int y, int w, int h,
                                            const uint16_t* data, uint16_t transparent) {
     if (!m_fb || !data || w <= 0 || h <= 0) return;
