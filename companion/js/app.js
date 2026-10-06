@@ -7,6 +7,7 @@ import {
   buildTokenTransferCheckedWithCreate, findAssociatedTokenAddress, TOKEN_ACCOUNT_RENT_LAMPORTS,
 } from "./solana.js";
 import { qrSvg } from "./qr.js";
+import * as wardrobe from "./wardrobe.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -237,6 +238,7 @@ function renderConnected() {
   const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
   $("setup").classList.toggle("hidden", !canSetup);
   if (canSetup) refreshStatus();
+  wardrobe.onConnected(info, network);
   if (info.has_wallet) {
     $("address").textContent = shortAddr(info.pubkey);
     $("recv-address").textContent = info.pubkey;
@@ -259,6 +261,7 @@ function renderDisconnected() {
   $("send").classList.add("hidden");
   $("setup").classList.add("hidden");
   $("recovery").classList.add("hidden");
+  wardrobe.onDisconnected();
   $("device-empty").classList.remove("hidden");
   closeSheet("sheet-send");
   closeSheet("sheet-receive");
@@ -1031,6 +1034,7 @@ function init() {
     $("unsupported").classList.remove("hidden");
     $("btn-connect").disabled = true;
   }
+  wardrobe.init({ device, rpc, log, describe });
   $("btn-connect").addEventListener("click", () => connect());
   $("btn-connect-cancel").addEventListener("click", async () => {
     connectCancelled = true;
