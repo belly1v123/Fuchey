@@ -45,6 +45,8 @@
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
 #include "../lib/protocol/UsbProtocol.hpp"
+#include "../lib/wearables/ItemStore.hpp"
+#include "../lib/wearables/Wardrobe.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -772,6 +774,15 @@ extern "C" void app_main(void) {
     // 2. Initialize System Layer (NVS, Storage, Drivers)
     ESP_ERROR_CHECK(Fuchey::Storage::init());
     ESP_LOGI(TAG, "[OK] Storage (NVS) initialized");
+
+    // Wearables: item files on LittleFS + what Yeti wears (NVS). A failed
+    // mount only disables the wardrobe; the wallet never depends on it.
+    if (Fuchey::item_store().mount()) {
+        ESP_LOGI(TAG, "[OK] Item storage mounted");
+    } else {
+        ESP_LOGW(TAG, "[!!] Item storage unavailable — wardrobe disabled");
+    }
+    Fuchey::wardrobe().load();
 
     // Legacy cleanup: the AI assistant was removed. Wipe any LLM API key /
     // endpoint an older build left in NVS. Delete this block once every

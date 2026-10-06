@@ -9,11 +9,14 @@
 #include "../crypto/Base64.hpp"
 #include "../wallet_manager/TxParser.hpp"
 #include "../crypto/BIP39.hpp"
+#include "../wearables/ItemStore.hpp"
+#include "../wearables/Wardrobe.hpp"
 #include "esp_random.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -146,6 +149,20 @@ bool UsbProtocol::handle_line(const char* line) {
         cmd_wallet_create_tap(id, req);
     } else if (m_create && strcmp(cmd, "wallet_create_cancel") == 0) {
         cmd_wallet_create_cancel(id);
+    } else if (strcmp(cmd, "item_begin") == 0) {
+        cmd_item_begin(id, req);
+    } else if (strcmp(cmd, "item_chunk") == 0) {
+        cmd_item_chunk(id, req);
+    } else if (strcmp(cmd, "item_end") == 0) {
+        cmd_item_end(id, req);
+    } else if (strcmp(cmd, "item_list") == 0) {
+        cmd_item_list(id);
+    } else if (strcmp(cmd, "item_delete") == 0) {
+        cmd_item_delete(id, req);
+    } else if (strcmp(cmd, "get_settings") == 0) {
+        cmd_get_settings(id);
+    } else if (strcmp(cmd, "set_setting") == 0) {
+        cmd_set_setting(id, req);
     } else {
         send_error(id, "unknown_cmd", cmd);
     }
@@ -175,6 +192,7 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     if (m_rc) cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     if (m_create) cJSON_AddItemToArray(caps, cJSON_CreateString("wallet_create"));
     if (m_settings) cJSON_AddItemToArray(caps, cJSON_CreateString("network_switch"));
+    if (item_store().mounted()) cJSON_AddItemToArray(caps, cJSON_CreateString("wardrobe_v1"));
     send(obj);
 }
 
@@ -818,6 +836,153 @@ void UsbProtocol::run_sign(SignJob& job) {
     send_error(job.id, code, res.status == SignStatus::UNSUPPORTED_TX
                                  ? TxParser::error_to_string(res.parse_error)
                                  : WalletManager::status_to_string(res.status));
+}
+
+// ─── Wardrobe (settings tier: cosmetic data, never keys or signing) ───
+// Items are FWR1 files built by the app from the marketplace catalogue;
+// the device only checks they are well formed before drawing them.
+namespace {
+constexpr size_t MAX_ITEM_CHUNK = 1024;   // base64 1368 chars: well inside a line
+
+} // namespace
+
+void UsbProtocol::cmd_item_begin(uint32_t id, cJSON* req) {
+    if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
+    const char* item = str_field(req, "id");
+    cJSON* size = cJSON_GetObjectItem(req, "size");
+    cJSON* crc  = cJSON_GetObjectItem(req, "crc");
+    if (!item || !cJSON_IsNumber(size) || !cJSON_IsNumber(crc) || size->valuedouble < 1 ||
+        crc->valuedouble < 0 || crc->valuedouble > 4294967295.0) {
+        send_error(id, "bad_request", "need id, size, crc (u32)");
+        return;
+    }
+    const auto e = item_store().begin(item, static_cast<size_t>(size->valuedouble),
+                                      static_cast<uint32_t>(crc->valuedouble));
+    if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
+    cJSON* obj = reply(id, true);
+    cJSON_AddNumberToObject(obj, "chunk", MAX_ITEM_CHUNK);
+    send(obj);
+}
+
+void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req) {
+    const char* item = str_field(req, "id");
+    const char* data = str_field(req, "data");
+    cJSON* seq = cJSON_GetObjectItem(req, "seq");
+    std::vector<uint8_t> bytes;
+    if (!item || !data || !cJSON_IsNumber(seq) || seq->valuedouble < 0 ||
+        !Crypto::Base64::decode(data, bytes) || bytes.empty() || bytes.size() > MAX_ITEM_CHUNK) {
+        send_error(id, "bad_request", "need id, seq, data (base64, 1..1024 bytes)");
+        return;
+    }
+    const auto e = item_store().chunk(item, static_cast<uint32_t>(seq->valuedouble),
+                                      bytes.data(), bytes.size());
+    if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
+    send(reply(id, true));
+}
+
+void UsbProtocol::cmd_item_end(uint32_t id, cJSON* req) {
+    const char* item = str_field(req, "id");
+    if (!item) { send_error(id, "bad_request", "need id"); return; }
+    const auto e = item_store().end(item);
+    if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
+    cJSON* obj = reply(id, true);
+    cJSON_AddStringToObject(obj, "item", item);
+    send(obj);
+}
+
+void UsbProtocol::cmd_item_list(uint32_t id) {
+    std::vector<ItemStore::Info> items;
+    if (!item_store().list(items)) { send_error(id, ItemStore::err_name(ItemStore::Err::NOT_MOUNTED)); return; }
+    size_t used = 0, total = 0;
+    item_store().usage(used, total);
+    cJSON* obj = reply(id, true);
+    cJSON* arr = cJSON_AddArrayToObject(obj, "items");
+    for (const auto& it : items) {
+        cJSON* e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "id", it.id.c_str());
+        cJSON_AddStringToObject(e, "slot", WEAR_SLOTS[it.slot]);
+        cJSON_AddNumberToObject(e, "z", it.z);
+        cJSON_AddNumberToObject(e, "bytes", it.bytes);
+        cJSON_AddNumberToObject(e, "crc", it.crc);
+        cJSON_AddItemToArray(arr, e);
+    }
+    cJSON_AddNumberToObject(obj, "used", static_cast<double>(used));
+    cJSON_AddNumberToObject(obj, "total", static_cast<double>(total));
+    send(obj);
+}
+
+void UsbProtocol::cmd_item_delete(uint32_t id, cJSON* req) {
+    if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
+    const char* item = str_field(req, "id");
+    if (!item) { send_error(id, "bad_request", "need id"); return; }
+    wardrobe().unequip_item(item);           // never draw a deleted item
+    const auto e = item_store().remove(item);
+    if (e != ItemStore::Err::OK && e != ItemStore::Err::NOT_FOUND) { send_error(id, ItemStore::err_name(e)); return; }
+    cJSON* obj = reply(id, true);
+    cJSON_AddBoolToObject(obj, "existed", e == ItemStore::Err::OK);
+    send(obj);
+}
+
+void UsbProtocol::cmd_get_settings(uint32_t id) {
+    cJSON* obj = reply(id, true);
+    cJSON* set = cJSON_AddObjectToObject(obj, "settings");
+    for (int i = 0; i < WEAR_SLOT_COUNT; ++i) {
+        char key[24];
+        snprintf(key, sizeof(key), "wear.%s", WEAR_SLOTS[i]);
+        const std::string worn = wardrobe().worn(i);
+        cJSON_AddStringToObject(set, key, worn.empty() ? "none" : worn.c_str());
+    }
+    cJSON* arr = cJSON_AddArrayToObject(set, "linked_wallets");
+    for (const auto& a : wardrobe().linked_wallets()) {
+        cJSON_AddItemToArray(arr, cJSON_CreateString(a.c_str()));
+    }
+    send(obj);
+}
+
+void UsbProtocol::cmd_set_setting(uint32_t id, cJSON* req) {
+    if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
+    const char* key = str_field(req, "key");
+    cJSON* value = cJSON_GetObjectItem(req, "value");
+    if (!key || !value) { send_error(id, "bad_request", "need key and value"); return; }
+
+    if (strncmp(key, "wear.", 5) == 0) {
+        const int slot = wear_slot_from_name(key + 5);
+        const char* v = cJSON_IsString(value) ? value->valuestring : nullptr;
+        if (slot < 0 || !v) { send_error(id, "bad_request", "wear.<slot> = item id | none"); return; }
+        const bool off = v[0] == '\0' || strcmp(v, "none") == 0;
+        if (!off) {
+            // Only installed items whose own slot matches can be worn there.
+            WearItem item;
+            if (!item_store().load(v, item)) { send_error(id, "not_installed", v); return; }
+            if (item.slot != slot) { send_error(id, "wrong_slot", WEAR_SLOTS[item.slot]); return; }
+        }
+        if (!wardrobe().set_worn(slot, off ? "none" : v)) { send_error(id, "failed", "could not save"); return; }
+        send(reply(id, true));
+        return;
+    }
+
+    if (strcmp(key, "linked_wallets") == 0) {
+        if (!cJSON_IsArray(value) || cJSON_GetArraySize(value) > static_cast<int>(Wardrobe::MAX_WALLETS)) {
+            send_error(id, "bad_request", "linked_wallets = [base58 address, ...] (max 8)");
+            return;
+        }
+        std::vector<std::string> list;
+        cJSON* it = nullptr;
+        cJSON_ArrayForEach(it, value) {
+            if (!cJSON_IsString(it) || !Wardrobe::valid_address(it->valuestring)) {
+                send_error(id, "bad_request", "not a base58 address");
+                return;
+            }
+            if (std::find(list.begin(), list.end(), it->valuestring) == list.end()) {
+                list.emplace_back(it->valuestring);
+            }
+        }
+        if (!wardrobe().set_linked_wallets(list)) { send_error(id, "failed", "could not save"); return; }
+        send(reply(id, true));
+        return;
+    }
+
+    send_error(id, "unknown_key", key);
 }
 
 } // namespace Fuchey
