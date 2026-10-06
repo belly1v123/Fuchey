@@ -174,6 +174,9 @@ export class FucheyDevice extends EventTarget {
    */
   request(cmd, params = {}, { timeoutMs = 5000, onEvent } = {}) {
     if (!this.port) return Promise.reject(new DeviceError("disconnected"));
+    // "id" and "cmd" belong to the frame; a param with either name would
+    // overwrite them and the reply could never be matched.
+    if ("id" in params || "cmd" in params) return Promise.reject(new Error(`${cmd}: params must not use "id"/"cmd"`));
     const id = this.nextId++;
     const body = JSON.stringify({ id, cmd, ...params });
     const line = `${PREFIX}${body}*${hex8(crc32(this.encoder.encode(body)))}\n`;
@@ -291,19 +294,19 @@ export class FucheyDevice extends EventTarget {
 
   /** Upload one FWR1 item file (Uint8Array). Fuchey checks size, CRC and format before saving. */
   async itemInstall(id, bytes, onProgress) {
-    const begin = await this.request("item_begin", { id, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
+    const begin = await this.request("item_begin", { item: id, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
     const step = Math.min(begin.chunk || 1024, 1024);
     let seq = 0;
     for (let off = 0; off < bytes.length; off += step, seq++) {
-      await this.request("item_chunk", { id, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
+      await this.request("item_chunk", { item: id, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
       onProgress?.(Math.min(off + step, bytes.length), bytes.length);
     }
-    return this.request("item_end", { id }, { timeoutMs: 8000 });
+    return this.request("item_end", { item: id }, { timeoutMs: 8000 });
   }
 
   /** Deletes the item and takes it off any slot. */
   itemDelete(id) {
-    return this.request("item_delete", { id }, { timeoutMs: 5000 });
+    return this.request("item_delete", { item: id }, { timeoutMs: 5000 });
   }
 
   /** → { "wear.<slot>": id|"none", …, linked_wallets: [address] } */
