@@ -38,12 +38,12 @@
 //   wallet_create_state           → {stage, page, pages, verify_n, wrong[, address]}
 //   wallet_create_tap pos (0..8)  → confirm a word on the device's grid
 //   wallet_create_cancel
+//       Only when no wallet exists. The words are shown on the device
+//       screen only; nothing is stored until 3 words are confirmed.
 //   set_network network ("devnet"|"mainnet")
 //       → event awaiting_confirmation {network}; applied only after a
 //         hardware B1 tap on Fuchey's "SWITCH NETWORK?" screen
 //       → {ok, network, changed} or error rejected|timeout|busy
-//       Only when no wallet exists. The words are shown on the device
-//       screen only; nothing is stored until 3 words are confirmed.
 // hello also returns caps=[...] naming optional features.
 //
 // Command tiers (see docs/ThreatModel.md):

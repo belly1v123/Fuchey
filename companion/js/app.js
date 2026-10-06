@@ -370,7 +370,11 @@ async function createStart() {
     stopCreatePoll();
     rec.poll = setInterval(async () => {
       if (rec.busy) return;
-      try { createRender(await device.walletCreateState()); } catch { /* keep polling */ }
+      try {
+        const st = await device.walletCreateState();
+        // A tap may have finished the flow while this poll was in flight.
+        if (rec.kind === "create" && rec.poll) createRender(st);
+      } catch { /* keep polling */ }
     }, 1000);
   } catch (e) {
     setMsg("rec-msg", describe(e));
