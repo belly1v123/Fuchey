@@ -12,6 +12,8 @@
 #include "../../balance/BalanceMonitor.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../buzzer/Buzzer.hpp"
+#include "../../wallet/WalletCreateSession.hpp"
+#include "../../wallet/RecoveryController.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
 #include <atomic>
 #include <cstdint>
@@ -38,6 +40,8 @@ enum class UIScreen {
     BADGE_VIEW,
     FAIR_PASS,
     HID_REMOTE,
+    RECOVERY,      // scrambled-grid phrase entry (driven by the companion app)
+    WALLET_CREATE, // new wallet: words shown on device only, confirmed via app grid
     HOME
 };
 
@@ -46,6 +50,7 @@ enum class SetupStage {
     WIFI_PROMPT,       // Waiting for user to type WiFi credentials
     WIFI_CONNECTING,   // Credentials entered, waiting for IP
     WALLET_PROMPT,     // WiFi ready, waiting for wallet input
+    LOCATION_PROMPT,   // Wallet ready, waiting for weather location
     DONE,              // Setup complete, entering idle mode
 };
 
@@ -57,10 +62,12 @@ public:
     bool init();
     void set_screen(UIScreen screen);
 
-    void set_setup_needed(bool wifi_missing, bool wallet_missing);
+    void set_setup_needed(bool wifi_missing, bool wallet_missing, bool location_missing);
     void mark_wifi_configured(const char* ssid = nullptr); // ssid shown on OLED during connecting
     void mark_wallet_configured(const char* address = nullptr); // address cached for WALLET_INFO screen
+    void mark_location_configured(const char* city = nullptr); // city cached for weather label
     void on_wifi_got_ip();   // Called when WIFI_GOT_IP event received
+    void set_wifi_up(bool up) { m_wifi_up = up; }   // initial state at boot
 
     // Render loop processing
     void render();
@@ -76,6 +83,8 @@ public:
     void set_price_service(PriceService* ps);
     void set_led_indicator(LedIndicator* led)     { m_led_indicator = led; }
     void set_buzzer(Buzzer* buzzer)               { m_buzzer = buzzer; }
+    void set_create_session(WalletCreateSession* s) { m_create = s; }
+    void set_recovery(RecoveryController* r) { m_rc = r; }
 
 private:
     Display& m_display;
@@ -89,12 +98,14 @@ private:
     float       m_sol_low_24h{-1.0f};
     float       m_sol_change_pct{0.0f};
     std::string m_weather_city{"--"};
-    std::string m_tx_description{"Transfer 0.1 SOL"};
-    uint64_t    m_tx_amount_cents{0};
+    // Pending confirmation (TX_CONFIRM), built by WalletManager from the
+    // parsed message bytes.
+    Events::TxSummary m_confirm{};
 
     // Transaction result (for TX_SUCCESS / TX_FAIL screens)
     bool        m_tx_result_ok{false};
     char        m_tx_result_asset[8]{};
+    char        m_tx_result_amount[24]{};  // exact native amount, e.g. "0.25"
     uint64_t    m_tx_result_amount_cents{0};
     char        m_tx_result_recipient[48]{};
     char        m_tx_result_msg[64]{};
@@ -147,9 +158,15 @@ private:
 
     // Setup wizard
     bool        m_setup_needed{false};
+    bool        m_location_missing{false}; // still missing (setup wizard)
+    bool        m_wifi_missing{false};
+    bool        m_wallet_missing{false};
+    bool        m_wifi_connecting{false};  // credentials sent, waiting for IP
+    void        advance_setup();           // show the first missing step
     SetupStage  m_setup_stage{SetupStage::WIFI_PROMPT};
     std::string m_connecting_ssid{};    // SSID being connected to (shown on OLED)
     std::string m_wallet_address{};     // Cached after wallet created/imported
+    std::string m_location_city{};      // Cached city after location set
     uint32_t    m_connecting_dots_ms{0};
     uint8_t     m_connecting_dots{0};
     uint8_t     m_menu_index{0};
@@ -176,6 +193,9 @@ private:
 
     // HOME screen player (Pass_design bg + clock + animated Yeti overlay).
     SpritePlayer m_home_yeti;
+    // DND mood: when true the home overlay plays the DND Yeti instead of idle.
+    bool        m_dnd_mode{false};
+    bool        m_home_dnd{false}; // which anim the player currently holds
     bool        m_home_started{false};
     bool        m_home_chrome{false};
     uint8_t     m_home_last_frame{255};
@@ -184,7 +204,22 @@ private:
     int         m_home_tx{0}, m_home_ty{0}, m_home_tw{0}, m_home_th{0};
     // Last home weather readout (change detection for pill updates).
     char        m_home_wbuf[16]{"-- C"};
+    char        m_home_dbuf[16]{};
+    // WiFi has an IP (WIFI_GOT_IP / WIFI_DISCONNECTED). HOME shows
+    // "No WiFi" instead of empty time/weather while it is down.
+    bool        m_wifi_up{false};
     uint8_t     m_home_wcode{255};
+    // Scrambled-grid recovery: drawn straight from the shared controller.
+    RecoveryController* m_rc{nullptr};
+    uint32_t    m_recovery_ms{0};          // result timer
+    uint32_t    m_recovery_drawn{0};       // layout id in the framebuffer
+    void render_recovery();
+    void render_network_confirm();
+    void render_restore_confirm();
+    // Create-wallet session (shared with UsbProtocol).
+    WalletCreateSession* m_create{nullptr};
+    uint32_t    m_create_result_ms{0};
+    void render_wallet_create();
 
     void render_clock();
     void render_weather();
@@ -194,6 +229,7 @@ private:
     void render_wallet_info();
     void render_wallet_qr();
     void render_tx_confirm();
+    void render_export_confirm();
     void render_tx_result();
     void render_balance();
     void render_pomodoro();

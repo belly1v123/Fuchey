@@ -95,8 +95,10 @@ public:
     void draw_progress_bar(int x, int y, int w, int h, uint8_t percent,
                            Color c = TFT_WHITE);
 
-    // Animated boot splash (title + label + growing progress bar)
-    void animate_boot(uint32_t duration_ms = 3000);
+    // One frame of the boot splash: title, status line, optional hint
+    // line and a progress bar (0..100). Draws and flushes the whole frame.
+    void draw_boot(uint8_t percent, const char* status,
+                   const char* hint = nullptr, Color status_color = TFT_WHITE);
 
     // ── Output ───────────────────────────────────────────
     // Pushes the RAM framebuffer to the panel. Call once per render().

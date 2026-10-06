@@ -107,36 +107,24 @@ void Display::draw_progress_bar(int x, int y, int w, int h, uint8_t percent, Col
     m_lcd.draw_progress_bar(x, y, w, h, percent, c);
 }
 
-// ─── Animated boot splash ──────────────────────────────────
-// Framebuffer-backed: static parts are drawn once, then only the
-// growing bar segment is updated in RAM. A full-frame push costs
-// ~115 ms at 8 MHz, so flush every 10th frame (plus a final one)
-// to keep the ~3 s boot time instead of ~15 s.
-void Display::animate_boot(uint32_t duration_ms) {
-    constexpr int BAR_X  = 20;
-    constexpr int BAR_Y  = 196;
-    constexpr int BAR_W  = WIDTH - 40;
-    constexpr int BAR_H  = 16;
-    constexpr int FRAMES = 100;
+// ─── Boot splash ───────────────────────────────────────────
+// Redrawn whole on every call (~115 ms per full push at 8 MHz), so the
+// caller paces it at a few frames per second while services load.
+void Display::draw_boot(uint8_t percent, const char* status,
+                        const char* hint, Color status_color) {
+    constexpr int BAR_X = 20;
+    constexpr int BAR_Y = 196;
+    constexpr int BAR_W = WIDTH - 40;
+    constexpr int BAR_H = 16;
 
+    if (percent > 100) percent = 100;
     clear(TFT_BLACK);
     draw_text_centered(60, "FUCHEY", FontSize::LARGE);
-    draw_text_centered(150, "Initializing", FontSize::SMALL);
+    draw_text_centered(140, status ? status : "", FontSize::SMALL, status_color);
+    if (hint) draw_text_centered(160, hint, FontSize::SMALL, 0x8410);  // gray
     m_lcd.draw_rect(BAR_X, BAR_Y, BAR_W, BAR_H, TFT_WHITE);
-    flush();
-
-    int prev_fill = 0;
-    for (int frame = 0; frame <= FRAMES; ++frame) {
-        int pct = frame * 100 / FRAMES;
-        int fill = (BAR_W - 2) * pct / 100;
-        if (fill > prev_fill) {
-            m_lcd.fill_rect(BAR_X + 1 + prev_fill, BAR_Y + 1,
-                            fill - prev_fill, BAR_H - 2, TFT_GREEN);
-            prev_fill = fill;
-        }
-        if (frame % 10 == 0 || frame == FRAMES) flush();
-        vTaskDelay(pdMS_TO_TICKS(duration_ms / FRAMES));
-    }
+    const int fill = (BAR_W - 2) * percent / 100;
+    if (fill > 0) m_lcd.fill_rect(BAR_X + 1, BAR_Y + 1, fill, BAR_H - 2, TFT_GREEN);
     flush();
 }
 

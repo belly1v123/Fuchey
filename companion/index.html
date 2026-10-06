@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuchey Wallet</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="offline">
+  <div class="app">
+    <!-- ── Header ─────────────────────────────────────────── -->
+    <header class="top">
+      <div class="brand">
+        <img class="wordmark" src="img/fuchey-logo.png" alt="Fuchey">
+      </div>
+      <div class="conn">
+        <span id="net-badge" class="badge hidden"></span>
+        <button id="btn-disconnect" class="chip hidden" title="Disconnect">
+          <span class="dot"></span>Connected
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Banners -->
+      <section id="mainnet-banner" class="banner danger hidden">
+        <b>Mainnet — real money.</b> This Fuchey is a prototype (no PIN, key not encrypted).
+        Use small amounts and check every screen before tapping B1.
+      </section>
+      <section id="plug-hint" class="banner warn hidden">
+        A Fuchey was plugged in. Wait for its home screen, then press <b>Connect</b>.
+      </section>
+      <section id="unsupported" class="banner warn hidden">
+        This browser has no Web Serial. Use desktop Chrome or Edge on
+        <code>http://localhost</code> or an HTTPS site.
+      </section>
+      <section id="result" class="banner hidden"></section>
+
+      <!-- Not connected -->
+      <section id="intro" class="empty">
+        <img class="wordmark" src="img/fuchey-logo.png" alt="Fuchey">
+        <p class="tagline">Hardware wallet · desk buddy</p>
+        <div id="connecting" class="connecting hidden" role="status" aria-live="polite">
+          <div class="loader" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="connecting-title">Connecting to Fuchey</div>
+          <div id="connecting-status" class="muted small">Opening the USB port…</div>
+          <button id="btn-connect-cancel" class="ghost small" type="button">Cancel</button>
+        </div>
+        <div class="steps">
+          <div class="step"><b>1</b>Plug Fuchey into this computer with USB</div>
+          <div class="step"><b>2</b>Wait for the Yeti on its home screen</div>
+          <div class="step"><b>3</b>Press Connect and pick its port</div>
+        </div>
+        <button id="btn-connect" class="primary big">Connect Fuchey</button>
+        <p class="muted small">Every transaction is shown on Fuchey and signed only when you press
+          <b>B1</b>. Your keys never leave the device.</p>
+      </section>
+
+      <!-- ── Wallet tab ───────────────────────────────────── -->
+      <div id="tab-wallet" class="tab-panel">
+        <section id="wallet" class="hidden">
+          <div class="account">
+            <div class="avatar" aria-hidden="true">F</div>
+            <div class="account-text">
+              <div class="account-name">Fuchey wallet</div>
+              <button id="btn-copy" class="addr-btn" title="Copy address">
+                <code id="address"></code>
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2h3Zm2 0h4a2 2 0 0 1 2 2v4h3V5h-9v3Zm-5 2v9h9v-9H5Z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="balance-hero">
+            <div id="bal-total" class="bal-total">—</div>
+            <div id="bal-caption" class="muted small"></div>
+          </div>
+
+          <div id="actions" class="actions">
+            <button id="act-send" class="action" type="button">
+              <span class="action-icon"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z"/></svg></span>Send
+            </button>
+            <button id="btn-receive" class="action" type="button">
+              <span class="action-icon"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 20l-7-7 1.4-1.4 4.6 4.6V4h2v12.2l4.6-4.6L19 13z"/></svg></span>Receive
+            </button>
+            <button id="btn-show-device" class="action hidden" type="button">
+              <span class="action-icon"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 3h8v8H3V3Zm2 2v4h4V5H5Zm8-2h8v8h-8V3Zm2 2v4h4V5h-4ZM3 13h8v8H3v-8Zm2 2v4h4v-4H5Zm13-2h3v3h-3v-3Zm-5 0h3v3h-3v-3Zm3 3h3v3h-3v-3Zm-3 3h3v2h-3v-2Zm5 0h3v2h-3v-2Z"/></svg></span>On Fuchey
+            </button>
+            <button id="btn-refresh" class="action" type="button">
+              <span class="action-icon"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.2L13 11h7V4l-2.3 2.3z"/></svg></span>Refresh
+            </button>
+          </div>
+
+          <h2 class="section-title">Tokens</h2>
+          <div class="tokens">
+            <div class="token">
+              <img class="token-icon" src="img/sol.png" alt="" aria-hidden="true">
+              <div class="token-main"><div class="token-name">Solana</div><div class="muted small" id="bal-sol-sub">SOL</div></div>
+              <div class="token-amt"><div id="bal-sol">—</div><div class="muted small" id="bal-sol-usd"></div></div>
+            </div>
+            <div class="token">
+              <img class="token-icon" src="img/usdc.png" alt="" aria-hidden="true">
+              <div class="token-main"><div class="token-name">USD Coin</div><div class="muted small">USDC</div></div>
+              <div class="token-amt"><div id="bal-usdc">—</div><div class="muted small" id="bal-usdc-usd"></div></div>
+            </div>
+          </div>
+
+          <h2 class="section-title">Activity</h2>
+          <div id="activity" class="activity"><p class="muted small">No activity yet.</p></div>
+          <p class="muted tiny" id="device-info"></p>
+        </section>
+      </div>
+
+      <!-- ── Device tab ───────────────────────────────────── -->
+      <div id="tab-device" class="tab-panel hidden">
+        <section id="setup" class="card hidden">
+          <div class="row between">
+            <h2>Device</h2>
+            <button id="btn-status" class="ghost small">Refresh</button>
+          </div>
+          <dl class="status" id="setup-status"></dl>
+          <div id="net-row" class="net-row hidden">
+            <div><div class="muted small">Solana network</div><b id="net-current"></b></div>
+            <button id="btn-net" class="ghost small"></button>
+          </div>
+          <p id="net-msg" class="small hidden"></p>
+
+          <h3>WiFi</h3>
+          <div class="row wrap">
+            <button id="btn-scan" class="ghost small">Scan networks</button>
+            <select id="wifi-list" class="grow hidden"></select>
+          </div>
+          <form id="wifi-form" autocomplete="off">
+            <label>Network name (SSID)
+              <input id="wifi-ssid" spellcheck="false" maxlength="32">
+            </label>
+            <label>Password
+              <input id="wifi-pass" type="password" autocomplete="new-password" maxlength="63">
+            </label>
+            <p class="muted small">Sent only to Fuchey over USB. This page never stores it, and Fuchey
+              never sends it back.</p>
+            <p id="wifi-msg" class="small hidden"></p>
+            <button id="btn-wifi" class="primary" type="submit">Connect Fuchey to WiFi</button>
+          </form>
+
+          <h3>Weather location</h3>
+          <form id="loc-form" autocomplete="off">
+            <div class="row">
+              <input id="loc-query" class="grow" placeholder="Town, e.g. Bharatpur" spellcheck="false">
+              <button id="btn-loc-search" class="ghost" type="submit">Search</button>
+            </div>
+          </form>
+          <button id="btn-loc-here" class="ghost small" type="button">Use this computer's location</button>
+          <p class="muted small">The coordinates go only to Fuchey (for weather). The name typed above is shown on Fuchey.</p>
+          <div id="loc-results" class="results"></div>
+          <p id="loc-msg" class="small hidden"></p>
+        </section>
+
+        <section id="recovery" class="card hidden">
+          <h2 id="rec-title">Recovery words</h2>
+          <div id="rec-idle">
+            <p class="muted small">Enter your 12 or 24 words <b>without typing them here</b>: Fuchey shows a
+              shuffled grid, and you click the matching spot below. This page only learns which spot you
+              clicked — never the letters or words.</p>
+            <div class="row wrap">
+              <select id="rec-words"><option value="12">12 words</option><option value="24">24 words</option></select>
+              <button id="btn-rec-check" class="ghost">Check my words</button>
+              <button id="btn-create" class="primary hidden">Create new wallet</button>
+              <button id="btn-rec-restore" class="ghost hidden">Restore wallet</button>
+            </div>
+          </div>
+          <div id="rec-active" class="hidden">
+            <p id="rec-progress" class="rec-progress"></p>
+            <p id="rec-help" class="muted small">Look at Fuchey's screen, find your next letter group (or word), and click the
+              <b>same spot</b> here. Number keys work too: 7 8 9 / 4 5 6 / 1 2 3. The layout changes every click.</p>
+            <div id="rec-grid" class="rec-grid"></div>
+            <button id="btn-rec-cancel" class="ghost small">Cancel</button>
+          </div>
+          <p id="rec-msg" class="small hidden"></p>
+        </section>
+        <p id="device-empty" class="muted small center">Connect your Fuchey to set it up.</p>
+      </div>
+
+      <!-- ── Settings tab ─────────────────────────────────── -->
+      <div id="tab-settings" class="tab-panel hidden">
+        <section class="card">
+          <h2>RPC</h2>
+          <label>Devnet RPC URL <input id="rpc-devnet" spellcheck="false"></label>
+          <label>Mainnet RPC URL <input id="rpc-mainnet" spellcheck="false"></label>
+          <p class="muted small">The network follows the device (switch it in the Device tab, confirmed on
+            Fuchey). Mainnet defaults to a free public RPC (the official one blocks web pages);
+            for reliable mainnet use, paste your own RPC URL (e.g. a free Helius key). Public RPCs are rate-limited.</p>
+          <button id="btn-save-settings" class="ghost small">Save</button>
+        </section>
+        <details class="card log">
+          <summary>Device log</summary>
+          <pre id="log"></pre>
+        </details>
+        <section class="card">
+          <h2>About</h2>
+          <p class="muted small">Fuchey companion — talks to your Fuchey over USB (Web Serial). Every
+            signature, network switch and new wallet is approved on the device itself.</p>
+        </section>
+      </div>
+    </main>
+
+    <!-- ── Bottom tabs ────────────────────────────────────── -->
+    <nav class="tabbar" aria-label="Sections">
+      <button class="tab active" data-tab="wallet">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 6a3 3 0 0 1 3-3h11v3h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a3 3 0 0 1-3-3V6Zm3-1a1 1 0 0 0 0 2h9V5H7Zm-1 3.8V18a1 1 0 0 0 1 1h12V8H7a3 3 0 0 1-1-.2ZM15 12h3v3h-3v-3Z"/></svg>
+        Wallet
+      </button>
+      <button class="tab" data-tab="device">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm0 2v9h10V4H7Zm2 12a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>
+        Device
+      </button>
+      <button class="tab" data-tab="settings">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm-1.7-8h3.4l.5 2.6 1.6.9 2.5-.9 1.7 2.9-2 1.8v1.8l2 1.8-1.7 2.9-2.5-.9-1.6.9-.5 2.6h-3.4l-.5-2.6-1.6-.9-2.5.9-1.7-2.9 2-1.8V9.4l-2-1.8 1.7-2.9 2.5.9 1.6-.9.5-2.6Z"/></svg>
+        Settings
+      </button>
+    </nav>
+  </div>
+
+  <!-- ── Send sheet ───────────────────────────────────────── -->
+  <div id="sheet-send" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="send-title">
+    <div class="sheet-box">
+      <div class="sheet-head">
+        <h2 id="send-title">Send</h2>
+        <button class="icon-btn" data-close="sheet-send" aria-label="Close">✕</button>
+      </div>
+      <section id="send" class="hidden">
+        <form id="send-form" autocomplete="off">
+          <div class="seg" role="radiogroup" aria-label="Token">
+            <label><input type="radio" name="asset-pick" value="SOL" checked><span><img src="img/sol.png" alt=""> SOL</span></label>
+            <label><input type="radio" name="asset-pick" value="USDC"><span><img src="img/usdc.png" alt=""> USDC</span></label>
+          </div>
+          <select id="asset" class="hidden" aria-hidden="true">
+            <option value="SOL">SOL</option>
+            <option value="USDC">USDC</option>
+          </select>
+          <label>To
+            <input id="recipient" spellcheck="false" placeholder="Recipient's Solana address">
+          </label>
+          <label>Amount
+            <div class="amount-row">
+              <input id="amount" inputmode="decimal" placeholder="0.00">
+              <button id="btn-max" class="ghost small" type="button">Max</button>
+            </div>
+          </label>
+          <div class="row between small muted">
+            <span id="send-avail">Available: —</span>
+            <span id="send-usd"></span>
+          </div>
+          <p class="muted small">Network fee: 0.000005 SOL</p>
+          <p id="send-note" class="note small hidden"></p>
+          <p id="send-error" class="error small hidden"></p>
+          <button id="btn-send" class="primary big" type="submit">Review on Fuchey</button>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── Receive sheet ────────────────────────────────────── -->
+  <div id="sheet-receive" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="recv-title">
+    <div class="sheet-box">
+      <div class="sheet-head">
+        <h2 id="recv-title">Receive</h2>
+        <button class="icon-btn" data-close="sheet-receive" aria-label="Close">✕</button>
+      </div>
+      <div id="receive" class="receive">
+        <div id="qr" class="qr"></div>
+        <code id="recv-address" class="recv-address"></code>
+        <div class="row wrap center">
+          <button id="btn-copy-recv" class="ghost small" type="button">Copy address</button>
+          <button id="btn-show-device2" class="ghost small hidden" type="button">Show on Fuchey</button>
+        </div>
+        <p class="muted small center">Check the address on Fuchey's own Receive screen before sharing it —
+          the device is the source of truth. Only send SOL or USDC on the network shown above.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm on device (signing) ──────────────────────── -->
+  <div id="modal" class="sheet hidden" role="dialog" aria-modal="true">
+    <div class="sheet-box">
+      <h2>Confirm on your Fuchey</h2>
+      <p class="muted small">Check that the device screen shows exactly this, then tap <b>B1</b>.
+        Double-press or hold B1 to reject.</p>
+      <dl id="confirm-details"></dl>
+      <div class="countdown"><div id="countdown-bar"></div></div>
+      <p id="modal-status" class="muted small"></p>
+      <button id="btn-cancel" class="ghost">Cancel request</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

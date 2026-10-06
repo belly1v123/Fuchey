@@ -4,8 +4,11 @@
 // subsystem initialization, and FreeRTOS task pinning.
 // ============================================================
 
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -13,10 +16,15 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
+#include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <cctype>
 #include <cmath>
 #include <string>
+#include <array>
+#include <vector>
+#include <cstdint>
 
 #include "../lib/config/Config.hpp"
 #include "../lib/events/Events.hpp"
@@ -31,12 +39,12 @@
 #include "../lib/crypto/SHA256.hpp"
 #include "../lib/crypto/Ed25519.hpp"
 #include "../lib/wallet/WalletCore.hpp"
-#include "../lib/policy/SpendingPolicy.hpp"
 #include "../lib/wallet_manager/WalletManager.hpp"
 #include "../lib/wifi/WiFiManager.hpp"
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
+#include "../lib/protocol/UsbProtocol.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -70,8 +78,7 @@ static Fuchey::ButtonDriver   s_buttons(Fuchey::Buttons::PIN_B1_TX_BACK,
                                         Fuchey::Buttons::LONG_PRESS_MS);
 Fuchey::WalletCore            s_wallet_core;
 namespace Fuchey { WalletCore* g_wallet_core_ptr = nullptr; }
-static Fuchey::SpendingPolicy s_spending_policy;
-static Fuchey::WalletManager  s_wallet_manager(s_wallet_core, s_spending_policy);
+static Fuchey::WalletManager  s_wallet_manager(s_wallet_core);
 
 static Fuchey::WiFiManager    s_wifi_manager;
 static Fuchey::WeatherService s_weather_service(s_wifi_manager);
@@ -89,6 +96,89 @@ static const char* get_usdc_mint() {
 }
 
 static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
+
+static bool is_mainnet() { return !s_is_devnet; }
+
+// Device settings the companion app may change (WiFi, weather location).
+// Same services and side effects as the console `w` / `setloc` commands.
+static void apply_network_to_services();
+
+class AppDeviceSettings final : public Fuchey::DeviceSettings {
+public:
+    Fuchey::DeviceStatus status() override {
+        Fuchey::DeviceStatus st;
+        st.wifi_configured     = s_wifi_manager.has_credentials();
+        st.wifi_connected      = s_wifi_manager.is_connected();
+        st.online              = s_wifi_manager.has_ip();
+        st.wifi_ssid           = s_wifi_manager.saved_ssid();
+        st.location_configured = s_weather_service.has_configured_location();
+        st.city                = s_weather_service.city_name();
+        st.lat                 = s_weather_service.lat();
+        st.lon                 = s_weather_service.lon();
+        st.setup_done = st.wifi_configured && st.location_configured &&
+                        s_wallet_core.get_address().has_value();
+        return st;
+    }
+
+    bool scan_wifi(std::vector<Fuchey::WifiNetwork>& out) override {
+        std::vector<Fuchey::WiFiManager::ScanResult> res;
+        if (!s_wifi_manager.scan(res)) return false;
+        out.clear();
+        for (auto& r : res) out.push_back({r.ssid, r.rssi, r.secure});
+        return true;
+    }
+
+    bool set_wifi(const char* ssid, const char* password) override {
+        ESP_LOGI(TAG, "[App] WiFi: saving credentials and connecting to SSID: %s", ssid);
+        if (!s_wifi_manager.save_credentials(ssid, password)) return false;
+        s_wifi_manager.disconnect();                 // drop any old network first
+        const bool ok = s_wifi_manager.connect_from_nvs();
+        s_ui.mark_wifi_configured(ssid);
+        return ok;
+    }
+
+    bool set_location(const char* city, float lat, float lon) override {
+        ESP_LOGI(TAG, "[App] Weather location: %s (%.4f, %.4f)", city, lat, lon);
+        if (!s_weather_service.set_manual_location(city, lat, lon)) return false;
+        s_ui.mark_location_configured(city);
+        // Refresh off the console task (blocking HTTP).
+        xTaskCreate([](void*) {
+            s_weather_service.update_now();
+            vTaskDelete(nullptr);
+        }, "wx_now", 8192, nullptr, 3, nullptr);
+        return true;
+    }
+
+    void set_network(bool mainnet) override {
+        s_is_devnet = !mainnet;
+        Fuchey::Storage::Handle cfg(Fuchey::NVS::CONFIG_NS, NVS_READWRITE);
+        if (cfg.is_open()) {
+            cfg.set_str(Fuchey::NVS::KEY_NETWORK, mainnet ? "mainnet" : "devnet");
+            cfg.commit();
+        }
+        ESP_LOGI(TAG, "[App] Network switched to %s (approved on device)",
+                 mainnet ? "MAINNET-BETA" : "DEVNET");
+        apply_network_to_services();
+    }
+
+    // Same follow-up as a successful console wallet_import.
+    void on_wallet_restored(const std::string& address) override {
+        ESP_LOGI(TAG, "[App] Wallet restored on device: %s", address.c_str());
+        Fuchey::Events::Event evt{};
+        evt.type = Fuchey::Events::EventType::WALLET_IMPORTED;
+        Fuchey::Events::post(Fuchey::Events::g_wallet_queue, evt);
+        s_ui.mark_wallet_configured(address.c_str());
+        s_balance_monitor.set_address(address);
+    }
+};
+static AppDeviceSettings s_app_settings;
+static Fuchey::WalletCreateSession s_wallet_create;   // app "Create wallet" (RAM only)
+static Fuchey::RecoveryController  s_recovery;        // app scrambled-grid phrase entry
+
+// Companion-app protocol ("@@" framed lines on the USB console).
+static Fuchey::UsbProtocol s_usb_protocol(s_wallet_core, s_wallet_manager,
+                                          s_price_service, is_mainnet,
+                                          &s_app_settings);
 
 // Re-point network-dependent services at the current s_is_devnet selection.
 // The monitor snapshots its URL/mint at construction (devnet default, before
@@ -266,7 +356,405 @@ static std::string normalize_bip39_payload(const char* s) {
     return normalized;
 }
 
+// ─── Transfer helpers (console send sol / send usdc) ───────
+
+struct SendArgs {
+    bool usdc = false;
+    char amount[32] = {};     // decimal string as typed, e.g. "0.25"
+    char recipient[64] = {};  // base58 wallet address
+};
+
+// Exact decimal → integer base units ("0.25", 9 → 250000000). No floats:
+// rejects signs, exponents, more fractional digits than `decimals`, overflow.
+static bool parse_amount_units(const char* s, uint8_t decimals, uint64_t& out) {
+    if (!s || !*s) return false;
+    uint64_t whole = 0, frac = 0;
+    int frac_digits = 0;
+    bool seen_dot = false, seen_digit = false;
+    for (const char* p = s; *p; ++p) {
+        if (*p == '.') {
+            if (seen_dot) return false;
+            seen_dot = true;
+            continue;
+        }
+        if (*p < '0' || *p > '9') return false;
+        seen_digit = true;
+        uint64_t d = static_cast<uint64_t>(*p - '0');
+        if (seen_dot) {
+            if (++frac_digits > decimals) return false;
+            frac = frac * 10 + d;
+        } else {
+            if (whole > (UINT64_MAX - d) / 10) return false;
+            whole = whole * 10 + d;
+        }
+    }
+    if (!seen_digit) return false;
+    uint64_t scale = 1;
+    for (uint8_t i = 0; i < decimals; ++i) scale *= 10;
+    for (int i = frac_digits; i < decimals; ++i) frac *= 10;
+    if (whole > (UINT64_MAX - frac) / scale) return false;
+    out = whole * scale + frac;
+    return true;
+}
+
+static void post_tx_fail(const char* reason, const std::string& recipient) {
+    Fuchey::Events::Event fail_evt{};
+    fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+    snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
+             sizeof(fail_evt.data.tx.tx_data), "%s|%s", reason, recipient.c_str());
+    Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
+}
+
+// "confirmed", not "finalized": a finalized blockhash is already ~13 s old,
+// and on devnet a blockhash can expire ~35 s after it is produced — too tight
+// once the price fetch and the 30 s B1 window are added.
+static bool fetch_latest_blockhash(std::array<uint8_t, 32>& out, const char* tag) {
+    auto resp = s_wifi_manager.post_json(
+        get_rpc_url(),
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"confirmed\"}]}");
+    if (!resp.success) {
+        ESP_LOGE(TAG, "[%s] getLatestBlockhash failed (HTTP %d)", tag, resp.status_code);
+        return false;
+    }
+
+    std::string blockhash_str;
+    cJSON* root = cJSON_Parse(resp.body.c_str());
+    if (root) {
+        cJSON* res = cJSON_GetObjectItem(root, "result");
+        cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
+        cJSON* bh  = val ? cJSON_GetObjectItem(val, "blockhash") : nullptr;
+        if (bh && bh->valuestring) blockhash_str = bh->valuestring;
+        cJSON_Delete(root);
+    }
+
+    auto bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
+    if (bytes.size() != 32) {
+        ESP_LOGE(TAG, "[%s] Bad blockhash response: %.100s", tag, resp.body.c_str());
+        return false;
+    }
+    std::copy(bytes.begin(), bytes.end(), out.begin());
+    return true;
+}
+
+static void push_compact_u16(std::vector<uint8_t>& v, uint16_t n) {
+    while (true) {
+        uint8_t b = n & 0x7F;
+        n >>= 7;
+        if (n == 0) { v.push_back(b); return; }
+        v.push_back(b | 0x80);
+    }
+}
+
+static void push_u64_le(std::vector<uint8_t>& v, uint64_t x) {
+    for (int i = 0; i < 8; ++i) v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFF));
+}
+
+// Hand `msg` to WalletManager (parse → TFT → physical B1 → sign), then
+// broadcast and report the result to the UI + log.
+static void sign_and_broadcast(const char* tag, const std::vector<uint8_t>& msg,
+                               const char* asset, const std::string& recipient) {
+    // Fresh SOL/USD rate for the confirm screen (display only). On failure
+    // fall back to the last cached rate, or show no USD at all — never the
+    // PriceService placeholder price.
+    const bool price_live = s_price_service.update_now();
+    Fuchey::SignContext ctx{};
+    ctx.mainnet    = !s_is_devnet;
+    ctx.sol_usd    = s_price_service.has_data() ? s_price_service.get_sol_usd() : 0.0f;
+    ctx.price_live = price_live;
+
+    ESP_LOGI(TAG, "[%s] Check the device screen and tap B1 to sign (double/long press = reject)", tag);
+    Fuchey::SignResult res = s_wallet_manager.sign_transaction(msg, ctx);
+    if (res.status != Fuchey::SignStatus::SIGNED) {
+        ESP_LOGW(TAG, "[%s] Not sent: %s%s%s", tag,
+                 Fuchey::WalletManager::status_to_string(res.status),
+                 res.status == Fuchey::SignStatus::UNSUPPORTED_TX ? " — " : "",
+                 res.status == Fuchey::SignStatus::UNSUPPORTED_TX
+                     ? Fuchey::TxParser::error_to_string(res.parse_error) : "");
+        // User reject / timeout already left the confirm screen; report the rest.
+        if (res.status != Fuchey::SignStatus::REJECTED &&
+            res.status != Fuchey::SignStatus::TIMED_OUT &&
+            res.status != Fuchey::SignStatus::CANCELLED) {
+            post_tx_fail(Fuchey::WalletManager::status_to_string(res.status), recipient);
+        }
+        return;
+    }
+
+    // Wire format: [compact-u16 num_sigs][sig...][message]
+    std::vector<uint8_t> wire_tx;
+    wire_tx.push_back(1);
+    wire_tx.insert(wire_tx.end(), res.signature.begin(), res.signature.end());
+    wire_tx.insert(wire_tx.end(), msg.begin(), msg.end());
+
+    std::string body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"";
+    body += Fuchey::Crypto::Base58::encode(wire_tx);
+    body += "\",{\"encoding\":\"base58\"}]}";
+
+    ESP_LOGI(TAG, "[%s] Broadcasting to Solana %s...", tag, s_is_devnet ? "Devnet" : "Mainnet-Beta");
+    auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), body.c_str());
+
+    char amount_str[24];
+    Fuchey::TxParser::format_units(res.parsed.amount, res.parsed.decimals,
+                                   amount_str, sizeof(amount_str));
+
+    Fuchey::Events::Event result_evt{};
+    result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+    snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+             sizeof(result_evt.data.tx.tx_data), "%s:%s:%s", asset, amount_str, recipient.c_str());
+
+    char err_buf[64] = {};
+    if (!tx_resp.success) {
+        ESP_LOGE(TAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
+        snprintf(err_buf, sizeof(err_buf), "HTTP %d", tx_resp.status_code);
+    } else if (cJSON* root = cJSON_Parse(tx_resp.body.c_str())) {
+        cJSON* tx_res = cJSON_GetObjectItem(root, "result");
+        cJSON* tx_err = cJSON_GetObjectItem(root, "error");
+        if (tx_res && tx_res->valuestring) {
+            ESP_LOGI(TAG, "=================================================");
+            ESP_LOGI(TAG, "  [SUCCESS] %s %s sent", amount_str, asset);
+            ESP_LOGI(TAG, "  Signature: %s", tx_res->valuestring);
+            ESP_LOGI(TAG, "  Explorer:  https://explorer.solana.com/tx/%s%s",
+                     tx_res->valuestring, s_is_devnet ? "?cluster=devnet" : "");
+            ESP_LOGI(TAG, "=================================================");
+            result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_OK;
+        } else {
+            cJSON* msg_item = tx_err ? cJSON_GetObjectItem(tx_err, "message") : nullptr;
+            const char* raw = msg_item && msg_item->valuestring ? msg_item->valuestring : "RPC parse error";
+            ESP_LOGE(TAG, "  [TX ERROR] %s", raw);
+            friendly_tx_error(raw, err_buf, sizeof(err_buf));
+        }
+        cJSON_Delete(root);
+    } else {
+        ESP_LOGE(TAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
+        snprintf(err_buf, sizeof(err_buf), "%s", "RPC parse failure");
+    }
+
+    if (result_evt.type == Fuchey::Events::EventType::TX_BROADCAST_FAIL) {
+        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
+                 sizeof(result_evt.data.tx.tx_data), "%s|%s", err_buf, recipient.c_str());
+    }
+    Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
+}
+
+static void run_send_sol(const SendArgs& args) {
+    static constexpr const char* T = "SEND SOL";
+    const std::string recipient = args.recipient;
+
+    uint64_t lamports = 0;
+    if (!parse_amount_units(args.amount, 9, lamports) || lamports == 0) {
+        ESP_LOGE(TAG, "[%s] Invalid amount '%s' (max 9 decimals, > 0)", T, args.amount);
+        return;
+    }
+    auto recipient_bytes = Fuchey::Crypto::Base58::decode(recipient);
+    if (recipient_bytes.size() != 32) {
+        ESP_LOGE(TAG, "[%s] Invalid recipient address (%d bytes, expected 32)", T,
+                 static_cast<int>(recipient_bytes.size()));
+        return;
+    }
+    auto pubkey_opt = s_wallet_core.get_pubkey();
+    auto addr_opt   = s_wallet_core.get_address();
+    if (!pubkey_opt || !addr_opt) {
+        ESP_LOGE(TAG, "[%s] No wallet configured", T);
+        return;
+    }
+
+    // Balance pre-check (advisory; the chain is authoritative).
+    double have = fetch_sol_balance_lamports(*addr_opt);
+    constexpr uint64_t FEE_BUFFER_LAMPORTS = 10000;
+    if (have >= 0.0 && static_cast<uint64_t>(have) < lamports + FEE_BUFFER_LAMPORTS) {
+        ESP_LOGE(TAG, "[%s] Insufficient balance: have %.9f SOL", T, have / 1e9);
+        post_tx_fail("Insufficient balance", recipient);
+        return;
+    } else if (have < 0.0) {
+        ESP_LOGW(TAG, "[%s] Could not verify balance — proceeding anyway.", T);
+    }
+
+    std::array<uint8_t, 32> blockhash{};
+    if (!fetch_latest_blockhash(blockhash, T)) {
+        post_tx_fail("No blockhash", recipient);
+        return;
+    }
+
+    // Legacy message: System Program Transfer
+    std::vector<uint8_t> msg;
+    msg.push_back(1);  // num_required_signatures
+    msg.push_back(0);  // num_readonly_signed
+    msg.push_back(1);  // num_readonly_unsigned (System Program)
+    push_compact_u16(msg, 3);
+    msg.insert(msg.end(), pubkey_opt->begin(), pubkey_opt->end());         // [0] from (signer, w)
+    msg.insert(msg.end(), recipient_bytes.begin(), recipient_bytes.end()); // [1] to (w)
+    msg.insert(msg.end(), 32, 0);                                          // [2] System Program
+    msg.insert(msg.end(), blockhash.begin(), blockhash.end());
+    push_compact_u16(msg, 1);  // 1 instruction
+    msg.push_back(2);          // program index
+    push_compact_u16(msg, 2);
+    msg.push_back(0);
+    msg.push_back(1);
+    push_compact_u16(msg, 12);
+    msg.push_back(2); msg.push_back(0); msg.push_back(0); msg.push_back(0);  // Transfer
+    push_u64_le(msg, lamports);
+
+    sign_and_broadcast(T, msg, "SOL", recipient);
+}
+
+static void run_send_usdc(const SendArgs& args) {
+    static constexpr const char* T = "SEND USDC";
+    const std::string recipient = args.recipient;
+
+    uint64_t raw_amount = 0;
+    if (!parse_amount_units(args.amount, 6, raw_amount) || raw_amount == 0) {
+        ESP_LOGE(TAG, "[%s] Invalid amount '%s' (max 6 decimals, > 0)", T, args.amount);
+        return;
+    }
+    if (Fuchey::Crypto::Base58::decode(recipient).size() != 32) {
+        ESP_LOGE(TAG, "[%s] Invalid recipient address", T);
+        return;
+    }
+    auto pubkey_opt = s_wallet_core.get_pubkey();
+    auto addr_opt   = s_wallet_core.get_address();
+    if (!pubkey_opt || !addr_opt) {
+        ESP_LOGE(TAG, "[%s] No wallet configured", T);
+        return;
+    }
+
+    auto token_prog = Fuchey::Crypto::Base58::decode("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    auto mint       = Fuchey::Crypto::Base58::decode(get_usdc_mint());
+    if (token_prog.size() != 32 || mint.size() != 32) {
+        ESP_LOGE(TAG, "[%s] Bad program/mint constant", T);
+        return;
+    }
+
+    // Resolve the real token accounts (no PDA guessing).
+    UsdcAccount sender_acct = fetch_usdc_account(*addr_opt);
+    if (!sender_acct.ok) {
+        ESP_LOGE(TAG, "[%s] Could not look up sender USDC account", T);
+        post_tx_fail("RPC error", recipient);
+        return;
+    }
+    if (sender_acct.pubkey.empty() || sender_acct.balance_micro < raw_amount) {
+        ESP_LOGE(TAG, "[%s] Insufficient balance: have %llu.%06llu USDC", T,
+                 static_cast<unsigned long long>(sender_acct.balance_micro / 1000000),
+                 static_cast<unsigned long long>(sender_acct.balance_micro % 1000000));
+        post_tx_fail("Insufficient balance", recipient);
+        return;
+    }
+    UsdcAccount recipient_acct = fetch_usdc_account(recipient);
+    if (!recipient_acct.ok || recipient_acct.pubkey.empty()) {
+        ESP_LOGE(TAG, "[%s] Recipient has no USDC token account (must receive USDC once first)", T);
+        post_tx_fail("No USDC acct", recipient);
+        return;
+    }
+    auto source = Fuchey::Crypto::Base58::decode(sender_acct.pubkey);
+    auto dest   = Fuchey::Crypto::Base58::decode(recipient_acct.pubkey);
+    if (source.size() != 32 || dest.size() != 32) {
+        ESP_LOGE(TAG, "[%s] Bad token account address from RPC", T);
+        return;
+    }
+    ESP_LOGI(TAG, "[%s] From token acct %s -> %s (owner %s)", T,
+             sender_acct.pubkey.c_str(), recipient_acct.pubkey.c_str(), recipient.c_str());
+
+    std::array<uint8_t, 32> blockhash{};
+    if (!fetch_latest_blockhash(blockhash, T)) {
+        post_tx_fail("No blockhash", recipient);
+        return;
+    }
+
+    // Legacy message: SPL Token TransferChecked (mint + decimals are verified
+    // on-chain and let the device parser confirm the token is USDC).
+    std::vector<uint8_t> msg;
+    msg.push_back(1);  // num_required_signatures
+    msg.push_back(0);  // num_readonly_signed
+    msg.push_back(2);  // num_readonly_unsigned (mint, Token Program)
+    push_compact_u16(msg, 5);
+    msg.insert(msg.end(), pubkey_opt->begin(), pubkey_opt->end()); // [0] owner (signer, w)
+    msg.insert(msg.end(), source.begin(), source.end());           // [1] source (w)
+    msg.insert(msg.end(), dest.begin(), dest.end());               // [2] destination (w)
+    msg.insert(msg.end(), mint.begin(), mint.end());               // [3] mint
+    msg.insert(msg.end(), token_prog.begin(), token_prog.end());   // [4] Token Program
+    msg.insert(msg.end(), blockhash.begin(), blockhash.end());
+    push_compact_u16(msg, 1);
+    msg.push_back(4);          // program index
+    push_compact_u16(msg, 4);  // source, mint, destination, owner
+    msg.push_back(1);
+    msg.push_back(3);
+    msg.push_back(2);
+    msg.push_back(0);
+    push_compact_u16(msg, 10);
+    msg.push_back(12);         // TransferChecked
+    push_u64_le(msg, raw_amount);
+    msg.push_back(6);          // decimals
+
+    sign_and_broadcast(T, msg, "USDC", recipient);
+}
+
+// ─── Boot screen ───────────────────────────────────────────
+// WiFi, NTP and the weather task all run in the background; this only
+// shows their progress and returns once all three are ready (or after
+// BOOT_MAX_MS, so a bad network never blocks the device). Without WiFi it
+// tells the user to connect it from the Fuchey app.
+static void boot_screen() {
+    static constexpr uint32_t FRAME_MS    = 150;
+    static constexpr uint32_t BOOT_MIN_MS = 1500;
+    static constexpr uint32_t BOOT_MAX_MS = 15000;
+    static constexpr uint32_t NOTICE_MS   = 3000;
+    static constexpr time_t   TIME_VALID  = 1700000000;   // any date after 2023
+
+    auto no_wifi_notice = [](const char* status) {
+        ESP_LOGW(TAG, "[Boot] %s — connect WiFi from the Fuchey app", status);
+        s_display.draw_boot(100, status, "Connect using the Fuchey app", Fuchey::TFT_YELLOW);
+        vTaskDelay(pdMS_TO_TICKS(NOTICE_MS));
+    };
+
+    if (!s_wifi_manager.has_credentials()) {
+        for (uint32_t t = 0; t <= BOOT_MIN_MS; t += FRAME_MS) {
+            s_display.draw_boot(static_cast<uint8_t>(t * 100 / BOOT_MIN_MS), "Initializing");
+            vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+        }
+        no_wifi_notice("No WiFi set up");
+        return;
+    }
+
+    const int64_t start_us = esp_timer_get_time();
+    int pct = 0;
+    while (true) {
+        const uint32_t elapsed = static_cast<uint32_t>((esp_timer_get_time() - start_us) / 1000);
+        const bool ip      = s_wifi_manager.has_ip();
+        const bool time_ok = time(nullptr) > TIME_VALID;
+        const bool wx_ok   = Fuchey::Events::g_event_group &&
+            (xEventGroupGetBits(Fuchey::Events::g_event_group) & Fuchey::Events::BIT_WEATHER_OK);
+        const int done = int(ip) + int(time_ok) + int(wx_ok);
+
+        if (done == 3 && elapsed >= BOOT_MIN_MS) {
+            s_display.draw_boot(100, "Initializing");
+            ESP_LOGI(TAG, "[Boot] WiFi, time and weather ready in %u ms", (unsigned)elapsed);
+            return;
+        }
+        if (elapsed >= BOOT_MAX_MS) {
+            ESP_LOGW(TAG, "[Boot] Timeout — ip=%d time=%d weather=%d", ip, time_ok, wx_ok);
+            if (!ip) no_wifi_notice("WiFi not connected");
+            return;   // with WiFi up, HOME fills in as time/weather arrive
+        }
+
+        // Each finished step is a third of the bar; creep within the step.
+        const int floor_pct = done * 100 / 3;
+        const int cap       = (done == 3) ? 100 : floor_pct + 30;
+        pct = std::max(pct, floor_pct);
+        if (pct < cap) pct += 2;
+        s_display.draw_boot(static_cast<uint8_t>(pct), "Initializing");
+        vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+    }
+}
+
 extern "C" void app_main(void) {
+    // Console = USB-Serial-JTAG. Install its driver so stdin reads block
+    // (fgets in the console task) and long companion frames (~2.4 KB) fit.
+    {
+        usb_serial_jtag_driver_config_t usj = {};
+        usj.tx_buffer_size = 4096;
+        usj.rx_buffer_size = 4096;
+        if (usb_serial_jtag_driver_install(&usj) == ESP_OK) {
+            usb_serial_jtag_vfs_use_driver();
+        }
+    }
     ESP_LOGI(TAG, "=================================================");
     ESP_LOGI(TAG, "  Fuchey Firmware v%s", Fuchey::FW_VERSION);
     ESP_LOGI(TAG, "  Target: ESP32-S3 (16MB Flash, 8MB OPI PSRAM)");
@@ -346,7 +834,6 @@ extern "C" void app_main(void) {
     }
 
     Fuchey::g_wallet_core_ptr = &s_wallet_core;
-    s_spending_policy.init();
     s_wallet_core.init();
     s_wallet_manager.init();
     ESP_LOGI(TAG, "[OK] Wallet core initialized — state: %s",
@@ -375,19 +862,32 @@ extern "C" void app_main(void) {
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
 
-    // Boot animation — WiFi is already connecting in the background
-    s_display.animate_boot(3000);
+    // Weather + price start now so they fetch while the boot screen runs
+    // (Core 1 — TLS won't starve IDLE0 on CPU 0).
+    xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
+                            Fuchey::Tasks::WEATHER_STACK, &s_weather_service,
+                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::WEATHER_CORE);
+    xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
+                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
+                             Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
+
+    // Boot screen: wait for WiFi, time and weather (in parallel) so HOME
+    // opens complete.
+    boot_screen();
 
     // 5. Detect first-boot state for UIManager setup screen
     {
-        bool wifi_missing = !s_wifi_manager.has_credentials();
-        bool wallet_missing = !s_wallet_core.has_wallet();
-        s_ui.set_setup_needed(wifi_missing, wallet_missing);
+        bool wifi_missing    = !s_wifi_manager.has_credentials();
+        bool wallet_missing  = !s_wallet_core.has_wallet();
+        bool location_missing = !s_weather_service.has_configured_location();
+        s_ui.set_setup_needed(wifi_missing, wallet_missing, location_missing);
+        s_ui.set_wifi_up(s_wifi_manager.has_ip());
 
         ESP_LOGI(TAG, "-------------------------------------------------");
         ESP_LOGI(TAG, "  Boot State:");
-        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing   ? "MISSING" : "SAVED");
-        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing ? "MISSING" : "FOUND");
+        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing     ? "MISSING" : "SAVED");
+        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing   ? "MISSING" : "FOUND");
+        ESP_LOGI(TAG, "    Weather location : %s", location_missing ? "MISSING" : "SAVED");
         ESP_LOGI(TAG, "-------------------------------------------------");
     }
 
@@ -403,16 +903,6 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(Fuchey::WalletManager::task_entry, "wallet_mgr_task",
                             Fuchey::Tasks::WALLET_STACK, &s_wallet_manager,
                             Fuchey::Tasks::WALLET_PRIORITY, nullptr, Fuchey::Tasks::WALLET_CORE);
-
-    // Weather Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
-    xTaskCreatePinnedToCore(Fuchey::WeatherService::task_entry, "weather_task",
-                            Fuchey::Tasks::WEATHER_STACK, &s_weather_service,
-                            Fuchey::Tasks::WEATHER_PRIORITY, nullptr, Fuchey::Tasks::WEATHER_CORE);
-
-    // Price Task (Core 1 — TLS won't starve IDLE0 on CPU 0)
-    xTaskCreatePinnedToCore(Fuchey::PriceService::task_entry, "price_task",
-                             Fuchey::Tasks::PRICE_STACK, &s_price_service,
-                             Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
     // RGB LED Indicator Task (Core 0 — idle until a TX result arrives)
     xTaskCreatePinnedToCore(Fuchey::LedIndicator::task_entry, "led_task",
@@ -431,6 +921,12 @@ extern "C" void app_main(void) {
     // Wire buzzer to UIManager for Pomodoro finish alerts (non-blocking pattern)
     s_ui.set_buzzer(&s_buzzer);
 
+    // App-driven wallet creation: UI draws the words, protocol confirms.
+    s_ui.set_create_session(&s_wallet_create);
+    s_usb_protocol.set_create_session(&s_wallet_create);
+    s_ui.set_recovery(&s_recovery);
+    s_usb_protocol.set_recovery(&s_recovery);
+
     // Interactive Serial Console Task (Core 0)
     xTaskCreatePinnedToCore([](void*) {
         static constexpr const char* CTAG = "Console";
@@ -447,7 +943,7 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    wallet_info                Show current address");
         ESP_LOGI(CTAG, "    wallet_export              Export private key (DANGER)");
         ESP_LOGI(CTAG, "    p                          Force SOL price fetch");
-        ESP_LOGI(CTAG, "    c / 1                      B1 press (TX accept, else Back)");
+        ESP_LOGI(CTAG, "    c / 1                      B1 press (Back; cannot approve TX)");
         ESP_LOGI(CTAG, "    x / 3                      B1 double-press (tx reject)");
         ESP_LOGI(CTAG, "    l                          B1 long-press (tx reject)");
         ESP_LOGI(CTAG, "    n / menu                   B2 press (open menu / select)");
@@ -460,7 +956,8 @@ extern "C" void app_main(void) {
         ESP_LOGI(CTAG, "    h / ?                      Show this help");
         ESP_LOGI(CTAG, "=================================================");
 
-        char line[512];
+        // Sized for companion-app frames (base64 of a 1232-byte tx + JSON).
+        char line[Fuchey::UsbProtocol::MAX_LINE_CHARS + 64];
         std::string pending_line;
         std::string pending_wallet_import;
         while (true) {
@@ -497,6 +994,9 @@ extern "C" void app_main(void) {
                 }
                 if (len == 0) continue;
 
+                // Companion-app frames ("@@...") never reach the command table.
+                if (s_usb_protocol.handle_line(cmd)) continue;
+
                 if (!pending_wallet_import.empty() &&
                     strcmp(cmd, "wallet_import_cancel") != 0) {
                     const char* continuation = cmd;
@@ -525,7 +1025,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -535,7 +1036,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::DOUBLE_PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -545,7 +1047,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::LONG_PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -556,7 +1059,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B2_MENU_SELECT,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -566,7 +1070,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B3_PREV,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -576,7 +1081,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B4_NEXT,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -586,7 +1092,8 @@ extern "C" void app_main(void) {
                     Fuchey::ButtonState state{
                         .id = Fuchey::ButtonId::B1_TX_BACK,
                         .event = Fuchey::ButtonEvent::PRESS,
-                        .timestamp_ms = 0
+                        .timestamp_ms = 0,
+                        .from_console = true
                     };
                     xQueueSend(::g_button_queue_ref, &state, 0);
 
@@ -895,44 +1402,31 @@ extern "C" void app_main(void) {
                     }
                     ESP_LOGW(CTAG, "-------------------------------------------------");
 
-                // ── wallet_export ──────────────────────────────
+                // ── wallet_export (DEBUG) ──────────────────────
+                // Kept for development. Needs a physical B1 tap on the
+                // dedicated EXPORT KEY? screen (console c cannot approve).
                 } else if (strcmp(cmd, "wallet_export") == 0) {
-                    if (!s_wallet_core.is_unlocked()) {
-                        ESP_LOGW(CTAG, "[Wallet] Wallet is locked. Export requires an unlocked wallet.");
+                    auto addr = s_wallet_core.get_address();
+                    if (!addr || !s_wallet_core.is_unlocked()) {
+                        ESP_LOGW(CTAG, "[Wallet] No unlocked wallet to export.");
                         continue;
                     }
                     ESP_LOGW(CTAG, "==================================================");
-                    ESP_LOGW(CTAG, "[Wallet] EXPORT PRIVATE KEY");
+                    ESP_LOGW(CTAG, "[Wallet] EXPORT PRIVATE KEY (debug)");
                     ESP_LOGW(CTAG, "  DANGER: Anyone with this key can steal your funds.");
-                    ESP_LOGW(CTAG, "  Press B1 on the device within 10s to print it,");
-                    ESP_LOGW(CTAG, "  or double/long press to cancel.");
+                    ESP_LOGW(CTAG, "  Tap B1 on the device within 10s to print it,");
+                    ESP_LOGW(CTAG, "  or double/long press B1 to cancel.");
                     ESP_LOGW(CTAG, "==================================================");
 
-                    // Arm the confirm screen so the physical B1 button is accepted
-                    Fuchey::Events::Event req{};
-                    req.type = Fuchey::Events::EventType::TX_REQUEST;
-                    req.data.tx.amount_cents = 0;
-                    Fuchey::Events::post(Fuchey::Events::g_ui_queue, req);
+                    Fuchey::Events::TxSummary summary{};
+                    summary.kind = Fuchey::Events::ConfirmKind::EXPORT_KEY;
+                    summary.mainnet = !s_is_devnet;
+                    snprintf(summary.recipient, sizeof(summary.recipient), "%s", addr->c_str());
 
-                    // Flush any stale confirm events
-                    Fuchey::Events::Event dummy_evt{};
-                    if (Fuchey::g_tx_confirm_queue) {
-                        while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
-                    }
-
-                    Fuchey::Events::Event app_evt{};
-                    bool confirmed = false;
-                    if (Fuchey::g_tx_confirm_queue) {
-                        confirmed =
-                            xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt,
-                                          pdMS_TO_TICKS(10000)) == pdTRUE &&
-                            app_evt.type == Fuchey::Events::EventType::TX_APPROVED;
-                    }
-
-                    s_ui.set_screen(Fuchey::UIScreen::HOME);
-
-                    if (!confirmed) {
-                        ESP_LOGW(CTAG, "[Wallet] Export cancelled or timed out.");
+                    auto decision = s_wallet_manager.request_confirmation(summary, 10000);
+                    if (decision != Fuchey::SignStatus::APPROVED) {
+                        ESP_LOGW(CTAG, "[Wallet] Export not performed: %s",
+                                 Fuchey::WalletManager::status_to_string(decision));
                         continue;
                     }
 
@@ -1031,588 +1525,31 @@ extern "C" void app_main(void) {
                     memset(cmd + 14, 0, len - 14);
                     ESP_LOGI(CTAG, "-------------------------------------------------");
 
-                // ── Send SOL ──────────────────────────────────
-                } else if (strncmp(cmd, "send sol ", 9) == 0 && len > 9) {
-                    struct SendArgs {
-                        float amount;
-                        char  recipient[64];
-                    };
-
+                // ── Send SOL / USDC ───────────────────────────
+                // Parsing/checks run in a worker task; the message is built
+                // first, then WalletManager parses it, shows it on the TFT and
+                // signs only after a physical B1 tap.
+                } else if ((strncmp(cmd, "send sol ", 9) == 0 && len > 9) ||
+                           (strncmp(cmd, "send usdc ", 10) == 0 && len > 10)) {
                     auto* args = new SendArgs();
-                    args->amount = 0.0f;
-                    memset(args->recipient, 0, sizeof(args->recipient));
+                    args->usdc = (strncmp(cmd, "send usdc ", 10) == 0);
+                    const char* rest = cmd + (args->usdc ? 10 : 9);
 
-                    if (sscanf(cmd + 9, "%f %63s", &args->amount, args->recipient) == 2) {
+                    if (sscanf(rest, "%31s %63s", args->amount, args->recipient) == 2) {
                         xTaskCreate([](void* p) {
-                            static constexpr const char* CTAG = "Console";
-                            auto* args = static_cast<SendArgs*>(p);
-                            float amount = args->amount;
-                            std::string recipient_str = args->recipient;
-                            delete args;
-
-                            ESP_LOGI(CTAG, "-------------------------------------------------");
-                            ESP_LOGI(CTAG, "[SEND SOL] Initiating transfer:");
-                            ESP_LOGI(CTAG, "  Asset:     SOL");
-                            ESP_LOGI(CTAG, "  Amount:    %.4f SOL", amount);
-                            ESP_LOGI(CTAG, "  Recipient: %s", recipient_str.c_str());
-
-                            // Check recipient address validity
-                            auto recipient_bytes = Fuchey::Crypto::Base58::decode(recipient_str);
-                            if (recipient_bytes.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Error: Invalid Solana recipient address length (%d bytes, expected 32).",
-                                         recipient_bytes.size());
-                                ESP_LOGI(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            s_wallet_core.unlock();
-                            auto pubkey_opt = s_wallet_core.get_pubkey();
-                            if (!pubkey_opt) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Error: Wallet is locked or not setup.");
-                                ESP_LOGI(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-                            auto sender_pubkey = *pubkey_opt;
-                            auto sender_addr_opt = s_wallet_core.get_address();
-                            if (sender_addr_opt) {
-                                std::string sender_addr = *sender_addr_opt;
-                                double lamports = fetch_sol_balance_lamports(sender_addr);
-                                if (lamports >= 0.0) {
-                                    const double amount_lamports = static_cast<double>(
-                                        static_cast<uint64_t>(amount * 1000000000.0));
-                                    constexpr double TX_FEE_LAMPORTS = 10000.0; // 0.00001 SOL buffer
-                                    if (lamports < amount_lamports + TX_FEE_LAMPORTS) {
-                                        ESP_LOGE(CTAG, "-------------------------------------------------");
-                                        ESP_LOGE(CTAG, "[SEND SOL] ERROR: Insufficient balance.");
-                                        ESP_LOGE(CTAG, "  Have: %.6f SOL  |  Need: %.6f SOL (+fee)",
-                                                 lamports / 1000000000.0,
-                                                 (amount_lamports + TX_FEE_LAMPORTS) / 1000000000.0);
-                                        ESP_LOGE(CTAG, "-------------------------------------------------");
-                                        Fuchey::Events::Event fail_evt{};
-                                        fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                        fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
-                                        snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
-                                                 sizeof(fail_evt.data.tx.tx_data),
-                                                 "%s|%s", "Insufficient balance", recipient_str.c_str());
-                                        Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
-                                        vTaskDelete(nullptr);
-                                        return;
-                                    }
-                                } else {
-                                    ESP_LOGW(CTAG, "[SEND SOL] Could not verify balance — proceeding anyway.");
-                                }
-                            }
-
-                            // Flush any old events from g_tx_confirm_queue
-                            Fuchey::Events::Event dummy_evt;
-                            if (Fuchey::g_tx_confirm_queue) {
-                                while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
-                            }
-
-                            // Prompt UI for hardware/serial button approval (live SOL/USD rate)
-                            uint64_t cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
-                            Fuchey::Events::Event evt{};
-                            evt.type = Fuchey::Events::EventType::TX_REQUEST;
-                            evt.data.tx.amount_cents = cents;
-                            evt.data.tx.tx_len = 0;
-                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
-
-                            ESP_LOGI(CTAG, "[SEND SOL] Waiting for hardware button press or serial 'c' approval...");
-                            ESP_LOGI(CTAG, "-------------------------------------------------");
-
-                            // Wait up to 30 seconds for user confirmation on g_tx_confirm_queue
-                            Fuchey::Events::Event app_evt{};
-                            bool got_response = false;
-                            if (Fuchey::g_tx_confirm_queue) {
-                                got_response = (xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
-                            }
-
-                            if (!got_response || app_evt.type != Fuchey::Events::EventType::TX_APPROVED) {
-                                ESP_LOGW(CTAG, "-------------------------------------------------");
-                                ESP_LOGW(CTAG, "[SEND SOL] Transfer REJECTED or TIMED OUT by user.");
-                                ESP_LOGW(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            ESP_LOGI(CTAG, "[SEND SOL] Transaction APPROVED! Fetching blockhash from Devnet...");
-
-                            // Fetch latest blockhash
-                            auto bh_resp = s_wifi_manager.post_json(
-                                get_rpc_url(),
-                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
-                            );
-
-                            if (!bh_resp.success) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            std::string blockhash_str;
-                            cJSON* bh_root = cJSON_Parse(bh_resp.body.c_str());
-                            if (bh_root) {
-                                cJSON* res = cJSON_GetObjectItem(bh_root, "result");
-                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
-                                cJSON* bh  = val ? cJSON_GetObjectItem(val, "blockhash") : nullptr;
-                                if (bh && bh->valuestring) {
-                                    blockhash_str = bh->valuestring;
-                                }
-                                cJSON_Delete(bh_root);
-                            }
-
-                            if (blockhash_str.empty()) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Error parsing blockhash: %.100s", bh_resp.body.c_str());
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
-                            if (blockhash_bytes.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Invalid blockhash decode size (%d)", blockhash_bytes.size());
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // ── Build Solana message (the bytes that get signed) ──
-                            // Solana legacy message = header (3 bytes)
-                            //   + compact-u16 account count + accounts
-                            //   + recent blockhash (32 bytes)
-                            //   + compact-u16 instruction count + instructions
-                            // The num-signatures prefix (0x01) lives ONLY in the
-                            // wire transaction, never in the signed message.
-                            uint64_t lamports = static_cast<uint64_t>(amount * 1000000000.0f);
-                            std::vector<uint8_t> msg;
-
-                            // Header (3 bytes)
-                            msg.push_back(1); // num_required_signatures = 1
-                            msg.push_back(0); // num_readonly_signed_accounts = 0
-                            msg.push_back(1); // num_readonly_unsigned_accounts = 1 (System Program)
-
-                            // Account addresses (compact-u16 count + 32-byte keys)
-                            msg.push_back(3); // 3 accounts: sender, recipient, System Program
-                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end()); // [0] signer+writable
-                            msg.insert(msg.end(), recipient_bytes.begin(), recipient_bytes.end()); // [1] writable
-                            for (int i = 0; i < 32; i++) msg.push_back(0); // [2] System Program = 11111…
-
-                            // Recent blockhash (32 bytes)
-                            msg.insert(msg.end(), blockhash_bytes.begin(), blockhash_bytes.end());
-
-                            // Instructions (compact-u16 count + instruction data)
-                            msg.push_back(1); // 1 instruction
-                            // Instruction: System Program Transfer
-                            msg.push_back(2); // program_id_index = 2 (System Program)
-                            msg.push_back(2); // 2 account indices follow
-                            msg.push_back(0); // accounts[0] = sender  (index into account list)
-                            msg.push_back(1); // accounts[1] = recipient
-                            msg.push_back(12); // data length = 12 bytes
-                            // Transfer instruction data: u32 discriminant=2 + u64 lamports LE
-                            msg.push_back(2); msg.push_back(0); msg.push_back(0); msg.push_back(0);
-                            for (int i = 0; i < 8; i++) {
-                                msg.push_back(static_cast<uint8_t>((lamports >> (i * 8)) & 0xFF));
-                            }
-
-                            // Sign the message bytes
-                            Fuchey::Crypto::Signature sig{};
-                            auto sign_res = s_wallet_core.sign(msg, sig);
-                            if (sign_res != Fuchey::WalletResult::OK) {
-                                ESP_LOGE(CTAG, "[SEND SOL] Signing failed (err=%d)", static_cast<int>(sign_res));
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // ── Build wire transaction ──
-                            // Format: [compact-u16 num_sigs] [sig…] [message]
-                            std::vector<uint8_t> wire_tx;
-                            wire_tx.push_back(1); // compact-u16: 1 signature
-                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end()); // 64-byte signature
-                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end()); // message bytes
-
-                            std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
-
-                            char req_buf[2048];
-                            snprintf(req_buf, sizeof(req_buf),
-                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"%s\",{\"encoding\":\"base58\"}]}",
-                                     base58_tx.c_str());
-
-                            ESP_LOGI(CTAG, "[SEND SOL] Broadcasting signed transaction to Solana Devnet...");
-                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
-
-                            Fuchey::Events::Event result_evt{};
-                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * s_price_service.get_sol_usd() * 100.0f);
-                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                     sizeof(result_evt.data.tx.tx_data),
-                                     "SOL:%.4f:%s", amount, recipient_str.c_str());
-
-                            if (tx_resp.success) {
-                                cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
-                                if (tx_root) {
-                                    cJSON* tx_res = cJSON_GetObjectItem(tx_root, "result");
-                                    cJSON* tx_err = cJSON_GetObjectItem(tx_root, "error");
-                                    if (tx_res && tx_res->valuestring) {
-                                        ESP_LOGI(CTAG, "=================================================");
-                                        ESP_LOGI(CTAG, "  [SUCCESS] SOL Transfer Broadcast Complete!");
-                                        ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
-                                        ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
-                                        ESP_LOGI(CTAG, "=================================================");
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_OK;
-                                    } else if (tx_err) {
-                                        cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
-                                        const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
-                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
-                                        char friendly_err[64];
-                                        friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
-                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s|%s", friendly_err, recipient_str.c_str());
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                    } else {
-                                        ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
-                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                    }
-                                    cJSON_Delete(tx_root);
-                                } else {
-                                    ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
-                                    snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure|%s", recipient_str.c_str());
-                                    result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                }
+                            auto* a = static_cast<SendArgs*>(p);
+                            SendArgs args = *a;
+                            delete a;
+                            if (args.usdc) {
+                                run_send_usdc(args);
                             } else {
-                                ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
-                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d|%s", tx_resp.status_code, recipient_str.c_str());
-                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
+                                run_send_sol(args);
                             }
-
-                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
                             vTaskDelete(nullptr);
-                        }, "send_sol_task", 20480, args, 4, nullptr);
+                        }, args->usdc ? "send_usdc_task" : "send_sol_task", 20480, args, 4, nullptr);
                     } else {
                         delete args;
-                        ESP_LOGW(CTAG, "Usage: send sol <amount> <recipient_address>");
-                    }
-
-                // ── Send USDC ─────────────────────────────────
-                } else if (strncmp(cmd, "send usdc ", 10) == 0 && len > 10) {
-                    struct SendUsdcArgs {
-                        float amount;
-                        char  recipient[64];
-                    };
-
-                    auto* args = new SendUsdcArgs();
-                    args->amount = 0.0f;
-                    memset(args->recipient, 0, sizeof(args->recipient));
-
-                    if (sscanf(cmd + 10, "%f %63s", &args->amount, args->recipient) == 2) {
-                        xTaskCreate([](void* p) {
-                            static constexpr const char* CTAG = "Console";
-                            auto* args = static_cast<SendUsdcArgs*>(p);
-                            float amount = args->amount;
-                            std::string recipient_str = args->recipient;
-                            delete args;
-
-                            ESP_LOGI(CTAG, "-------------------------------------------------");
-                            ESP_LOGI(CTAG, "[SEND USDC] Initiating SPL transfer:");
-                            ESP_LOGI(CTAG, "  Asset:     USDC (SPL Token)");
-                            ESP_LOGI(CTAG, "  Amount:    $%.2f USDC", amount);
-                            ESP_LOGI(CTAG, "  Recipient: %s", recipient_str.c_str());
-
-                            // Decode recipient address
-                            auto recipient_pubkey = Fuchey::Crypto::Base58::decode(recipient_str);
-                            if (recipient_pubkey.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error: Invalid Solana recipient address length (%d bytes, expected 32).",
-                                         recipient_pubkey.size());
-                                ESP_LOGI(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            s_wallet_core.unlock();
-                            auto pubkey_opt = s_wallet_core.get_pubkey();
-                            if (!pubkey_opt) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error: Wallet is locked or not setup.");
-                                ESP_LOGI(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-                            auto sender_pubkey = *pubkey_opt;
-
-                            // ── Decode Token Program ID ──
-                            auto token_prog = Fuchey::Crypto::Base58::decode(
-                                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-                            if (token_prog.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding Token Program ID (%d)",
-                                         static_cast<int>(token_prog.size()));
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // ── Resolve real USDC accounts from the chain ──
-                            // Never guess PDA addresses; getTokenAccountsByOwner returns the
-                            // actual funded token accounts for each owner.
-                            std::array<uint8_t, 32> sender_ata{};
-                            std::array<uint8_t, 32> recipient_ata{};
-
-                            auto usdc_sender_addr = s_wallet_core.get_address();
-                            if (!usdc_sender_addr) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error: Wallet is locked or not setup.");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // USDC has 6 decimals. Compute the exact send amount once
-                            // (decimal-safe) and reuse it for both the pre-check and the
-                            // instruction so they always agree.
-                            uint64_t raw_amount = static_cast<uint64_t>(std::llround(amount * 1000000.0));
-
-                            UsdcAccount sender_acct = fetch_usdc_account(*usdc_sender_addr);
-                            if (!sender_acct.ok) {
-                                ESP_LOGW(CTAG, "[SEND USDC] Could not verify balance — proceeding anyway.");
-                            } else if (sender_acct.pubkey.empty() || sender_acct.balance_micro < raw_amount) {
-                                ESP_LOGE(CTAG, "-------------------------------------------------");
-                                ESP_LOGE(CTAG, "[SEND USDC] ERROR: Insufficient balance.");
-                                ESP_LOGE(CTAG, "  From: %s", sender_acct.pubkey.c_str());
-                                ESP_LOGE(CTAG, "  Have: %llu.%06llu USDC (exact) |  Need: %llu.%06llu USDC",
-                                         static_cast<unsigned long long>(sender_acct.balance_micro / 1000000),
-                                         static_cast<unsigned long long>(sender_acct.balance_micro % 1000000),
-                                         static_cast<unsigned long long>(raw_amount / 1000000),
-                                         static_cast<unsigned long long>(raw_amount % 1000000));
-                                ESP_LOGE(CTAG, "-------------------------------------------------");
-                                Fuchey::Events::Event fail_evt{};
-                                fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
-                                snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
-                                         sizeof(fail_evt.data.tx.tx_data),
-                                         "%s|%s", "Insufficient balance", recipient_str.c_str());
-                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
-                                vTaskDelete(nullptr);
-                                return;
-                            } else {
-                                ESP_LOGI(CTAG, "[SEND USDC] Sending from: %s", sender_acct.pubkey.c_str());
-                                ESP_LOGI(CTAG, "  Balance:    %llu.%06llu USDC",
-                                         static_cast<unsigned long long>(sender_acct.balance_micro / 1000000),
-                                         static_cast<unsigned long long>(sender_acct.balance_micro % 1000000));
-                            }
-
-                            // Recipient must already own a USDC account to receive tokens.
-                            UsdcAccount recipient_acct = fetch_usdc_account(recipient_str);
-                            if (!recipient_acct.ok) {
-                                ESP_LOGW(CTAG, "[SEND USDC] Could not verify recipient account — proceeding anyway.");
-                            } else if (recipient_acct.pubkey.empty()) {
-                                ESP_LOGE(CTAG, "-------------------------------------------------");
-                                ESP_LOGE(CTAG, "[SEND USDC] ERROR: Recipient has no USDC account.");
-                                ESP_LOGE(CTAG, "  Recipient must first receive USDC once.");
-                                ESP_LOGE(CTAG, "-------------------------------------------------");
-                                Fuchey::Events::Event fail_evt{};
-                                fail_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                fail_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
-                                snprintf(reinterpret_cast<char*>(fail_evt.data.tx.tx_data),
-                                         sizeof(fail_evt.data.tx.tx_data),
-                                         "%s|%s", "No USDC acct", recipient_str.c_str());
-                                Fuchey::Events::post(Fuchey::Events::g_ui_queue, fail_evt);
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            auto sender_ata_bytes    = Fuchey::Crypto::Base58::decode(sender_acct.pubkey);
-                            auto recipient_ata_bytes = Fuchey::Crypto::Base58::decode(recipient_acct.pubkey);
-                            if (sender_ata_bytes.size() != 32 || recipient_ata_bytes.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error decoding USDC account addresses "
-                                         "(sender=%d recipient=%d)",
-                                         static_cast<int>(sender_ata_bytes.size()),
-                                         static_cast<int>(recipient_ata_bytes.size()));
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-                            std::memcpy(sender_ata.data(), sender_ata_bytes.data(), 32);
-                            std::memcpy(recipient_ata.data(), recipient_ata_bytes.data(), 32);
-
-                            // Flush old events
-                            Fuchey::Events::Event dummy_evt;
-                            if (Fuchey::g_tx_confirm_queue) {
-                                while (xQueueReceive(Fuchey::g_tx_confirm_queue, &dummy_evt, 0) == pdTRUE) {}
-                            }
-
-                            // Prompt for confirmation
-                            uint64_t cents = static_cast<uint64_t>(amount * 100.0f);
-                            Fuchey::Events::Event evt{};
-                            evt.type = Fuchey::Events::EventType::TX_REQUEST;
-                            evt.data.tx.amount_cents = cents;
-                            evt.data.tx.tx_len = 0;
-                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, evt);
-
-                            ESP_LOGI(CTAG, "[SEND USDC] Waiting for hardware button press or serial 'c' approval...");
-                            ESP_LOGI(CTAG, "-------------------------------------------------");
-
-                            Fuchey::Events::Event app_evt{};
-                            bool got_response = false;
-                            if (Fuchey::g_tx_confirm_queue) {
-                                got_response = (xQueueReceive(Fuchey::g_tx_confirm_queue, &app_evt, pdMS_TO_TICKS(30000)) == pdTRUE);
-                            }
-
-                            if (!got_response || app_evt.type != Fuchey::Events::EventType::TX_APPROVED) {
-                                ESP_LOGW(CTAG, "-------------------------------------------------");
-                                ESP_LOGW(CTAG, "[SEND USDC] Transfer REJECTED or TIMED OUT by user.");
-                                ESP_LOGW(CTAG, "-------------------------------------------------");
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            ESP_LOGI(CTAG, "[SEND USDC] Transaction APPROVED! Fetching blockhash from Devnet...");
-
-                            // Fetch blockhash
-                            auto bh_resp = s_wifi_manager.post_json(
-                                get_rpc_url(),
-                                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\"}]}"
-                            );
-
-                            if (!bh_resp.success) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Failed to get latest blockhash from RPC (status %d)", bh_resp.status_code);
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            std::string blockhash_str;
-                            cJSON* bh_root = cJSON_Parse(bh_resp.body.c_str());
-                            if (bh_root) {
-                                cJSON* res = cJSON_GetObjectItem(bh_root, "result");
-                                cJSON* val = res ? cJSON_GetObjectItem(res, "value") : nullptr;
-                                cJSON* bh  = val ? cJSON_GetObjectItem(val, "blockhash") : nullptr;
-                                if (bh && bh->valuestring) {
-                                    blockhash_str = bh->valuestring;
-                                }
-                                cJSON_Delete(bh_root);
-                            }
-
-                            if (blockhash_str.empty()) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Error parsing blockhash: %.100s", bh_resp.body.c_str());
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            auto blockhash_bytes = Fuchey::Crypto::Base58::decode(blockhash_str);
-                            if (blockhash_bytes.size() != 32) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Invalid blockhash decode size (%d)", blockhash_bytes.size());
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // ── Build Solana message ──
-                            // raw_amount (6-decimal micro-units) was computed before
-                            // the pre-check and is shared with the broadcast path.
-                            std::vector<uint8_t> msg;
-
-                            // Header
-                            msg.push_back(1); // num_required_signatures = 1
-                            msg.push_back(0); // num_readonly_signed_accounts = 0
-                            msg.push_back(1); // num_readonly_unsigned_accounts = 1 (Token Program)
-
-                            // Accounts
-                            msg.push_back(4); // 4 accounts
-                            msg.insert(msg.end(), sender_pubkey.begin(), sender_pubkey.end()); // [0] signer
-                            msg.insert(msg.end(), sender_ata.begin(), sender_ata.end());       // [1] source ATA
-                            msg.insert(msg.end(), recipient_ata.begin(), recipient_ata.end()); // [2] dest ATA
-                            msg.insert(msg.end(), token_prog.begin(), token_prog.end());       // [3] Token Program
-
-                            // Blockhash
-                            msg.insert(msg.end(), blockhash_bytes.begin(), blockhash_bytes.end());
-
-                            // Instructions
-                            msg.push_back(1); // 1 instruction
-                            msg.push_back(3); // program_id_index = 3 (Token Program)
-                            msg.push_back(3); // 3 account indices
-                            msg.push_back(1); // accounts[0] = source ATA (index 1)
-                            msg.push_back(2); // accounts[1] = dest ATA (index 2)
-                            msg.push_back(0); // accounts[2] = owner (index 0)
-                            msg.push_back(9); // data length = 9 bytes
-                            // SPL Transfer: u8 tag (3) + u64 LE amount
-                            msg.push_back(3);
-                            for (int i = 0; i < 8; i++) {
-                                msg.push_back(static_cast<uint8_t>((raw_amount >> (i * 8)) & 0xFF));
-                            }
-
-                            // Sign
-                            Fuchey::Crypto::Signature sig{};
-                            auto sign_res = s_wallet_core.sign(msg, sig);
-                            if (sign_res != Fuchey::WalletResult::OK) {
-                                ESP_LOGE(CTAG, "[SEND USDC] Signing failed (err=%d)", static_cast<int>(sign_res));
-                                vTaskDelete(nullptr);
-                                return;
-                            }
-
-                            // Build wire transaction
-                            std::vector<uint8_t> wire_tx;
-                            wire_tx.push_back(1);
-                            wire_tx.insert(wire_tx.end(), sig.begin(), sig.end());
-                            wire_tx.insert(wire_tx.end(), msg.begin(), msg.end());
-
-                            std::string base58_tx = Fuchey::Crypto::Base58::encode(wire_tx);
-
-                            // Submit
-                            char req_buf[2048];
-                            snprintf(req_buf, sizeof(req_buf),
-                                     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":[\"%s\",{\"encoding\":\"base58\"}]}",
-                                     base58_tx.c_str());
-
-                            ESP_LOGI(CTAG, "[SEND USDC] Broadcasting signed transaction to Solana Devnet...");
-                            auto tx_resp = s_wifi_manager.post_json(get_rpc_url(), req_buf);
-
-                            Fuchey::Events::Event result_evt{};
-                            result_evt.data.tx.amount_cents = static_cast<uint64_t>(amount * 100.0f);
-                            snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                     sizeof(result_evt.data.tx.tx_data),
-                                     "USDC:%.2f:%s", amount, recipient_str.c_str());
-
-                            if (tx_resp.success) {
-                                cJSON* tx_root = cJSON_Parse(tx_resp.body.c_str());
-                                if (tx_root) {
-                                    cJSON* tx_res = cJSON_GetObjectItem(tx_root, "result");
-                                    cJSON* tx_err = cJSON_GetObjectItem(tx_root, "error");
-                                    if (tx_res && tx_res->valuestring) {
-                                        ESP_LOGI(CTAG, "=================================================");
-                                        ESP_LOGI(CTAG, "  [SUCCESS] USDC Transfer Broadcast Complete!");
-                                        ESP_LOGI(CTAG, "  Signature: %s", tx_res->valuestring);
-                                        ESP_LOGI(CTAG, "  Explorer:  https://explorer.solana.com/tx/%s?cluster=devnet", tx_res->valuestring);
-                                        ESP_LOGI(CTAG, "=================================================");
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_OK;
-                                    } else if (tx_err) {
-                                        cJSON* msg_item = cJSON_GetObjectItem(tx_err, "message");
-                                        const char* err_str = msg_item && msg_item->valuestring ? msg_item->valuestring : "Unknown RPC error";
-                                        ESP_LOGE(CTAG, "  [TX ERROR] RPC Error: %s", err_str);
-                                        char friendly_err[64];
-                                        friendly_tx_error(err_str, friendly_err, sizeof(friendly_err));
-                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "%s|%s", friendly_err, recipient_str.c_str());
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                    } else {
-                                        ESP_LOGE(CTAG, "  [TX ERROR] Response: %.150s", tx_resp.body.c_str());
-                                        snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                                 sizeof(result_evt.data.tx.tx_data), "RPC parse error|%s", recipient_str.c_str());
-                                        result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                    }
-                                    cJSON_Delete(tx_root);
-                                } else {
-                                    ESP_LOGE(CTAG, "  [TX ERROR] Parse failure. Raw: %.150s", tx_resp.body.c_str());
-                                    snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                             sizeof(result_evt.data.tx.tx_data), "RPC parse failure|%s", recipient_str.c_str());
-                                    result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                                }
-                            } else {
-                                ESP_LOGE(CTAG, "  [TX ERROR] HTTP request failed (%d)", tx_resp.status_code);
-                                snprintf(reinterpret_cast<char*>(result_evt.data.tx.tx_data),
-                                         sizeof(result_evt.data.tx.tx_data), "HTTP %d|%s", tx_resp.status_code, recipient_str.c_str());
-                                result_evt.type = Fuchey::Events::EventType::TX_BROADCAST_FAIL;
-                            }
-
-                            Fuchey::Events::post(Fuchey::Events::g_ui_queue, result_evt);
-                            vTaskDelete(nullptr);
-                        }, "send_usdc_task", 20480, args, 4, nullptr);
-                    } else {
-                        delete args;
-                        ESP_LOGW(CTAG, "Usage: send usdc <amount> <recipient_address>");
+                        ESP_LOGW(CTAG, "Usage: send sol|usdc <amount> <recipient_address>");
                     }
 
                 // ── Interactive Send prompt ───────────────────
@@ -1628,8 +1565,36 @@ extern "C" void app_main(void) {
 
                 // ── Manual Weather update ──────────────────────
                 } else if (strcmp(cmd, "weather") == 0) {
-                    ESP_LOGI(CTAG, "[Weather] Fetching geolocation & weather...");
+                    ESP_LOGI(CTAG, "[Weather] Fetching: %s (source=%s)",
+                             s_weather_service.city_name().c_str(),
+                             s_weather_service.location_source().c_str());
                     s_weather_service.update_now();
+
+                // ── Set manual weather location ────────────────
+                } else if (strncmp(cmd, "setloc", 6) == 0) {
+                    // Accept optional commas between coords (e.g. "27.56, 84.30")
+                    for (char* p = cmd; *p; ++p) {
+                        if (*p == ',') *p = ' ';
+                    }
+                    char city[64] = {0}, end[4] = {0};
+                    float lat = 0.0f, lon = 0.0f;
+                    int parsed = sscanf(cmd + 6, " %63[^ ]%f%f%3s", city, &lat, &lon, end);
+                    if (parsed == 3 && city[0]) {
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        ESP_LOGI(CTAG, "[Weather] Setting manual location: %s (%.4f, %.4f)",
+                                 city, lat, lon);
+                        ESP_LOGI(CTAG, "-------------------------------------------------");
+                        if (s_weather_service.set_manual_location(city, lat, lon)) {
+                            ESP_LOGI(CTAG, "[Weather] Location saved to NVS (source=manual)");
+                            s_ui.mark_location_configured(city);
+                            s_weather_service.update_now();
+                        } else {
+                            ESP_LOGE(CTAG, "Usage: setloc <CITY> <LAT> <LON>  (lat -90..90, lon -180..180)");
+                        }
+                    } else {
+                        ESP_LOGW(CTAG, "Usage: setloc <CITY> <LAT> <LON>");
+                        ESP_LOGW(CTAG, "  Example: setloc Chitwan 27.68 84.43");
+                    }
 
                 // ── Help ──────────────────────────────────────
                 } else if ((cmd[0] == 'h' || cmd[0] == '?') && len == 1) {
@@ -1646,9 +1611,10 @@ extern "C" void app_main(void) {
                     ESP_LOGI(CTAG, "  send usdc <amt> <to>     Transfer USDC");
                     ESP_LOGI(CTAG, "  network                  Show / switch network (devnet/mainnet)");
                     ESP_LOGI(CTAG, "  airdrop [amount]         Request Devnet SOL airdrop");
-                    ESP_LOGI(CTAG, "  weather                  Fetch weather & geolocation");
+                    ESP_LOGI(CTAG, "  weather                  Fetch weather now");
+                    ESP_LOGI(CTAG, "  setloc <city> <lat> <lon> Set weather location");
                     ESP_LOGI(CTAG, "  p                        Fetch SOL price");
-                    ESP_LOGI(CTAG, "  c / 1                    B1 button (TX confirm / Back)");
+                    ESP_LOGI(CTAG, "  c / 1                    B1 button (Back; TX needs real B1)");
                     ESP_LOGI(CTAG, "  n / menu                 B2 button (open / select)");
                     ESP_LOGI(CTAG, "  j / prev                 B3 button (previous)");
                     ESP_LOGI(CTAG, "  k / next                 B4 button (next)");
@@ -1660,7 +1626,7 @@ extern "C" void app_main(void) {
             }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
-    }, "console_task", 8192, nullptr, 4, nullptr, 0);
+    }, "console_task", 12288, nullptr, 4, nullptr, 0);
 
     ESP_LOGI(TAG, "=================================================");
     ESP_LOGI(TAG, "  Boot complete. Fuchey is running.");

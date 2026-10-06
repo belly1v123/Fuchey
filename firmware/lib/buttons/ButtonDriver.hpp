@@ -41,6 +41,9 @@ struct ButtonState {
     ButtonId    id;
     ButtonEvent event;
     uint32_t    timestamp_ms;
+    // true when injected by the serial console (c / x / n ...). Such events
+    // can navigate and reject, but never approve a signature (UIManager).
+    bool        from_console{false};
 };
 
 class ButtonDriver {

@@ -68,6 +68,13 @@ public:
     // On success, wallet is UNLOCKED.
     WalletResult import(std::string_view mnemonic);
 
+    // Does `mnemonic` (valid BIP39) derive this wallet's public key?
+    // Derives in RAM only, stores nothing, wipes the seed and key.
+    WalletResult matches_mnemonic(std::string_view mnemonic, bool& out_match) const;
+
+    // Base58 address of the wallet `mnemonic` would create. RAM only.
+    WalletResult address_from_mnemonic(std::string_view mnemonic, std::string& out_address) const;
+
     // Import wallet from raw 64-char hex-encoded Ed25519 private key/seed (32 bytes).
     // Derives public key directly — no BIP39/SLIP0010 derivation path.
     // Example: "2f97510b0d6d19dd..." (exactly 64 lowercase hex chars)

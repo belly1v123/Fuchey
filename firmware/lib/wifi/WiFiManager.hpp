@@ -10,6 +10,7 @@
 #include <string>
 #include <functional>
 #include <cstdint>
+#include <vector>
 
 namespace Fuchey {
 
@@ -44,6 +45,13 @@ public:
 
     // ── Save credentials ──────────────────────────────────
     bool save_credentials(const char* ssid, const char* password);
+    // Saved SSID only — the password is write-only and never read back out.
+    std::string saved_ssid() const;
+
+    // ── Scan ──────────────────────────────────────────────
+    struct ScanResult { std::string ssid; int8_t rssi; bool secure; };
+    // Blocking active scan. Unique non-empty SSIDs, strongest first.
+    bool scan(std::vector<ScanResult>& out, size_t max_results = 20);
 
     // ── HTTP ─────────────────────────────────────────────
     HttpResponse get(const char* url,

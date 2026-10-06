@@ -10,6 +10,7 @@
 #include <freertos/event_groups.h>
 #include <cstdint>
 #include <array>
+#include <atomic>
 
 namespace Fuchey {
 namespace Events {
@@ -47,10 +48,42 @@ enum class EventType : uint32_t {
     UI_BUTTON_LONG_PRESS = 0x0052,
     UI_IDLE_TICK         = 0x0053,
     UI_SCREEN_CHANGE     = 0x0054,
+    UI_SHOW_ADDRESS      = 0x0055,  // Companion app: open the Receive QR screen
+    UI_RECOVERY_VIEW     = 0x0056,  // Recovery state changed (UI reads RecoveryController)
+    UI_WALLET_CREATE     = 0x0057,  // Create-wallet session changed (redraw / open)
 
     // System
     SYSTEM_BOOT_DONE     = 0x0060,
     SYSTEM_LOW_MEMORY    = 0x0061,
+};
+
+// ─── Confirmation request (TX_REQUEST payload) ────────────
+// Built by WalletManager from the exact bytes it is about to sign,
+// pre-formatted so the UI only prints strings (no parsing on the UI side).
+enum class ConfirmKind : uint8_t {
+    TRANSFER   = 0,  // Sign a parsed transfer (SOL / USDC)
+    EXPORT_KEY = 1,  // Debug: print the private key to the serial log
+    NETWORK_SWITCH = 2,  // Companion app asks to switch devnet/mainnet (mainnet = target)
+    RESTORE_WALLET = 3,  // Save a wallet restored via the grid (recipient = its address)
+};
+
+struct TxSummary {
+    uint32_t    request_id;     // Echoed back in TX_APPROVED / TX_REJECTED
+    ConfirmKind kind;
+    bool        mainnet;        // false = devnet
+    char        asset[8];       // "SOL", "USDC"
+    char        amount[24];     // Exact decimal amount, e.g. "0.25"
+    char        fee[16];        // Network fee in SOL, e.g. "0.000005"
+    char        recipient[48];  // Base58 destination (wallet or token account)
+    // USDC to a recipient without a USDC account: the transaction also opens
+    // one (this wallet pays the rent). `recipient` is then the owner wallet.
+    bool        creates_account;
+    char        rent[16];       // Rent in SOL, e.g. "0.00203928"
+    // Display-only USD values (micro-dollars). Not part of what is signed.
+    uint64_t    usd_micro;      // Transfer value, 0 = unknown
+    uint64_t    fee_usd_micro;  // Network fee value, 0 = unknown
+    uint32_t    sol_usd_cents;  // SOL/USD rate used, 0 = no price available
+    bool        price_live;     // true = fetched just before this request
 };
 
 // ─── Generic Event Payload ────────────────────────────────
@@ -58,12 +91,16 @@ enum class EventType : uint32_t {
 struct Event {
     EventType type;
     union {
-        // TX_REQUEST, TX_SIGNED
+        // TX_BROADCAST_OK / TX_BROADCAST_FAIL (tx_data holds a result string)
         struct {
             uint8_t  tx_data[256];
             uint16_t tx_len;
             uint64_t amount_cents;   // Amount in cents (USD)
         } tx;
+
+        // TX_REQUEST (to UI); request_id is also used by TX_APPROVED /
+        // TX_REJECTED (data.u32) on g_tx_confirm_queue and g_ui_queue.
+        TxSummary confirm;
 
         // WEATHER_UPDATED
         struct {
@@ -104,6 +141,8 @@ struct Event {
 extern QueueHandle_t g_wallet_queue;   // Event → WalletManager
 extern QueueHandle_t g_ui_queue;       // Event → UIManager
 extern QueueHandle_t g_button_queue;   // ButtonDriver → consumers
+// UI → WalletManager: TX_APPROVED / TX_REJECTED for the pending request is
+// declared as Fuchey::g_tx_confirm_queue below (defined in main.cpp).
 
 // ─── Event Group Bits ─────────────────────────────────────
 // Global event group for fast cross-task signaling
@@ -137,4 +176,8 @@ inline bool postFromISR(QueueHandle_t q, const Event& evt) {
 }
 
 } // namespace Events
+
+// UI → WalletManager approval channel (defined in main.cpp)
+extern QueueHandle_t g_tx_confirm_queue;
+
 } // namespace Fuchey

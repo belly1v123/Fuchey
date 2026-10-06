@@ -7,6 +7,7 @@
 #include "Animations.hpp"
 #include "SpritePlayer.hpp"
 #include "YetiAnim.hpp"
+#include "DndAnim.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
@@ -98,18 +99,21 @@ void setup_header(Display& d) {
     d.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 }
 
-// Open-Meteo weathercode -> home icon (30x32 RGB565, null = no data yet).
+// Open-Meteo (WMO) weathercode -> home icon (30x32 RGB565, null = no data yet).
 const SpritePixel* home_weather_bits(uint8_t code) {
     switch (code) {
-        case 0:
-        case 1:  return image_weather_sunny_bits;       // clear / mainly clear
-        case 2:  return image_weather_cloud_sunny_bits; // partly cloudy
+        case 0:  return image_weather_sunny_bits;         // clear sky
+        case 1:
+        case 2:  return image_weather_partly_sunny_bits;  // mainly clear / partly cloudy
         case 3:
         case 45:
-        case 48: return image_weather_cloud_bits;       // overcast / fog
+        case 48: return image_weather_cloud_bits;         // overcast / fog
+        case 95:
+        case 96:
+        case 99: return image_weather_thunder_bits;       // thunderstorm (± hail)
         default:
-            if (code > 99) return nullptr;              // 255 = unknown
-            return image_weather_rain_bits;             // drizzle / rain / snow / storm
+            if (code > 99) return nullptr;                // 255 = unknown
+            return image_weather_rain_bits;               // drizzle / rain / showers / snow
     }
 }
 } // namespace
@@ -220,7 +224,12 @@ void UIManager::process_event(const Events::Event& evt) {
     switch (evt.type) {
         case Events::EventType::WIFI_GOT_IP:
             ESP_LOGI(TAG, "WIFI_GOT_IP received — advancing setup stage");
+            m_wifi_up = true;
             on_wifi_got_ip();
+            break;
+
+        case Events::EventType::WIFI_DISCONNECTED:
+            m_wifi_up = false;
             break;
 
         case Events::EventType::WEATHER_UPDATED:
@@ -257,11 +266,68 @@ void UIManager::process_event(const Events::Event& evt) {
             break;
 
         case Events::EventType::TX_REQUEST:
-            m_tx_amount_cents = evt.data.tx.amount_cents;
+            m_confirm = evt.data.confirm;
+            m_confirm.asset[sizeof(m_confirm.asset) - 1] = '\0';
+            m_confirm.amount[sizeof(m_confirm.amount) - 1] = '\0';
+            m_confirm.fee[sizeof(m_confirm.fee) - 1] = '\0';
+            m_confirm.recipient[sizeof(m_confirm.recipient) - 1] = '\0';
+            m_confirm.rent[sizeof(m_confirm.rent) - 1] = '\0';
             m_tx_pending_accept = false;
-            ESP_LOGI(TAG, "TX request received: $%.2f — showing confirmation",
-                     static_cast<double>(m_tx_amount_cents) / 100.0);
+            m_tx_press_start_ms = 0;
+            ESP_LOGI(TAG, "Confirm request #%lu received — showing confirmation",
+                     static_cast<unsigned long>(m_confirm.request_id));
             set_screen(UIScreen::TX_CONFIRM);
+            break;
+
+        case Events::EventType::UI_RECOVERY_VIEW:
+            if (m_rc) {
+                const auto v = m_rc->view(false);
+                if (v.result != RecoveryController::Result::NONE) {
+                    m_recovery_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                }
+                if (m_current_screen != UIScreen::TX_CONFIRM &&
+                    (v.active || v.result != RecoveryController::Result::NONE)) {
+                    if (m_current_screen != UIScreen::RECOVERY) set_screen(UIScreen::RECOVERY);
+                } else if (m_current_screen == UIScreen::RECOVERY) {
+                    set_screen(UIScreen::HOME);
+                }
+            }
+            break;
+
+        case Events::EventType::UI_WALLET_CREATE:
+            if (m_create && m_current_screen != UIScreen::TX_CONFIRM) {
+                using St = WalletCreateSession::Stage;
+                const St st = m_create->stage();
+                if (st == St::INTRO || st == St::WORDS || st == St::VERIFY) {
+                    if (m_current_screen != UIScreen::WALLET_CREATE) set_screen(UIScreen::WALLET_CREATE);
+                } else if (st == St::DONE || st == St::FAILED || st == St::CANCELLED) {
+                    if (m_current_screen != UIScreen::WALLET_CREATE) set_screen(UIScreen::WALLET_CREATE);
+                    m_create_result_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                }
+            }
+            break;
+
+        case Events::EventType::UI_SHOW_ADDRESS:
+            // Companion app "Show on Fuchey": read-only, never interrupts a
+            // pending confirmation or the first-boot setup. UsbProtocol has
+            // already checked a wallet exists; render_wallet_qr() loads the
+            // address itself (the cache is empty after a normal boot).
+            if (!m_setup_needed &&
+                m_current_screen != UIScreen::TX_CONFIRM) {
+                ESP_LOGI(TAG, "Screen: WALLET_QR (companion show_address)");
+                m_last_idle_cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                set_screen(UIScreen::WALLET_QR);
+            }
+            break;
+
+        case Events::EventType::TX_REJECTED:
+            // WalletManager gave up on this request (timeout): leave the screen.
+            if (m_current_screen == UIScreen::TX_CONFIRM &&
+                evt.data.u32 == m_confirm.request_id) {
+                ESP_LOGW(TAG, "Confirm request #%lu cancelled", static_cast<unsigned long>(evt.data.u32));
+                m_tx_pending_accept = false;
+                set_screen(UIScreen::HOME);
+            }
             break;
 
         case Events::EventType::TX_BROADCAST_OK:
@@ -276,6 +342,7 @@ void UIManager::process_event(const Events::Event& evt) {
             const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : nullptr;
 
             m_tx_result_asset[0] = '\0';
+            m_tx_result_amount[0] = '\0';
             m_tx_result_recipient[0] = '\0';
             m_tx_result_msg[0] = '\0';
 
@@ -300,6 +367,10 @@ void UIManager::process_event(const Events::Event& evt) {
                 size_t asset_len = std::min<size_t>(colon1 - data, sizeof(m_tx_result_asset) - 1);
                 memcpy(m_tx_result_asset, data, asset_len);
                 m_tx_result_asset[asset_len] = '\0';
+
+                size_t amt_len = std::min<size_t>(colon2 - colon1 - 1, sizeof(m_tx_result_amount) - 1);
+                memcpy(m_tx_result_amount, colon1 + 1, amt_len);
+                m_tx_result_amount[amt_len] = '\0';
 
                 const char* rec = colon2 + 1;
                 size_t rec_len = std::min<size_t>(strlen(rec), sizeof(m_tx_result_recipient) - 1);
@@ -340,27 +411,27 @@ void UIManager::process_event(const Events::Event& evt) {
 }
 
 // ─── TX approve / reject ──────────────────────────────────
+// Decisions go only to g_tx_confirm_queue, tagged with the request id so
+// WalletManager can ignore anything stale.
 void UIManager::approve_transaction() {
     m_tx_pending_accept = false;
-    ESP_LOGI(TAG, "[TX] User CONFIRMED transaction ($%.2f)",
-             static_cast<double>(m_tx_amount_cents) / 100.0);
-    extern QueueHandle_t g_tx_confirm_queue;
+    ESP_LOGI(TAG, "[TX] User CONFIRMED request #%lu (hardware B1)",
+             static_cast<unsigned long>(m_confirm.request_id));
     Events::Event tx_evt{};
     tx_evt.type = Events::EventType::TX_APPROVED;
-    tx_evt.data.tx.amount_cents = m_tx_amount_cents;
-    Events::post(Events::g_wallet_queue, tx_evt);
-    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    tx_evt.data.u32 = m_confirm.request_id;
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt, pdMS_TO_TICKS(50));
     set_screen(UIScreen::HOME);
 }
 
 void UIManager::reject_transaction() {
     m_tx_pending_accept = false;
-    ESP_LOGI(TAG, "[TX] User REJECTED transaction (double/long press)");
-    extern QueueHandle_t g_tx_confirm_queue;
+    ESP_LOGI(TAG, "[TX] User REJECTED request #%lu (double/long press)",
+             static_cast<unsigned long>(m_confirm.request_id));
     Events::Event tx_evt{};
     tx_evt.type = Events::EventType::TX_REJECTED;
-    Events::post(Events::g_wallet_queue, tx_evt);
-    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt);
+    tx_evt.data.u32 = m_confirm.request_id;
+    if (g_tx_confirm_queue) Events::post(g_tx_confirm_queue, tx_evt, pdMS_TO_TICKS(50));
     set_screen(UIScreen::HOME);
 }
 
@@ -399,12 +470,12 @@ void UIManager::go_back() {
 }
 
 // ─── Menu helpers ──────────────────────────────────────────
-// Main menu (horizontal icon carousel, 4 entries):
+// Main menu (horizontal icon carousel, 5 entries):
 //   0 = Wallet Info (hub)  1 = Pomodoro  2 = Badge (opens the pass)
-//   3 = Media Remote (BLE HID)
+//   3 = Media Remote (BLE HID)  4 = DND mood toggle (swaps home Yeti anim)
 // View Balance and QR live under the Wallet Info hub, not top-level.
 void UIManager::open_menu_index(uint8_t index) {
-    m_menu_index = index % 4;
+    m_menu_index = index % 5;
     m_menu_prev_index = -1; // direct open: no slide animation
     if (m_menu_index == 0) {
         ESP_LOGI(TAG, "Screen: WALLET_INFO hub");
@@ -416,9 +487,15 @@ void UIManager::open_menu_index(uint8_t index) {
     } else if (m_menu_index == 2) {
         ESP_LOGI(TAG, "Screen: FAIR_PASS (via Badge)");
         set_screen(UIScreen::FAIR_PASS);
-    } else {
+    } else if (m_menu_index == 3) {
         ESP_LOGI(TAG, "Screen: HID_REMOTE (BLE media)");
         set_screen(UIScreen::HID_REMOTE);
+    } else {
+        // DND mood toggle: flip the flag and jump home so the Yeti swap
+        // is visible immediately. render_home rebuilds chrome + swaps anim.
+        m_dnd_mode = !m_dnd_mode;
+        ESP_LOGI(TAG, "[Menu] DND mood -> %s", m_dnd_mode ? "ON" : "OFF");
+        set_screen(UIScreen::HOME);
     }
 }
 
@@ -453,7 +530,7 @@ void UIManager::step_wallet_tab(int8_t dir) {
 
 void UIManager::step_menu(int8_t dir) {
     int idx = static_cast<int>(m_menu_index);
-    idx = (idx + dir + 4) % 4;
+    idx = (idx + dir + 5) % 5;
     ESP_LOGI(TAG, "[Menu] %s -> index: %d", dir > 0 ? "Next" : "Prev", idx);
     if (m_current_screen == UIScreen::MENU_MAIN) {
         m_menu_index = static_cast<uint8_t>(idx);
@@ -582,74 +659,85 @@ void UIManager::pomo_tick(uint32_t now_ms) {
 }
 
 // ─── Setup wizard ─────────────────────────────────────────
-void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing) {
-    m_setup_needed = wifi_missing || wallet_missing;
-    request_redraw();
-
+void UIManager::set_setup_needed(bool wifi_missing, bool wallet_missing, bool location_missing) {
+    m_wifi_missing     = wifi_missing;
+    m_wallet_missing   = wallet_missing;
+    m_location_missing = location_missing;
+    m_setup_needed     = wifi_missing || wallet_missing || location_missing;
     if (!m_setup_needed) {
-        m_setup_stage = SetupStage::DONE;
+        m_setup_stage = SetupStage::DONE;   // fully set up at boot
         return;
     }
+    advance_setup();
+}
 
-    // Determine starting stage
-    if (wifi_missing) {
-        m_setup_stage = SetupStage::WIFI_PROMPT;
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Step 1 — Enter WiFi credentials");
-        ESP_LOGI(TAG, "  Serial command:  w <SSID> <PASSWORD>");
-        ESP_LOGI(TAG, "=================================================");
+// The wizard always shows the FIRST step that is still missing, so the
+// steps can be completed in any order (console or companion app).
+void UIManager::advance_setup() {
+    if (!m_setup_needed) return;
+    request_redraw();
+    SetupStage next;
+    if (m_wifi_missing) {
+        next = m_wifi_connecting ? SetupStage::WIFI_CONNECTING : SetupStage::WIFI_PROMPT;
+    } else if (m_wallet_missing) {
+        next = SetupStage::WALLET_PROMPT;
+    } else if (m_location_missing) {
+        next = SetupStage::LOCATION_PROMPT;
     } else {
-        // WiFi already saved, skip to wallet
-        m_setup_stage = SetupStage::WALLET_PROMPT;
+        m_setup_needed = false;
+        m_setup_stage  = SetupStage::DONE;
         ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  SETUP WIZARD: WiFi OK — Step 2: Wallet setup");
-        ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
+        ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
         ESP_LOGI(TAG, "=================================================");
+        set_screen(UIScreen::HOME);
+        return;
     }
+    if (next == m_setup_stage) return;
+    m_setup_stage = next;
+    ESP_LOGI(TAG, "=================================================");
+    switch (next) {
+        case SetupStage::WIFI_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: WiFi — Fuchey app (Device setup) or: w <SSID> <PASSWORD>");
+            break;
+        case SetupStage::WIFI_CONNECTING:
+            ESP_LOGI(TAG, "  SETUP: connecting to '%s' — waiting for IP...", m_connecting_ssid.c_str());
+            break;
+        case SetupStage::WALLET_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: Wallet — Fuchey app (Create / Restore) or: wallet_create");
+            break;
+        case SetupStage::LOCATION_PROMPT:
+            ESP_LOGI(TAG, "  SETUP: Location — Fuchey app (Device setup) or: setloc <CITY> <LAT> <LON>");
+            break;
+        default:
+            break;
+    }
+    ESP_LOGI(TAG, "=================================================");
 }
 
 void UIManager::mark_wifi_configured(const char* ssid) {
     if (ssid) m_connecting_ssid = ssid;
     m_connecting_dots_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     m_connecting_dots = 0;
-    // Advance to connecting state — wait for actual IP before moving to wallet setup
-    if (m_setup_stage == SetupStage::WIFI_PROMPT) {
-        m_setup_stage = SetupStage::WIFI_CONNECTING;
-        ESP_LOGI(TAG, "-------------------------------------------------");
-        ESP_LOGI(TAG, "  [WiFi] Connecting to '%s' ...", m_connecting_ssid.c_str());
-        ESP_LOGI(TAG, "  Waiting for IP address...");
-        ESP_LOGI(TAG, "-------------------------------------------------");
-        request_redraw();
-    }
+    m_wifi_connecting = true;           // wait for an IP before calling WiFi done
+    advance_setup();
 }
 
 void UIManager::on_wifi_got_ip() {
-    if (m_setup_stage == SetupStage::WIFI_CONNECTING) {
-        m_setup_stage = SetupStage::WALLET_PROMPT;
-        request_redraw();
-        ESP_LOGI(TAG, "=================================================");
-        ESP_LOGI(TAG, "  [WiFi] CONNECTED! IP obtained.");
-        ESP_LOGI(TAG, "  SETUP WIZARD: Step 2 — Wallet setup");
-        ESP_LOGI(TAG, "  wallet_create              Generate new wallet");
-        ESP_LOGI(TAG, "  wallet_import <mnemonic>   Import BIP39 mnemonic");
-        ESP_LOGI(TAG, "  wallet_import <key>        Import hex/base58 private key");
-        ESP_LOGI(TAG, "=================================================");
-    }
+    m_wifi_connecting = false;
+    m_wifi_missing = false;
+    advance_setup();
 }
 
 void UIManager::mark_wallet_configured(const char* address) {
     if (address) m_wallet_address = address;
-    m_setup_needed = false;
-    m_setup_stage  = SetupStage::DONE;
-    ESP_LOGI(TAG, "=================================================");
-    ESP_LOGI(TAG, "  SETUP COMPLETE — Entering idle mode");
-    if (!m_wallet_address.empty()) {
-        ESP_LOGI(TAG, "  Wallet: %s", m_wallet_address.c_str());
-    }
-    ESP_LOGI(TAG, "=================================================");
-    set_screen(UIScreen::HOME);
+    m_wallet_missing = false;
+    advance_setup();
+}
+
+void UIManager::mark_location_configured(const char* city) {
+    if (city) m_location_city = city;
+    m_location_missing = false;
+    advance_setup();
 }
 
 // ─── Render dispatch ──────────────────────────────────────
@@ -664,7 +752,12 @@ void UIManager::render() {
 
     m_display.clear();
 
-    if (m_setup_needed) {
+    // A pending signature/export confirmation always wins over the setup
+    // wizard: B1 must never approve something that is not on screen.
+    // (Recovery is also drawn over it: restoring a wallet IS a setup step.)
+    if (m_setup_needed && m_current_screen != UIScreen::TX_CONFIRM &&
+        m_current_screen != UIScreen::RECOVERY &&
+        m_current_screen != UIScreen::WALLET_CREATE) {
         render_setup();
         m_display.flush();
         return;
@@ -678,6 +771,8 @@ void UIManager::render() {
         case UIScreen::MENU_MAIN:    render_menu();        break;
         case UIScreen::WALLET_INFO:  render_wallet_info(); break;
         case UIScreen::WALLET_QR:    render_wallet_qr();   break;
+        case UIScreen::RECOVERY:     render_recovery();    break;
+        case UIScreen::WALLET_CREATE: render_wallet_create(); break;
         case UIScreen::TX_CONFIRM:   render_tx_confirm();  break;
         case UIScreen::TX_SUCCESS:
         case UIScreen::TX_FAIL:      render_tx_result();   break;
@@ -690,6 +785,8 @@ void UIManager::render() {
     }
 
     m_display.flush();
+    // The recovery grid is now physically on screen: taps may refer to it.
+    if (m_current_screen == UIScreen::RECOVERY && m_rc) m_rc->mark_rendered(m_recovery_drawn);
 }
 
 // ─── Idle screens ─────────────────────────────────────────
@@ -823,15 +920,20 @@ void UIManager::render_menu() {
         const SpritePixel* icon; // nullptr -> monogram tile
         const char* mono;        // tile text when icon == nullptr
     };
-    static const MenuEntry kItems[4] = {
+    static const MenuEntry kItems[5] = {
         {"Wallet Info",  WalletInfoIcon_data, nullptr},
         {"Pomodoro",     PomodoroIcon_data,   nullptr},
         {"Badge",        BadgeIcon_data,      nullptr},
         {"Media Remote", BleHidIcon_data,      nullptr},
+        {"DND",          nullptr,             "DND"}, // monogram tile, label live
     };
 
     auto draw_entry = [&](int x, uint8_t idx) {
-        const MenuEntry& e = kItems[idx % 4];
+        const MenuEntry& e = kItems[idx % 5];
+        // DND entry shows live state under the icon.
+        const char* label = (idx % 5 == 4)
+            ? (m_dnd_mode ? "DND: ON" : "DND: OFF")
+            : e.label;
         if (e.icon != nullptr) {
             m_display.draw_sprite_transparent(x, kIconY, kIcon, kIcon, e.icon, kTransparent);
         } else {
@@ -848,7 +950,7 @@ void UIManager::render_menu() {
         const int x1 = std::min(Display::WIDTH, cx + half);
         if (x1 > x0) {
             char buf[16];
-            snprintf(buf, sizeof(buf), "%s", e.label);
+            snprintf(buf, sizeof(buf), "%s", label);
             // Center manually so off-screen entries slide out cleanly.
             const int len = static_cast<int>(strlen(buf));
             const int tx = cx - (len * 12) / 2; // MEDIUM ~= 12px/char
@@ -998,19 +1100,306 @@ void UIManager::render_wallet_qr() {
     }
 }
 
+// Micro-dollars → "$12.34"; sub-cent values keep 4 decimals ("$0.0008") so a
+// tiny fee is not shown as $0.00.
+static void format_usd_micro(uint64_t micro, char* out, size_t len) {
+    if (micro >= 10000) {
+        uint64_t cents = (micro + 5000) / 10000;
+        snprintf(out, len, "$%llu.%02llu", static_cast<unsigned long long>(cents / 100),
+                 static_cast<unsigned long long>(cents % 100));
+    } else if (micro >= 100) {
+        snprintf(out, len, "$0.%04llu", static_cast<unsigned long long>((micro + 50) / 100));
+    } else {
+        snprintf(out, len, "<$0.0001");
+    }
+}
+
+// Full base58 address in 15-char MEDIUM rows (max 44 chars → 3 rows), so
+// the user can check every character against the intended recipient.
+static void draw_address_rows(Display& d, int y, const char* addr, Color c) {
+    constexpr size_t kRow = 15;
+    size_t len = strlen(addr);
+    for (size_t off = 0; off < len; off += kRow) {
+        d.draw_text_centered(y, std::string_view(addr + off, std::min(kRow, len - off)),
+                             Display::FontSize::MEDIUM, c);
+        y += 18;
+    }
+}
+
 void UIManager::render_tx_confirm() {
-    m_display.draw_text_centered(8, "CONFIRM?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    if (m_confirm.kind == Events::ConfirmKind::EXPORT_KEY) {
+        render_export_confirm();
+        return;
+    }
+    if (m_confirm.kind == Events::ConfirmKind::NETWORK_SWITCH) {
+        render_network_confirm();
+        return;
+    }
+    if (m_confirm.kind == Events::ConfirmKind::RESTORE_WALLET) {
+        render_restore_confirm();
+        return;
+    }
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "SEND %s?", m_confirm.asset);
+    m_display.draw_text_centered(8, buf, Display::FontSize::MEDIUM, TFT_ORANGE);
     m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "$%.2f", static_cast<double>(m_tx_amount_cents) / 100.0);
-    m_display.draw_text_centered(72, buf, Display::FontSize::LARGE);
+    // Network badge — mainnet in red so real funds are never a surprise.
+    m_display.draw_text_centered(38, m_confirm.mainnet ? "MAINNET" : "DEVNET",
+                                 Display::FontSize::SMALL,
+                                 m_confirm.mainnet ? Colors::RED : Colors::YELLOW);
 
-    if (!m_tx_description.empty())
-        m_display.draw_text_centered(124, m_tx_description.c_str(), Display::FontSize::MEDIUM, TFT_CYAN);
+    // Exact native amount (from the parsed message), largest font that fits.
+    snprintf(buf, sizeof(buf), "%s %s", m_confirm.amount, m_confirm.asset);
+    const size_t n = strlen(buf);
+    Display::FontSize fs = n <= 13 ? Display::FontSize::LARGE
+                         : n <= 20 ? Display::FontSize::MEDIUM
+                                   : Display::FontSize::SMALL;
+    m_display.draw_text_centered(52, buf, fs);
+
+    char usd[20];
+    if (m_confirm.usd_micro > 0) {
+        format_usd_micro(m_confirm.usd_micro, usd, sizeof(usd));
+        snprintf(buf, sizeof(buf), "= %s", usd);
+        m_display.draw_text_centered(80, buf, Display::FontSize::SMALL, TFT_SILVER);
+    }
+
+    const bool token = strcmp(m_confirm.asset, "SOL") != 0;
+    m_display.draw_text_centered(96, !token ? "TO"
+                                     : m_confirm.creates_account ? "TO WALLET"
+                                                                 : "TO TOKEN ACCOUNT",
+                                 Display::FontSize::SMALL, TFT_GRAY);
+    draw_address_rows(m_display, 108, m_confirm.recipient, TFT_CYAN);
+
+    // Network fee in SOL (exact, from the message) + its USD value.
+    if (m_confirm.fee_usd_micro > 0) {
+        format_usd_micro(m_confirm.fee_usd_micro, usd, sizeof(usd));
+        snprintf(buf, sizeof(buf), "Fee %s SOL = %s", m_confirm.fee, usd);
+    } else {
+        snprintf(buf, sizeof(buf), "Fee %s SOL", m_confirm.fee);
+    }
+    m_display.draw_text_centered(168, buf, Display::FontSize::SMALL, TFT_SILVER);
+
+    // SOL/USD rate used for the USD figures, and whether it is fresh.
+    if (m_confirm.sol_usd_cents > 0) {
+        snprintf(buf, sizeof(buf), "1 SOL = $%lu.%02lu %s",
+                 static_cast<unsigned long>(m_confirm.sol_usd_cents / 100),
+                 static_cast<unsigned long>(m_confirm.sol_usd_cents % 100),
+                 m_confirm.price_live ? "(live)" : "(cached)");
+        m_display.draw_text_centered(184, buf, Display::FontSize::SMALL,
+                                     m_confirm.price_live ? TFT_GRAY : Colors::YELLOW);
+    } else {
+        m_display.draw_text_centered(184, "SOL price unavailable", Display::FontSize::SMALL,
+                                     Colors::YELLOW);
+    }
+
+    if (m_confirm.creates_account) {
+        // Extra cost beyond the fee: rent for the recipient's new USDC account.
+        snprintf(buf, sizeof(buf), "+ new USDC acct %s SOL", m_confirm.rent);
+        m_display.draw_text_centered(199, buf, Display::FontSize::SMALL, Colors::YELLOW);
+    }
 
     m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
-    m_display.draw_text_centered(222, "B1 1x:send 2x/hold:no", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SIGN  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// ─── Scrambled-grid recovery screen ───────────────────────
+// Only this screen knows what each cell means; the app shows 9 blank
+// buttons and sends the position the user clicked.
+void UIManager::render_recovery() {
+    if (!m_rc) return;
+    using R = RecoveryController::Result;
+    const auto r = m_rc->view(true);
+    m_recovery_drawn = r.layout;
+    char buf[48];
+    m_display.draw_text_centered(6, r.restore ? "RESTORE WALLET" : "CHECK WORDS",
+                                 Display::FontSize::MEDIUM, TFT_ORANGE);
+
+    if (r.result == R::BAD_CHECKSUM) {
+        // Review: what Fuchey recorded (device screen only) vs your paper.
+        m_display.draw_text_centered(28, "Invalid phrase - compare:", Display::FontSize::SMALL, Colors::RED);
+        const int rows = (r.review_count + 1) / 2;
+        const int dy = rows > 6 ? 14 : 20;
+        for (int i = 0; i < r.review_count; ++i) {
+            const int col = i / rows, row = i % rows;
+            snprintf(buf, sizeof(buf), "%2d.%s", i + 1, r.review[i]);
+            m_display.draw_text(16 + col * 116, 50 + row * dy, buf,
+                                Display::FontSize::SMALL, Colors::WHITE);
+        }
+        m_display.draw_text_centered(229, "B1: close (words are erased)", Display::FontSize::SMALL, TFT_GRAY);
+        return;
+    }
+    if (r.result != R::NONE) {
+        const char* l1 = "Failed";
+        const char* l2 = "";
+        Color c = Colors::RED;
+        switch (r.result) {
+            case R::MATCH:     l1 = "Words MATCH";     l2 = "your wallet";      c = Colors::GREEN; break;
+            case R::MISMATCH:  l1 = "NO MATCH";        l2 = "different wallet"; break;
+            case R::RESTORED:  l1 = "Wallet restored"; c = Colors::GREEN;       break;
+            case R::CANCELLED: l1 = "Cancelled";       c = TFT_GRAY;            break;
+            default: break;
+        }
+        m_display.draw_text_centered(100, l1, Display::FontSize::MEDIUM, c);
+        m_display.draw_text_centered(128, l2, Display::FontSize::SMALL, TFT_SILVER);
+        return;
+    }
+
+    if (r.prev[0]) {
+        snprintf(buf, sizeof(buf), "Word %u of %u   prev: %s", static_cast<unsigned>(r.word),
+                 static_cast<unsigned>(r.total), r.prev);
+    } else {
+        snprintf(buf, sizeof(buf), "Word %u of %u", static_cast<unsigned>(r.word),
+                 static_cast<unsigned>(r.total));
+    }
+    m_display.draw_text_centered(28, buf, Display::FontSize::SMALL, Colors::WHITE);
+    snprintf(buf, sizeof(buf), "%s", r.typed[0] ? r.typed : (r.words_mode ? "" : "pick 1st letter"));
+    m_display.draw_text_centered(42, buf, Display::FontSize::SMALL, TFT_CYAN);
+
+    // 3x3 grid, cells 78x56 from y=58; B1 hint at the bottom.
+    static constexpr int kX0 = 3, kY0 = 58, kW = 78, kH = 56;
+    for (int i = 0; i < 9; ++i) {
+        const int x = kX0 + (i % 3) * kW, y = kY0 + (i / 3) * kH;
+        m_display.draw_rect(x, y, kW - 2, kH - 2, TFT_GRAY);
+        const char* label = r.cells[i];
+        if (!label[0]) continue;
+        const bool back = strcmp(label, "<-") == 0;
+        const size_t n = strlen(label);
+        const Display::FontSize fs = (n <= 4 && !back) ? Display::FontSize::MEDIUM
+                                                       : Display::FontSize::SMALL;
+        const int cw = (fs == Display::FontSize::MEDIUM) ? 12 : 6;   // 5x7 font, scaled
+        const int tx = x + (kW - 2 - static_cast<int>(n) * cw) / 2;
+        const int ty = y + (kH - 2) / 2 - (fs == Display::FontSize::MEDIUM ? 7 : 4);
+        m_display.draw_text(tx, ty, label, fs, back ? Colors::YELLOW : Colors::WHITE);
+    }
+    m_display.draw_text_centered(229, "Click same spot in app  B1:cancel",
+                                 Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// ─── Create wallet (words on the device only) ─────────────
+void UIManager::render_wallet_create() {
+    if (!m_create) return;
+    using St = WalletCreateSession::Stage;
+    const auto v = m_create->view(true);
+    char buf[40];
+    m_display.draw_text_centered(6, "NEW WALLET", Display::FontSize::MEDIUM, TFT_ORANGE);
+
+    switch (v.stage) {
+        case St::INTRO:
+            snprintf(buf, sizeof(buf), "Write down %u words", static_cast<unsigned>(v.total));
+            m_display.draw_text_centered(44, buf, Display::FontSize::MEDIUM, Colors::WHITE);
+            m_display.draw_text_centered(80, "on paper, in order.", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(104, "Anyone with these words", Display::FontSize::SMALL, Colors::YELLOW);
+            m_display.draw_text_centered(118, "owns your funds.", Display::FontSize::SMALL, Colors::YELLOW);
+            m_display.draw_text_centered(142, "Never type them into", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(156, "a phone or computer.", Display::FontSize::SMALL, TFT_SILVER);
+            m_display.draw_text_centered(186, "Make sure no one is watching.", Display::FontSize::SMALL, TFT_GRAY);
+            m_display.draw_text_centered(222, "B4: show words   B1: cancel", Display::FontSize::SMALL, TFT_GRAY);
+            break;
+
+        case St::WORDS: {
+            snprintf(buf, sizeof(buf), "Words %u-%u of %u", static_cast<unsigned>(v.first),
+                     static_cast<unsigned>(v.first + WalletCreateSession::WORDS_PER_PAGE - 1),
+                     static_cast<unsigned>(v.total));
+            m_display.draw_text_centered(30, buf, Display::FontSize::SMALL, TFT_SILVER);
+            for (int i = 0; i < WalletCreateSession::WORDS_PER_PAGE; ++i) {
+                snprintf(buf, sizeof(buf), "%2u. %s", static_cast<unsigned>(v.first + i), v.words[i]);
+                m_display.draw_text(10, 52 + i * 34, buf, Display::FontSize::LARGE, Colors::WHITE);
+            }
+            if (v.wrong) {
+                m_display.draw_text_centered(194, "Wrong word - check your paper", Display::FontSize::SMALL, Colors::RED);
+            }
+            const bool last = v.page + 1 >= v.pages;
+            m_display.draw_text_centered(222, last ? "B3:back  B4:confirm  B1:cancel"
+                                                   : "B3:back  B4:next  B1:cancel",
+                                         Display::FontSize::SMALL, TFT_GRAY);
+            break;
+        }
+
+        case St::VERIFY: {
+            snprintf(buf, sizeof(buf), "Confirm word #%u  (%u/%u)", static_cast<unsigned>(v.verify_word),
+                     static_cast<unsigned>(v.verify_n),
+                     static_cast<unsigned>(WalletCreateSession::VERIFY_COUNT));
+            m_display.draw_text_centered(30, buf, Display::FontSize::SMALL, Colors::WHITE);
+            m_display.draw_text_centered(44, "find it, click its spot in the app", Display::FontSize::SMALL, TFT_CYAN);
+            static constexpr int kX0 = 3, kY0 = 58, kW = 78, kH = 56;
+            for (int i = 0; i < 9; ++i) {
+                const int x = kX0 + (i % 3) * kW, y = kY0 + (i / 3) * kH;
+                m_display.draw_rect(x, y, kW - 2, kH - 2, TFT_GRAY);
+                const size_t n = strlen(v.cells[i]);
+                if (!n) continue;
+                m_display.draw_text(x + (kW - 2 - static_cast<int>(n) * 6) / 2, y + (kH - 2) / 2 - 4,
+                                    v.cells[i], Display::FontSize::SMALL, Colors::WHITE);
+            }
+            m_display.draw_text_centered(229, "B3: see words again   B1: cancel", Display::FontSize::SMALL, TFT_GRAY);
+            break;
+        }
+
+        case St::DONE:
+            m_display.draw_text_centered(84, "Wallet created", Display::FontSize::MEDIUM, Colors::GREEN);
+            if (v.address[0]) draw_address_rows(m_display, 120, v.address, TFT_CYAN);
+            break;
+        case St::CANCELLED:
+            m_display.draw_text_centered(100, "Cancelled", Display::FontSize::MEDIUM, TFT_GRAY);
+            m_display.draw_text_centered(128, "nothing was saved", Display::FontSize::SMALL, TFT_SILVER);
+            break;
+        default:
+            m_display.draw_text_centered(100, "Failed", Display::FontSize::MEDIUM, Colors::RED);
+            m_display.draw_text_centered(128, "nothing was saved", Display::FontSize::SMALL, TFT_SILVER);
+            break;
+    }
+}
+
+// Network switch requested by the companion app (target = m_confirm.mainnet).
+void UIManager::render_network_confirm() {
+    const bool main = m_confirm.mainnet;
+    m_display.draw_text_centered(8, "SWITCH NETWORK?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(44, "to", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(60, main ? "MAINNET" : "DEVNET", Display::FontSize::LARGE,
+                                 main ? Colors::RED : Colors::YELLOW);
+    if (main) {
+        m_display.draw_text_centered(104, "REAL SOL and USDC.", Display::FontSize::SMALL, Colors::RED);
+        m_display.draw_text_centered(124, "This Fuchey is a prototype:", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(138, "no PIN, key not encrypted.", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(160, "Use small amounts only.", Display::FontSize::SMALL, Colors::YELLOW);
+    } else {
+        m_display.draw_text_centered(110, "Test network:", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(124, "free test tokens,", Display::FontSize::SMALL, TFT_SILVER);
+        m_display.draw_text_centered(138, "no real value.", Display::FontSize::SMALL, TFT_SILVER);
+    }
+    m_display.draw_text_centered(186, "Requested by the Fuchey app", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SWITCH  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+// Restore via the grid: show the wallet the words produce before saving.
+void UIManager::render_restore_confirm() {
+    m_display.draw_text_centered(8, "SAVE WALLET?", Display::FontSize::MEDIUM, TFT_ORANGE);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(44, "Your words restore", Display::FontSize::SMALL, TFT_SILVER);
+    m_display.draw_text_centered(58, "this wallet:", Display::FontSize::SMALL, TFT_SILVER);
+    draw_address_rows(m_display, 82, m_confirm.recipient, TFT_CYAN);
+    m_display.draw_text_centered(150, "Check it matches the address", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_text_centered(164, "you expect before saving.", Display::FontSize::SMALL, TFT_GRAY);
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:SAVE  2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
+}
+
+void UIManager::render_export_confirm() {
+    m_display.draw_text_centered(8, "EXPORT KEY?", Display::FontSize::MEDIUM, Colors::RED);
+    m_display.draw_hline(0, 30, Display::WIDTH, TFT_GRAY);
+
+    m_display.draw_text_centered(40, "DEBUG ONLY", Display::FontSize::SMALL, Colors::YELLOW);
+    m_display.draw_text_centered(58, "Private key will", Display::FontSize::MEDIUM);
+    m_display.draw_text_centered(76, "print to USB log", Display::FontSize::MEDIUM);
+
+    m_display.draw_text_centered(100, "WALLET", Display::FontSize::SMALL, TFT_GRAY);
+    draw_address_rows(m_display, 112, m_confirm.recipient, TFT_CYAN);
+
+    m_display.draw_hline(0, 214, Display::WIDTH, TFT_GRAY);
+    m_display.draw_text_centered(222, "B1 tap:EXPORT 2x/hold:NO", Display::FontSize::SMALL, TFT_GRAY);
 }
 
 void UIManager::render_tx_result() {
@@ -1038,9 +1427,7 @@ void UIManager::render_tx_result() {
     char line1[32];
     char line2[56];
     if (m_tx_result_asset[0]) {
-        snprintf(line1, sizeof(line1), "$%.2f %s",
-                 static_cast<double>(m_tx_result_amount_cents) / 100.0,
-                 m_tx_result_asset);
+        snprintf(line1, sizeof(line1), "%s %s", m_tx_result_amount, m_tx_result_asset);
         snprintf(line2, sizeof(line2), "-> %s", m_tx_result_recipient);
     } else {
         line1[0] = '\0';
@@ -1442,7 +1829,7 @@ void UIManager::render_fair_pass() {
 // covers y 0..130) so overlapping pads can't clobber each other.
 void UIManager::render_home() {
     // Exact lopaka placement: time (5,4) size 3, date (5,53) size 2,
-    // temp (5,88) size 2, icon 30x32 at (88,88), yeti 96x96 at (133,111).
+    // temp (5,88) size 2, icon 30x32 at (88,88), yeti 120x120 at (133,111).
     // Frosted pill hugs the glyphs (pad 1), not a filled band.
     static constexpr int kYetiX = 133, kYetiY = 111;
     static constexpr int kTimeX = 5,   kTimeY = 4, kTimeScale = 3;
@@ -1453,9 +1840,20 @@ void UIManager::render_home() {
     static constexpr Color kClock = 0xFFE0;  // yellow
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    // Mood anim: idle Yeti vs DND Yeti (same 120x120 geometry, so all crop/
+    // flush rect math below stays valid for both).
+    const SpriteAnim* want_anim = m_dnd_mode ? &DndAnim : &YetiAnim;
     if (!m_home_started) {
-        m_home_yeti.set_anim(&YetiAnim, now);
+        m_home_yeti.set_anim(want_anim, now);
         m_home_started = true;
+        m_home_dnd = m_dnd_mode;
+        m_home_chrome = false;
+    }
+    if (m_home_dnd != m_dnd_mode) {
+        // Mood flipped while home was live: swap anim + force full chrome
+        // rebuild (bg/crop state is wiped by the chrome path below).
+        m_home_yeti.set_anim(want_anim, now);
+        m_home_dnd = m_dnd_mode;
         m_home_chrome = false;
     }
 
@@ -1490,6 +1888,17 @@ void UIManager::render_home() {
         snprintf(wbuf, sizeof(wbuf), "%.0f C", static_cast<double>(m_weather_temp));
         wcode = m_weather_code;
         wbits = home_weather_bits(wcode);
+    }
+    if (!m_wifi_up) {
+        // Offline: say so (and where to fix it) instead of blank rows.
+        if (!synced) {
+            snprintf(dbuf, sizeof(dbuf), "No WiFi");
+            snprintf(wbuf, sizeof(wbuf), "Use app");
+        } else {
+            snprintf(wbuf, sizeof(wbuf), "No WiFi");
+        }
+        wcode = 254;
+        wbits = nullptr;
     }
 
     // Fixed lopaka geometry: time size 3 left-aligned (even the widest
@@ -1565,10 +1974,11 @@ void UIManager::render_home() {
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
         m_home_wcode = wcode;
+        snprintf(m_home_dbuf, sizeof(m_home_dbuf), "%s", dbuf);
         return;
     }
 
-    if (minute != m_home_last_minute ||
+    if (minute != m_home_last_minute || strcmp(dbuf, m_home_dbuf) != 0 ||
         strcmp(wbuf, m_home_wbuf) != 0 || wcode != m_home_wcode) {
         // Union old + new frosted bands, sharp-restore it, then frost the
         // new band — shrunken strings leave no blurred remnants.
@@ -1585,6 +1995,7 @@ void UIManager::render_home() {
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
         m_home_wcode = wcode;
+        snprintf(m_home_dbuf, sizeof(m_home_dbuf), "%s", dbuf);
     }
 
     if (!m_home_yeti.tick(now)) return; // frame unchanged → zero SPI
@@ -1610,11 +2021,10 @@ void UIManager::render_setup() {
             setup_header(m_display);
             gfx_centered(m_display, 46, "Step 1", &PoppinsBold9pt7b, TFT_ORANGE);
             gfx_centered(m_display, 72, "Connect to WiFi", &PoppinsBold9pt7b, Colors::WHITE);
-            gfx_centered(m_display, 104, "Go to serial monitor", &PoppinsRegular9pt7b, TFT_SILVER);
-            gfx_centered(m_display, 130, "@ 115200", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 158, "type:", &PoppinsRegular9pt7b, TFT_GRAY);
-            command_pill(m_display, 182, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 104, "Fuchey app: Device setup", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 134, "or serial @ 115200:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 164, "w <SSID> <Password>", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 222, "Step 1 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::WIFI_CONNECTING: {
@@ -1633,7 +2043,7 @@ void UIManager::render_setup() {
 
             // Static empty progress bar (frame only)
             m_display.draw_progress_bar(20, 180, 200, 16, 0, TFT_CYAN);
-            gfx_centered(m_display, 222, "Step 1 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 222, "Step 1 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
         }
 
@@ -1642,10 +2052,22 @@ void UIManager::render_setup() {
             gfx_centered(m_display, 44, "WiFi: OK", &PoppinsBold9pt7b, Colors::GREEN);
             gfx_centered(m_display, 72, "Step 2", &PoppinsBold9pt7b, TFT_ORANGE);
             gfx_centered(m_display, 96, "Create Your Wallet", &PoppinsBold9pt7b, Colors::WHITE);
-            command_pill(m_display, 126, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
-            command_pill(m_display, 154, "wallet_import <key>", &PoppinsRegular9pt7b, TFT_CYAN);
-            gfx_centered(m_display, 186, "<mnemonic / key>", &PoppinsRegular9pt7b, TFT_GRAY);
-            gfx_centered(m_display, 222, "Step 2 of 2", &PoppinsRegular9pt7b, TFT_GRAY);
+            gfx_centered(m_display, 124, "Fuchey app: Create", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 144, "or Restore wallet", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 170, "or serial:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 194, "wallet_create", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 222, "Step 2 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
+            break;
+
+        case SetupStage::LOCATION_PROMPT:
+            setup_header(m_display);
+            gfx_centered(m_display, 44, "Wallet: OK", &PoppinsBold9pt7b, Colors::GREEN);
+            gfx_centered(m_display, 72, "Step 3", &PoppinsBold9pt7b, TFT_ORANGE);
+            gfx_centered(m_display, 96, "Set Your Location", &PoppinsBold9pt7b, Colors::WHITE);
+            gfx_centered(m_display, 122, "Fuchey app: Device setup", &PoppinsRegular9pt7b, TFT_SILVER);
+            gfx_centered(m_display, 150, "or serial @ 115200:", &PoppinsRegular9pt7b, TFT_GRAY);
+            command_pill(m_display, 178, "setloc City lat lon", &PoppinsRegular9pt7b, TFT_CYAN);
+            gfx_centered(m_display, 222, "Step 3 of 3", &PoppinsRegular9pt7b, TFT_GRAY);
             break;
 
         case SetupStage::DONE:
@@ -1724,14 +2146,25 @@ void UIManager::run() {
             // ── TX_CONFIRM: B1 exclusive ───────────────────────
             // B1 single tap = accept (deferred until no double/long follows),
             // B1 double/long = reject. B2/B3/B4 ignored here.
+            // Console-injected buttons may reject but can NEVER approve:
+            // only the physical GPIO driver produces an accepted tap.
             if (m_current_screen == UIScreen::TX_CONFIRM) {
-                if (btn.id == ButtonId::B1_TX_BACK) {
+                if (btn.id == ButtonId::B1_TX_BACK && btn.from_console) {
+                    if (btn.event == ButtonEvent::DOUBLE_PRESS ||
+                        btn.event == ButtonEvent::LONG_PRESS) {
+                        reject_transaction();
+                    } else {
+                        ESP_LOGW(TAG, "[TX] Console input cannot approve — press B1 on the device");
+                    }
+                } else if (btn.id == ButtonId::B1_TX_BACK) {
                     if (btn.event == ButtonEvent::PRESS) {
                         m_tx_press_start_ms = btn.timestamp_ms;
                         m_tx_pending_accept = false;
-                    } else if (btn.event == ButtonEvent::RELEASE) {
+                    } else if (btn.event == ButtonEvent::RELEASE && m_tx_press_start_ms != 0) {
                         // Clean single tap candidate — defer accept to rule out
                         // a fast second press (double press) or a held long press.
+                        // Requires the PRESS to have happened on this screen, so a
+                        // button already held when the request arrived can't approve.
                         m_tx_pending_accept = true;
                         m_tx_accept_deadline_ms = m_tx_press_start_ms + 500;
                     } else if (btn.event == ButtonEvent::DOUBLE_PRESS ||
@@ -1745,6 +2178,35 @@ void UIManager::run() {
             } else if (m_current_screen == UIScreen::HID_REMOTE) {
                 // HID remote owns all four buttons while open.
                 handle_hid_button(btn);
+            } else if (m_current_screen == UIScreen::WALLET_CREATE && m_create) {
+                // B4 next page, B3 back, B1 cancel (nothing is stored yet).
+                if (btn.event == ButtonEvent::PRESS) {
+                    using St = WalletCreateSession::Stage;
+                    const St st = m_create->stage();
+                    const bool live = st == St::INTRO || st == St::WORDS || st == St::VERIFY;
+                    if (btn.id == ButtonId::B4_NEXT && live) {
+                        m_create->next();
+                    } else if (btn.id == ButtonId::B3_PREV && live) {
+                        m_create->prev();
+                    } else if (btn.id == ButtonId::B1_TX_BACK) {
+                        if (live) {
+                            ESP_LOGI(TAG, "[Create] cancelled on device");
+                            m_create->cancel();
+                        }
+                        set_screen(UIScreen::HOME);
+                    }
+                    request_redraw();
+                }
+            } else if (m_current_screen == UIScreen::RECOVERY) {
+                // B1: cancel an entry in progress, or close the result/review.
+                if (btn.id == ButtonId::B1_TX_BACK && btn.event == ButtonEvent::PRESS && m_rc) {
+                    if (m_rc->active()) {
+                        ESP_LOGI(TAG, "[Recovery] cancelled on device");
+                        m_rc->cancel();
+                    }
+                    m_rc->dismiss();
+                    set_screen(UIScreen::HOME);
+                }
             } else if (btn.id == ButtonId::B1_TX_BACK) {
                 // ── B1 = hierarchical Back everywhere else ─────
                 if (btn.event == ButtonEvent::PRESS) go_back();
@@ -1833,7 +2295,10 @@ void UIManager::run() {
         }
 
         // Deferred TX accept — a clean single tap was confirmed (no double/long press)
-        if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept) {
+        // Only once every queued button event has been consumed, so a
+        // double/long press that is still in the queue always wins.
+        if (m_current_screen == UIScreen::TX_CONFIRM && m_tx_pending_accept &&
+            uxQueueMessagesWaiting(Events::g_button_queue) == 0) {
             uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (now >= m_tx_accept_deadline_ms) {
                 approve_transaction();
@@ -1860,6 +2325,33 @@ void UIManager::run() {
             if (now - m_bal_fetch_start_ms >= 15000) {
                 ESP_LOGI(TAG, "Screen: BALANCE_VIEW timeout -> WALLET_INFO hub");
                 set_screen(UIScreen::WALLET_INFO);
+            }
+        } else if (m_current_screen == UIScreen::WALLET_CREATE && m_create) {
+            // Result screen 5 s; an abandoned session ends after 5 min idle.
+            using St = WalletCreateSession::Stage;
+            const St st = m_create->stage();
+            const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (st == St::DONE || st == St::FAILED || st == St::CANCELLED || st == St::IDLE) {
+                if (now - m_create_result_ms >= 5000) set_screen(UIScreen::HOME);
+            } else if (now - m_create->last_activity_ms() >= 300000) {
+                m_create->cancel();
+                set_screen(UIScreen::HOME);
+            }
+        } else if (m_current_screen == UIScreen::RECOVERY && m_rc) {
+            // Result 5 s (a bad-phrase review 60 s, or until B1); an abandoned
+            // entry (page closed) ends after 3 min without a tap.
+            const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            const auto v = m_rc->view(false);
+            if (v.result != RecoveryController::Result::NONE) {
+                const uint32_t keep = v.result == RecoveryController::Result::BAD_CHECKSUM ? 60000u : 5000u;
+                if (now - m_recovery_ms >= keep) {
+                    m_rc->dismiss();
+                    set_screen(UIScreen::HOME);
+                }
+            } else if (!v.active || now - m_rc->last_activity_ms() >= 180000u) {
+                m_rc->cancel();
+                m_rc->dismiss();
+                set_screen(UIScreen::HOME);
             }
         } else if (m_current_screen == UIScreen::IDLE_PRICE) {
             // SOL Price now lives under the Wallet hub (not the idle cycle).
@@ -1906,6 +2398,11 @@ void UIManager::run() {
         bool need_render = m_redraw_epoch.load(std::memory_order_relaxed) != m_last_rendered_epoch;
 
         if (!m_setup_needed && m_current_screen == UIScreen::HOME) {
+            need_render = true;
+        } else if (m_current_screen == UIScreen::RECOVERY && m_rc &&
+                   m_rc->view(false).layout != m_recovery_drawn) {
+            // Self-heal: never leave an outdated grid on screen (taps on it
+            // would be rejected as stale), even if a notification was lost.
             need_render = true;
         } else if (!m_setup_needed && m_current_screen == UIScreen::BALANCE_VIEW &&
                    !m_bal_fetched) {
