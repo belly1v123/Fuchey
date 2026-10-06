@@ -347,6 +347,9 @@ void UsbProtocol::cmd_recovery_start(uint32_t id, cJSON* req) {
     if (restore && has_wallet) { send_error(id, "wallet_exists", "erase it on the device first"); return; }
     if (check && !has_wallet)  { send_error(id, "no_wallet"); return; }
 
+    // A restore waiting for B1 still owns the session: restarting it now
+    // would wipe the grid under the worker and end with a stale result.
+    if (m_recovery_confirming.load()) { send_error(id, "busy", "confirm on Fuchey first"); return; }
     bool expected = false;
     if (!m_recovery_active && !m_busy.compare_exchange_strong(expected, true)) {
         send_error(id, "busy", "another request is pending");
@@ -571,7 +574,7 @@ void UsbProtocol::network_worker(void* arg) {
 // Release the "busy" lock for sessions the device already ended (B1,
 // timeout) — otherwise an abandoned session would block signing.
 void UsbProtocol::cleanup_finished_sessions() {
-    if (m_recovery_active && m_rc && !m_rc->active()) {
+    if (m_recovery_active && m_rc && !m_rc->active() && !m_recovery_confirming.load()) {
         recovery_end();          // cancelled on the device (B1 / timeout)
     }
     if (m_create_active && m_create) {
