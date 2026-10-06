@@ -6,7 +6,8 @@
 // Everything here is cosmetic: no signing on Fuchey, no transactions.
 
 import {
-  SLOTS, CHARACTER, Catalog, siteNetwork, ownedWearables, resolveVisual, slotOf,
+  SLOTS, CHARACTER, Catalog, siteNetwork, walletAssets, ownedWearablesFrom, fucheyCollection,
+  resolveVisual, slotOf,
   runsSide, pixelsToRuns, encodeItem,
 } from "./wearables.js";
 import { verifySignature, isAddress } from "./solana.js";
@@ -28,6 +29,7 @@ const wr = {
   wallets: [],           // linked wallets (device setting)
   worn: {},              // slot → id
   owned: new Map(),      // id → { wearable, assets, file, item }
+  collection: null,      // every owned Fuchey NFT (fucheyCollection), null = not read yet
   installed: new Map(),  // id → { slot, crc }
 };
 
@@ -166,6 +168,8 @@ function render() {
     list.append(card);
   }
 
+  renderCollection();
+
   const wl = $("wr-wallets");
   wl.innerHTML = "";
   for (const a of wr.wallets) {
@@ -184,6 +188,46 @@ function render() {
   }
   if (!wr.wallets.length) wl.innerHTML = '<p class="muted tiny">None. Only this Fuchey\'s own wallet is checked.</p>';
   for (const id of ["btn-wr-sync", "btn-wr-website", "btn-wr-phantom"]) $(id).disabled = wr.syncing;
+}
+
+// ── My Fuchey collection (everything owned, not just what Fuchey can wear) ──
+const walletLabel = (a) => (a === wr.info?.pubkey ? "this Fuchey" : `${a.slice(0, 4)}…${a.slice(-4)}`);
+
+function collectionStatus(e) {
+  if (e.kind === "character") {
+    return e.fits ? "Character · Fuchey's Yeti" : "Character · coming to Fuchey soon";
+  }
+  if (!e.fits) return `${e.type} · doesn't fit the Yeti`;
+  if (wr.installed.has(e.id)) {
+    return wr.worn[e.type] === e.id ? `${e.type} · on Fuchey, wearing` : `${e.type} · on Fuchey, tap Wear`;
+  }
+  const err = wr.owned.get(e.id)?.error;
+  return `${e.type} · ${err ? `not installed: ${err}` : "not on Fuchey yet"}`;
+}
+
+function renderCollection() {
+  const card = $("collection");
+  card.classList.toggle("hidden", wr.collection === null);
+  if (wr.collection === null) return;
+  const list = $("col-list");
+  list.innerHTML = "";
+  const n = wr.collection.reduce((sum, e) => sum + e.assets.length, 0);
+  $("col-summary").textContent = n
+    ? `${n} Fuchey NFT${n === 1 ? "" : "s"} on ${wr.network}`
+    : `No Fuchey NFTs on ${wr.network} in these wallets yet.`;
+  for (const e of wr.collection) {
+    const row = document.createElement("div");
+    row.className = "col-row";
+    const left = document.createElement("div");
+    left.innerHTML = '<div class="wr-name"></div><div class="muted tiny"></div>';
+    left.firstChild.textContent = e.assets.length > 1 ? `${e.name} ×${e.assets.length}` : e.name;
+    left.lastChild.textContent = collectionStatus(e);
+    const who = document.createElement("code");
+    who.className = "tiny";
+    who.textContent = [...new Set(e.assets.map((a) => walletLabel(a.wallet)))].join(", ");
+    row.append(left, who);
+    list.append(row);
+  }
 }
 
 // ── sync: chain → device ──────────────────────────────────
@@ -223,7 +267,11 @@ export async function sync() {
     const wearables = await catalog.wearables();
     setStatus(`Checking what ${wallets.length > 1 ? `${wallets.length} wallets own` : "this wallet owns"} on ${wr.network}…`);
     // A failed chain read throws here, before anything is deleted.
-    const owned = await ownedWearables(ctx.rpc(), wallets, wearables, siteNetwork(wr.network));
+    const network = siteNetwork(wr.network);
+    const characters = await catalog.characters().catch(() => []);
+    const assets = await walletAssets(ctx.rpc(), wallets);
+    const owned = ownedWearablesFrom(assets, wearables, network);
+    wr.collection = fucheyCollection(assets, { wearables, characters }, network);
 
     for (const [id, o] of owned) {
       try {
@@ -411,6 +459,7 @@ export function onConnected(info, network) {
   wr.info = info;
   wr.network = network;
   wr.owned = new Map();
+  wr.collection = null;
   render();
   sync();
 }
@@ -419,4 +468,5 @@ export function onDisconnected() {
   wr.info = null;
   wr.syncing = false;
   $("wardrobe").classList.add("hidden");
+  $("collection").classList.add("hidden");
 }
