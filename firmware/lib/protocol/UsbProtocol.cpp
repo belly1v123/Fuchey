@@ -848,12 +848,12 @@ constexpr size_t MAX_ITEM_CHUNK = 1024;   // base64 1368 chars: well inside a li
 
 void UsbProtocol::cmd_item_begin(uint32_t id, cJSON* req) {
     if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
-    const char* item = str_field(req, "id");
+    const char* item = str_field(req, "item");
     cJSON* size = cJSON_GetObjectItem(req, "size");
     cJSON* crc  = cJSON_GetObjectItem(req, "crc");
     if (!item || !cJSON_IsNumber(size) || !cJSON_IsNumber(crc) || size->valuedouble < 1 ||
         crc->valuedouble < 0 || crc->valuedouble > 4294967295.0) {
-        send_error(id, "bad_request", "need id, size, crc (u32)");
+        send_error(id, "bad_request", "need item, size, crc (u32)");
         return;
     }
     const auto e = item_store().begin(item, static_cast<size_t>(size->valuedouble),
@@ -865,13 +865,13 @@ void UsbProtocol::cmd_item_begin(uint32_t id, cJSON* req) {
 }
 
 void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req) {
-    const char* item = str_field(req, "id");
+    const char* item = str_field(req, "item");
     const char* data = str_field(req, "data");
     cJSON* seq = cJSON_GetObjectItem(req, "seq");
     std::vector<uint8_t> bytes;
     if (!item || !data || !cJSON_IsNumber(seq) || seq->valuedouble < 0 ||
         !Crypto::Base64::decode(data, bytes) || bytes.empty() || bytes.size() > MAX_ITEM_CHUNK) {
-        send_error(id, "bad_request", "need id, seq, data (base64, 1..1024 bytes)");
+        send_error(id, "bad_request", "need item, seq, data (base64, 1..1024 bytes)");
         return;
     }
     const auto e = item_store().chunk(item, static_cast<uint32_t>(seq->valuedouble),
@@ -881,8 +881,8 @@ void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req) {
 }
 
 void UsbProtocol::cmd_item_end(uint32_t id, cJSON* req) {
-    const char* item = str_field(req, "id");
-    if (!item) { send_error(id, "bad_request", "need id"); return; }
+    const char* item = str_field(req, "item");
+    if (!item) { send_error(id, "bad_request", "need item"); return; }
     const auto e = item_store().end(item);
     if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
     cJSON* obj = reply(id, true);
@@ -913,8 +913,8 @@ void UsbProtocol::cmd_item_list(uint32_t id) {
 
 void UsbProtocol::cmd_item_delete(uint32_t id, cJSON* req) {
     if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
-    const char* item = str_field(req, "id");
-    if (!item) { send_error(id, "bad_request", "need id"); return; }
+    const char* item = str_field(req, "item");
+    if (!item) { send_error(id, "bad_request", "need item"); return; }
     wardrobe().unequip_item(item);           // never draw a deleted item
     const auto e = item_store().remove(item);
     if (e != ItemStore::Err::OK && e != ItemStore::Err::NOT_FOUND) { send_error(id, ItemStore::err_name(e)); return; }

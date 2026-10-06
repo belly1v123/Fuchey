@@ -147,11 +147,11 @@ One line per message on the USB console, mixed with log lines:
 | `{"id":15,"cmd":"wallet_create_tap","pos":3}` | confirm the asked word on the device's grid; after 3 correct the wallet is stored |
 | `{"id":16,"cmd":"wallet_create_cancel"}` | `ok` (nothing stored) |
 | `{"id":17,"cmd":"set_network","network":"mainnet"}` | event `awaiting_confirmation {network}`, then `ok, network, changed` after B1 — or `rejected` / `timeout` / `busy` |
-| `{"id":18,"cmd":"item_begin","id":"frost-scarf","size":1413,"crc":305419896}` | `ok, chunk:1024` — starts an item upload (`FWR1` file) |
-| `{"id":19,"cmd":"item_chunk","id":"frost-scarf","seq":0,"data":"<base64 ≤1024 B>"}` | `ok` — `seq` 0,1,2… in order |
-| `{"id":20,"cmd":"item_end","id":"frost-scarf"}` | `ok` once size, CRC32, format and id check out (else `bad_size` / `bad_crc` / `bad_format`) |
+| `{"id":18,"cmd":"item_begin","item":"frost-scarf","size":1413,"crc":305419896}` | `ok, chunk:1024` — starts an item upload (`FWR1` file) |
+| `{"id":19,"cmd":"item_chunk","item":"frost-scarf","seq":0,"data":"<base64 ≤1024 B>"}` | `ok` — `seq` 0,1,2… in order |
+| `{"id":20,"cmd":"item_end","item":"frost-scarf"}` | `ok` once size, CRC32, format and id check out (else `bad_size` / `bad_crc` / `bad_format`) |
 | `{"id":21,"cmd":"item_list"}` | `items:[{id, slot, z, bytes, crc}], used, total` |
-| `{"id":22,"cmd":"item_delete","id":"frost-scarf"}` | `ok, existed` — also takes it off |
+| `{"id":22,"cmd":"item_delete","item":"frost-scarf"}` | `ok, existed` — also takes it off |
 | `{"id":23,"cmd":"get_settings"}` | `settings:{"wear.<slot>": id\|"none", …, linked_wallets:[…]}` |
 | `{"id":24,"cmd":"set_setting","key":"wear.hat","value":"blue-beanie"}` | `ok` (installed item of that slot, or `"none"`); `key:"linked_wallets", value:[addresses]` (≤ 8) |
 

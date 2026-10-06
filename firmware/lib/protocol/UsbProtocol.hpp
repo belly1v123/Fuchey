@@ -45,11 +45,12 @@
 //         hardware B1 tap on Fuchey's "SWITCH NETWORK?" screen
 //       → {ok, network, changed} or error rejected|timeout|busy
 //   Wardrobe (cap "wardrobe_v1"; settings tier, writes refused while busy):
-//   item_begin  id, size, crc     → start an item upload (FWR1 file, zlib crc32)
-//   item_chunk  id, seq, data     → base64 chunk, seq 0,1,2… (≤ 1024 bytes each)
-//   item_end    id                → verify size + crc + format, then save
+//   item_begin  item, size, crc   → start an item upload (FWR1 file, zlib crc32)
+//   item_chunk  item, seq, data   → base64 chunk, seq 0,1,2… (≤ 1024 bytes each)
+//   item_end    item              → verify size + crc + format, then save
 //   item_list                     → items [{id, slot, z, bytes, crc}], used, total
-//   item_delete id                → delete it and take it off any slot
+//   ("item" names the wearable; "id" is always the request id)
+//   item_delete item              → delete it and take it off any slot
 //   get_settings                  → settings {"wear.<slot>": id|"none", …,
 //                                   "linked_wallets": [address, …]}
 //   set_setting key, value        → wear.<slot> = installed id | "none";

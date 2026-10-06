@@ -156,7 +156,7 @@ function render() {
     text.className = "wr-text";
     text.innerHTML = `<div class="wr-name"></div><div class="muted tiny"></div>`;
     text.firstChild.textContent = w.name;
-    text.lastChild.textContent = ready ? slot : `${slot} · ${o.error ? "not installed" : "installing…"}`;
+    text.lastChild.textContent = ready ? slot : `${slot} · ${o.error ? `not installed: ${o.error}` : "installing…"}`;
     const btn = document.createElement("button");
     btn.className = wearing ? "ghost small" : "primary small";
     btn.textContent = wearing ? "Take off" : "Wear";
@@ -238,7 +238,7 @@ export async function sync() {
 
     // Install new or changed items.
     const { crc32 } = await import("./serial.js");
-    let installed = 0, removed = 0;
+    let installed = 0, removed = 0, failed = 0;
     for (const [id, o] of owned) {
       if (!o.file) continue;
       const have = wr.installed.get(id);
@@ -255,6 +255,7 @@ export async function sync() {
         }
       } catch (e) {
         o.error = ctx.describe(e);
+        failed++;
         ctx.log(`wardrobe: install ${id} failed: ${o.error}`);
       }
     }
@@ -267,8 +268,11 @@ export async function sync() {
     }
     await readDevice();
     const n = owned.size;
+    const notOnFuchey = [...owned.keys()].filter((id) => !wr.installed.has(id)).length;
     setStatus(`${n} wearable${n === 1 ? "" : "s"} owned` +
-      (installed || removed ? ` · ${installed} installed, ${removed} removed` : " · Fuchey is up to date"));
+      (installed || removed ? ` · ${installed} installed, ${removed} removed` : "") +
+      (notOnFuchey ? ` · ${notOnFuchey} not on Fuchey yet` : (installed || removed ? "" : " · Fuchey is up to date")));
+    if (failed) setMsg(`${failed} item${failed === 1 ? "" : "s"} couldn't be installed — see the list below. Press Sync to retry.`);
   } catch (e) {
     setStatus("");
     setMsg(`Wardrobe sync failed: ${ctx.describe(e)}`);
