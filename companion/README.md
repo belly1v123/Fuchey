@@ -97,10 +97,10 @@ Firmware with `caps` `wardrobe_v1` gets a **Wardrobe** card in the Device tab.
    converts each owned, Yeti-compatible wearable's `visual` into a small
    `FWR1` item file and installs it. Items no wallet owns any more are deleted
    (Fuchey takes them off too). Files are compared by CRC32, so changed art
-   is re-sent.
+   is re-sent. A newly installed item is worn straight away if its slot is empty.
 3. **Wear / Take off** sets `wear.<slot>`; **Use my website look** copies the
-   wallet's saved Yeti loadout (owned items only); **Add my Phantom wallet**
-   asks Phantom/Solflare to sign `Link <wallet> to Fuchey <device>` (a plain
+   wallet's saved Yeti loadout (owned items only); **Add a wallet**
+   asks Phantom or Solflare (your choice when both are installed) to sign `Link <wallet> to Fuchey <device>` (a plain
    message, no transaction), verifies it, then adds the address to
    `linked_wallets`.
 
