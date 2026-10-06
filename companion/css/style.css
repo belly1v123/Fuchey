@@ -266,3 +266,6 @@ details label { margin-top: 12px; }
 .col-list { display: grid; gap: 6px; margin: 8px 0; }
 .col-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: var(--line); border-radius: var(--r); background: var(--card); }
 .col-row code { flex: none; color: var(--ink-2); }
+.wr-pick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.wr-wallet-btn { display: inline-flex; align-items: center; gap: 6px; }
+.wr-wallet-btn img { width: 18px; height: 18px; }

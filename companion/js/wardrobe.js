@@ -372,60 +372,108 @@ async function useWebsiteLook() {
   render();
 }
 
-// Browser wallets that can sign a message: Phantom and Solflare.
-function walletProviders() {
-  const out = {};
-  if (window.phantom?.solana?.isPhantom) out.phantom = window.phantom.solana;
-  else if (window.solana?.isPhantom) out.phantom = window.solana;
-  if (window.solflare?.isSolflare) out.solflare = window.solflare;
-  else if (window.solana?.isSolflare) out.solflare = window.solana;
-  return out;
+// ── Browser wallets ───────────────────────────────────────
+// Detected when "Add a wallet" is pressed: wallets that announce themselves
+// through the Wallet Standard (Phantom, Solflare, Backpack, …), plus the
+// older window.phantom / window.solflare objects as a fallback.
+const standardWallets = new Set();
+function listenForStandardWallets() {
+  const api = { register: (...ws) => { ws.forEach((w) => standardWallets.add(w)); return () => {}; } };
+  window.addEventListener("wallet-standard:register-wallet", (e) => { try { e.detail?.(api); } catch {} });
+  try { window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: api })); } catch {}
 }
 
-// "Add a wallet": one installed wallet → use it; both → let the user pick.
+const bytesOf = (s) => (s instanceof Uint8Array ? s : new Uint8Array(s));
+
+// Each wallet → { name, icon, connect() → address, sign(message) → signature bytes }.
+function detectWallets() {
+  const found = [];
+  for (const w of standardWallets) {
+    const connect = w.features?.["standard:connect"];
+    const signer = w.features?.["solana:signMessage"];
+    const solana = (w.chains ?? []).some((c) => String(c).startsWith("solana:"));
+    if (!connect || !signer || !solana) continue;
+    let account = null;
+    found.push({
+      name: w.name, icon: w.icon,
+      async connect() {
+        const { accounts } = await connect.connect();
+        account = (accounts ?? w.accounts ?? [])[0];
+        return account?.address;
+      },
+      async sign(message) {
+        const [out] = await signer.signMessage({ account, message });
+        return bytesOf(out.signature);
+      },
+    });
+  }
+  const legacy = [
+    ["Phantom", window.phantom?.solana?.isPhantom ? window.phantom.solana : window.solana?.isPhantom ? window.solana : null],
+    ["Solflare", window.solflare?.isSolflare ? window.solflare : window.solana?.isSolflare ? window.solana : null],
+  ];
+  for (const [name, p] of legacy) {
+    if (!p || found.some((f) => f.name.toLowerCase() === name.toLowerCase())) continue;
+    found.push({
+      name, icon: null,
+      async connect() { await p.connect(); return p.publicKey?.toString(); },
+      // Phantom returns { signature }, older Solflare a bare Uint8Array.
+      async sign(message) { const r = await p.signMessage(message, "utf8"); return bytesOf(r?.signature ?? r); },
+    });
+  }
+  return found;
+}
+
+// "Add a wallet": one wallet → use it; several → show a picker; none → say so.
 function addWallet() {
   setMsg("");
-  const found = walletProviders();
-  const names = Object.keys(found);
-  $("wr-pick").classList.add("hidden");
-  if (!names.length) { setMsg("No Phantom or Solflare wallet in this browser."); return; }
-  if (names.length === 1) { linkWallet(found[names[0]]); return; }
-  $("btn-wr-pick-phantom").classList.toggle("hidden", !found.phantom);
-  $("btn-wr-pick-solflare").classList.toggle("hidden", !found.solflare);
-  $("wr-pick").classList.remove("hidden");
-}
-
-function pickWallet(name) {
-  $("wr-pick").classList.add("hidden");
-  const p = walletProviders()[name];
-  if (p) linkWallet(p);
+  const pick = $("wr-pick");
+  pick.classList.add("hidden");
+  pick.innerHTML = "";
+  const wallets = detectWallets();
+  if (!wallets.length) { setMsg("No Solana wallet found in this browser."); return; }
+  if (wallets.length === 1) { linkWallet(wallets[0]); return; }
+  const label = document.createElement("span");
+  label.className = "muted small";
+  label.textContent = "Choose a wallet:";
+  pick.append(label);
+  for (const w of wallets) {
+    const b = document.createElement("button");
+    b.className = "ghost small wr-wallet-btn";
+    if (w.icon) {
+      const img = document.createElement("img");
+      img.src = w.icon;
+      img.alt = "";
+      b.append(img);
+    }
+    b.append(w.name);
+    b.addEventListener("click", () => { pick.classList.add("hidden"); linkWallet(w); });
+    pick.append(b);
+  }
+  pick.classList.remove("hidden");
 }
 
 // Prove control of a browser wallet (it signs a plain-text message; nothing
 // on-chain), then add its address to Fuchey's linked wallets.
-async function linkWallet(provider) {
+async function linkWallet(wallet) {
   setMsg("");
   if (!wr.info?.pubkey) { setMsg("This Fuchey has no wallet yet."); return; }
   try {
-    await provider.connect();
-    const addr = provider.publicKey?.toString();
+    const addr = await wallet.connect();
     if (!isAddress(addr)) throw new Error("the wallet returned no address");
     if (addr === wr.info.pubkey || wr.wallets.includes(addr)) { setMsg("That wallet is already linked.", true); return; }
     if (wr.wallets.length >= 8) throw new Error("Fuchey can link up to 8 wallets");
     const message = new TextEncoder().encode(`Link ${addr} to Fuchey ${wr.info.pubkey}`);
-    // Phantom returns { signature }, older Solflare a bare Uint8Array.
-    const res = await provider.signMessage(message, "utf8");
-    const sig = res?.signature ?? res;
-    if ((await verifySignature(addr, new Uint8Array(sig), message)) !== "valid") {
+    const sig = await wallet.sign(message);
+    if ((await verifySignature(addr, sig, message)) !== "valid") {
       throw new Error("the wallet's signature didn't verify (or this browser can't check Ed25519)");
     }
     await ctx.device.setSetting("linked_wallets", [...wr.wallets, addr]);
     wr.wallets = [...wr.wallets, addr];
-    setMsg(`Linked ${addr.slice(0, 4)}…${addr.slice(-4)}.`, true);
     render();
     await sync();
+    setMsg(`Linked ${addr.slice(0, 4)}…${addr.slice(-4)} (${wallet.name}).`, true);
   } catch (e) {
-    setMsg(e?.code === 4001 ? "Cancelled in the wallet." : ctx.describe(e));
+    setMsg(e?.code === 4001 || /reject|cancel/i.test(e?.message ?? "") ? "Cancelled in the wallet." : ctx.describe(e));
   }
 }
 
@@ -447,9 +495,8 @@ export function init(c) {
   loadImage(YETI_URL).then((img) => { yetiImg = img; if (wr.info) render(); }).catch(() => {});
   $("btn-wr-sync").addEventListener("click", sync);
   $("btn-wr-website").addEventListener("click", useWebsiteLook);
+  listenForStandardWallets();
   $("btn-wr-phantom").addEventListener("click", addWallet);
-  $("btn-wr-pick-phantom").addEventListener("click", () => pickWallet("phantom"));
-  $("btn-wr-pick-solflare").addEventListener("click", () => pickWallet("solflare"));
 }
 
 export function onConnected(info, network) {
