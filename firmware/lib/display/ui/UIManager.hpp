@@ -15,6 +15,7 @@
 #include "../../wallet/WalletCreateSession.hpp"
 #include "../../wallet/RecoveryController.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
+#include "../../wearables/WearRenderer.hpp"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -209,6 +210,12 @@ private:
     // "No WiFi" instead of empty time/weather while it is down.
     bool        m_wifi_up{false};
     uint8_t     m_home_wcode{255};
+    // Worn marketplace items, drawn around the home Yeti (idle mood only).
+    WearRenderer m_wear;
+    // Screen box the home Yeti + items covered last frame (restore/flush).
+    int         m_home_yx{0}, m_home_yy{0}, m_home_yw{0}, m_home_yh{0};
+    void        home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const;
+    void        draw_home_yeti(uint8_t frame);
     // Scrambled-grid recovery: drawn straight from the shared controller.
     RecoveryController* m_rc{nullptr};
     uint32_t    m_recovery_ms{0};          // result timer

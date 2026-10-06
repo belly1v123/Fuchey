@@ -92,6 +92,11 @@ void Display::draw_sprite_transparent(int x, int y, int w, int h, const Color* d
     m_lcd.draw_rgb565_image_transparent(x, y, w, h, data, transparent);
 }
 
+void Display::draw_sprite_scaled_transparent(int x, int y, int w, int h, const Color* data,
+                                             Color transparent, int num, int den) {
+    m_lcd.draw_rgb565_image_scaled_transparent(x, y, w, h, data, transparent, num, den);
+}
+
 void Display::draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
                                int w, int h, const Color* data) {
     m_lcd.draw_rgb565_subimage(x, y, srcW, sx, sy, w, h, data);
