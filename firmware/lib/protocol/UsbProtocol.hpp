@@ -44,11 +44,22 @@
 //       → event awaiting_confirmation {network}; applied only after a
 //         hardware B1 tap on Fuchey's "SWITCH NETWORK?" screen
 //       → {ok, network, changed} or error rejected|timeout|busy
+//   Wardrobe (cap "wardrobe_v1"; settings tier, writes refused while busy):
+//   item_begin  id, size, crc     → start an item upload (FWR1 file, zlib crc32)
+//   item_chunk  id, seq, data     → base64 chunk, seq 0,1,2… (≤ 1024 bytes each)
+//   item_end    id                → verify size + crc + format, then save
+//   item_list                     → items [{id, slot, z, bytes, crc}], used, total
+//   item_delete id                → delete it and take it off any slot
+//   get_settings                  → settings {"wear.<slot>": id|"none", …,
+//                                   "linked_wallets": [address, …]}
+//   set_setting key, value        → wear.<slot> = installed id | "none";
+//                                   linked_wallets = [base58 address, …] (≤ 8)
 // hello also returns caps=[...] naming optional features.
 //
 // Command tiers (see docs/ThreatModel.md):
 //   read-only   hello, get_pubkey, get_status, wifi_scan, show_address
-//   settings    set_wifi, set_location — device config only; refused while
+//   settings    set_wifi, set_location, item_*, set_setting — device config
+//               only (the wardrobe is cosmetic); refused while
 //               a signature is pending; secrets never echoed or logged
 //   signing     sign_tx — always parsed, shown, and approved by hardware B1
 //   never here  approve, network switch, wallet create/import/export/reset
@@ -138,6 +149,13 @@ private:
     void cmd_wallet_create_tap(uint32_t id, cJSON* req);
     void cmd_wallet_create_cancel(uint32_t id);
     void create_reply_state(uint32_t id);
+    void cmd_item_begin(uint32_t id, cJSON* req);
+    void cmd_item_chunk(uint32_t id, cJSON* req);
+    void cmd_item_end(uint32_t id, cJSON* req);
+    void cmd_item_list(uint32_t id);
+    void cmd_item_delete(uint32_t id, cJSON* req);
+    void cmd_get_settings(uint32_t id);
+    void cmd_set_setting(uint32_t id, cJSON* req);
 
     static void sign_worker(void* arg);
     void run_sign(SignJob& job);
