@@ -8,7 +8,6 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 #include <cstdio>
-#include <cstring>
 
 namespace Fuchey {
 
@@ -18,8 +17,8 @@ WeatherService::WeatherService(WiFiManager& wifi) : m_wifi(wifi) {}
 
 bool WeatherService::init() {
     load_config();
-    ESP_LOGI(TAG, "WeatherService initialized (city=%s, lat=%.4f, lon=%.4f)",
-             m_city_name.c_str(), m_lat, m_lon);
+    ESP_LOGI(TAG, "WeatherService initialized (city=%s, source=%s, lat=%.4f, lon=%.4f)",
+             m_city_name.c_str(), m_location_source.c_str(), m_lat, m_lon);
     return true;
 }
 
@@ -32,16 +31,44 @@ void WeatherService::set_location(const char* city, float lat, float lon) {
 
 void WeatherService::load_config() {
     Storage::Handle cfg(NVS::CONFIG_NS, NVS_READONLY);
-    if (cfg.is_open()) {
-        auto city = cfg.get_str(NVS::KEY_WEATHER_CITY);
-        if (city) m_city_name = std::move(*city);
-
-        auto lat_str = cfg.get_str(NVS::KEY_WEATHER_LAT);
-        if (lat_str) m_lat = std::stof(*lat_str);
-
-        auto lon_str = cfg.get_str(NVS::KEY_WEATHER_LON);
-        if (lon_str) m_lon = std::stof(*lon_str);
+    if (!cfg.is_open() || !cfg.get_str(NVS::KEY_WEATHER_LAT) || !cfg.get_str(NVS::KEY_WEATHER_LON)) {
+        ESP_LOGI(TAG, "No saved location in NVS — using default: %s", m_city_name.c_str());
+        return;
     }
+
+    auto src = cfg.get_str(NVS::KEY_WEATHER_SOURCE);
+    // Coords left by the old IP-geolocation firmware are stale (they may point
+    // at the ISP gateway, not the user). Treat them as unconfigured so the
+    // first-boot setup wizard asks for a real location again.
+    if (src && *src == "geolocation") {
+        ESP_LOGW(TAG, "Ignoring stale geolocation coords — location needs setup");
+        return;
+    }
+
+    auto city = cfg.get_str(NVS::KEY_WEATHER_CITY);
+    if (city) m_city_name = std::move(*city);
+
+    auto lat_str = cfg.get_str(NVS::KEY_WEATHER_LAT);
+    if (lat_str) m_lat = std::stof(*lat_str);
+
+    auto lon_str = cfg.get_str(NVS::KEY_WEATHER_LON);
+    if (lon_str) m_lon = std::stof(*lon_str);
+
+    m_location_source    = (src && *src == "manual") ? std::move(*src) : "saved (NVS)";
+    m_location_configured = true;
+}
+
+bool WeatherService::set_manual_location(const char* city, float lat, float lon) {
+    if (!city || !*city || lat < -90.0f || lat > 90.0f || lon < -180.0f || lon > 180.0f) {
+        ESP_LOGE(TAG, "Invalid manual location: city='%s' lat=%.4f lon=%.4f",
+                 city ? city : "(null)", lat, lon);
+        return false;
+    }
+    set_location(city, lat, lon);
+    m_location_source = "manual";
+    m_location_configured = true;
+    save_config();
+    return true;
 }
 
 bool WeatherService::parse_weather_json(const std::string& json_str, Events::Event& evt) {
@@ -73,24 +100,41 @@ bool WeatherService::update_now() {
 
     char url[256];
     snprintf(url, sizeof(url), API::WEATHER_URL_FMT, m_lat, m_lon);
+    ESP_LOGI(TAG, "Weather source: %s — fetching %s (%.4f, %.4f)",
+             m_location_source.c_str(), m_city_name.c_str(), m_lat, m_lon);
 
-    auto resp = m_wifi.get(url);
-    if (!resp.success) {
-        ESP_LOGE(TAG, "Weather HTTP request failed");
-        return false;
-    }
-
-    Events::Event evt{};
-    evt.type = Events::EventType::WEATHER_UPDATED;
-
-    if (parse_weather_json(resp.body, evt)) {
-        ESP_LOGI(TAG, "Weather updated: %.1f °C, Code: %d",
-                 evt.data.weather.temp_celsius, evt.data.weather.weather_code);
-        Events::post(Events::g_ui_queue, evt);
-        if (Events::g_event_group) {
-            xEventGroupSetBits(Events::g_event_group, Events::BIT_WEATHER_OK);
+    // Retry on transient network/DNS failures. The cycle is 10 min, so a
+    // short retry window is cheap and self-heals DNS blips.
+    static constexpr int MAX_ATTEMPTS = 3;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt) {
+        auto resp = m_wifi.get(url);
+        if (!resp.success) {
+            if (attempt < MAX_ATTEMPTS) {
+                ESP_LOGW(TAG, "Weather fetch failed (attempt %d/%d) — retrying in 2500ms...",
+                         attempt, MAX_ATTEMPTS);
+                vTaskDelay(pdMS_TO_TICKS(2500));
+            } else {
+                ESP_LOGE(TAG, "Weather HTTP request failed after %d attempts", MAX_ATTEMPTS);
+            }
+            continue;
         }
-        return true;
+
+        Events::Event evt{};
+        evt.type = Events::EventType::WEATHER_UPDATED;
+
+        if (parse_weather_json(resp.body, evt)) {
+            ESP_LOGI(TAG, "Weather updated: %.1f °C, Code: %d [%s]",
+                     evt.data.weather.temp_celsius, evt.data.weather.weather_code,
+                     m_location_source.c_str());
+            Events::post(Events::g_ui_queue, evt);
+            if (Events::g_event_group) {
+                xEventGroupSetBits(Events::g_event_group, Events::BIT_WEATHER_OK);
+            }
+            return true;
+        }
+
+        ESP_LOGE(TAG, "Weather JSON parse failed");
+        return false;
     }
 
     return false;
@@ -98,72 +142,6 @@ bool WeatherService::update_now() {
 
 void WeatherService::task_entry(void* arg) {
     static_cast<WeatherService*>(arg)->run();
-}
-
-void WeatherService::geolocate() {
-    // Try providers in order. HTTP first: no TLS cert bundle needed,
-    // works around "No matching trusted root" seen with ipapi.co HTTPS.
-    static constexpr const char* kProviders[] = {
-        API::GEOLOCATION_URL_PRIMARY,
-        API::GEOLOCATION_URL_FALLBACK1,
-        API::GEOLOCATION_URL_FALLBACK2,
-        API::GEOLOCATION_URL_FALLBACK3,
-    };
-
-    for (const char* url : kProviders) {
-        auto resp = m_wifi.get(url);
-        if (!resp.success) {
-            ESP_LOGW(TAG, "Geolocation via %s failed (HTTP %d), trying next",
-                     url, resp.status_code);
-            continue;
-        }
-
-        cJSON* root = cJSON_Parse(resp.body.c_str());
-        if (!root) {
-            ESP_LOGW(TAG, "Geolocation JSON parse failed for %s, trying next", url);
-            continue;
-        }
-
-        // city is common across providers
-        cJSON* city = cJSON_GetObjectItem(root, "city");
-        // ip-api.com uses lat/lon; ipapi.co & ipwho.is use latitude/longitude
-        cJSON* lat = cJSON_GetObjectItem(root, "lat");
-        if (!lat || !cJSON_IsNumber(lat)) lat = cJSON_GetObjectItem(root, "latitude");
-        cJSON* lon = cJSON_GetObjectItem(root, "lon");
-        if (!lon || !cJSON_IsNumber(lon)) lon = cJSON_GetObjectItem(root, "longitude");
-
-        // Respect provider status flags so error payloads aren't mistaken
-        // for a location (e.g. ip-api {"status":"fail"}, ipwho {"success":false})
-        bool status_ok = true;
-        cJSON* status = cJSON_GetObjectItem(root, "status");
-        if (cJSON_IsString(status) && std::strcmp(status->valuestring, "success") != 0) {
-            status_ok = false;
-            cJSON* msg = cJSON_GetObjectItem(root, "message");
-            ESP_LOGW(TAG, "Geolocation provider %s returned status=%s%s%s", url,
-                     status->valuestring,
-                     (msg && cJSON_IsString(msg)) ? ": " : "",
-                     (msg && cJSON_IsString(msg)) ? msg->valuestring : "");
-        }
-        cJSON* success = cJSON_GetObjectItem(root, "success");
-        if (cJSON_IsBool(success) && !cJSON_IsTrue(success)) status_ok = false;
-
-        if (status_ok && city && cJSON_IsString(city) &&
-            lat && cJSON_IsNumber(lat) && lon && cJSON_IsNumber(lon)) {
-            set_location(city->valuestring,
-                         static_cast<float>(lat->valuedouble),
-                         static_cast<float>(lon->valuedouble));
-            ESP_LOGI(TAG, "Geolocated via %s: %s (%.4f, %.4f)",
-                     url, city->valuestring, lat->valuedouble, lon->valuedouble);
-            cJSON_Delete(root);
-            save_config();
-            return;
-        }
-
-        ESP_LOGW(TAG, "Geolocation fields missing from %s, trying next", url);
-        cJSON_Delete(root);
-    }
-
-    ESP_LOGW(TAG, "All geolocation providers failed, using default: %s", m_city_name.c_str());
 }
 
 void WeatherService::save_config() {
@@ -178,37 +156,29 @@ void WeatherService::save_config() {
     cfg.set_str(NVS::KEY_WEATHER_LAT, buf);
     snprintf(buf, sizeof(buf), "%.4f", m_lon);
     cfg.set_str(NVS::KEY_WEATHER_LON, buf);
+    cfg.set_str(NVS::KEY_WEATHER_SOURCE, m_location_source.c_str());
     cfg.commit();
 }
 
 void WeatherService::run() {
     ESP_LOGI(TAG, "WeatherService task running");
-    int64_t ip_ts_us = 0;
+    // Polls has_ip() instead of consuming BIT_WIFI_IP: PriceService also
+    // waits on that bit (clear-on-exit), so sharing it made one of the two
+    // miss the boot IP and leave HOME empty for a whole cycle.
+    static constexpr uint32_t POLL_MS  = 250;
+    static constexpr uint32_t RETRY_MS = 30000;   // after a failed fetch
     while (true) {
-        uint32_t bits = 0;
-        if (Events::g_event_group) {
-            bits = xEventGroupWaitBits(Events::g_event_group, Events::BIT_WIFI_IP,
-                                       pdTRUE, pdFALSE,
-                                       pdMS_TO_TICKS(Timing::WEATHER_UPDATE_MS));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(Timing::WEATHER_UPDATE_MS));
-        }
-        if (!m_wifi.has_ip()) continue;
+        while (!m_wifi.has_ip()) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
 
-        if (bits & Events::BIT_WIFI_IP) {
-            ip_ts_us = esp_timer_get_time();  // woke on fresh IP signal
-        }
-        if (!m_geolocated) {
-            geolocate();
-            m_geolocated = true;
-        }
-        bool ok = update_now();
-        if (ip_ts_us != 0) {
-            if (ok) {
-                ESP_LOGI(TAG, "Weather fetched %.0f ms after WiFi IP",
-                         static_cast<double>(esp_timer_get_time() - ip_ts_us) / 1000.0);
-            }
-            ip_ts_us = 0;
+        const bool ok = update_now();
+
+        // Sleep until the next cycle; refetch right away after a reconnect.
+        const uint32_t wait_ms = ok ? Timing::WEATHER_UPDATE_MS : RETRY_MS;
+        bool dropped = false;
+        for (uint32_t t = 0; t < wait_ms; t += POLL_MS) {
+            vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+            if (!m_wifi.has_ip()) dropped = true;
+            else if (dropped) break;
         }
     }
 }

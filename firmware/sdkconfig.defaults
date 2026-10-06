@@ -24,9 +24,12 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 
-# USB Console (Enable USB CDC so serial commands work on USB port)
-CONFIG_ESP_CONSOLE_USB_CDC=y
-CONFIG_ESP_CONSOLE_SECONDARY_USB_CDC=n
+# USB console on the S3's built-in USB-Serial-JTAG (not USB-OTG CDC).
+# The OTG CDC console reboots the chip on every RTS on->off edge, which
+# browsers/Windows produce when a page opens or closes the port; the
+# USB-Serial-JTAG only resets on esptool's specific DTR/RTS sequence.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # mbedTLS — enable required curves and algorithms
 CONFIG_MBEDTLS_ECDH_C=y
@@ -48,6 +51,10 @@ CONFIG_ESP32_WIFI_NVS_ENABLED=y
 # HTTP client (for AI / weather / price APIs)
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
 
+# DNS — consult public fallback (1.1.1.1, set in WiFiManager) when the
+# DHCP-assigned router DNS stops answering, instead of failing lookups.
+CONFIG_LWIP_FALLBACK_DNS_SERVER_SUPPORT=y
+
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
@@ -59,8 +66,6 @@ CONFIG_FREERTOS_HZ=1000
 # NVS
 CONFIG_NVS_ASSERT_ERROR_CHECK=y
 
-# USB CDC RX buffer (increase for paste support)
-CONFIG_ESP_CONSOLE_USB_CDC_RX_BUF_SIZE=1024
 
 # Stack sizes
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

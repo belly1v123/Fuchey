@@ -140,18 +140,17 @@ namespace Pomodoro {
 namespace NVS {
     inline constexpr const char* WALLET_NS     = "fuchey_wallet";
     inline constexpr const char* CONFIG_NS     = "fuchey_cfg";
-    inline constexpr const char* POLICY_NS     = "fuchey_policy";
     inline constexpr const char* WIFI_NS       = "fuchey_wifi";
 
     // Keys
     inline constexpr const char* KEY_MNEMONIC_ENC  = "mnemonic_enc";
     inline constexpr const char* KEY_WALLET_CREATED = "wallet_ok";
-    inline constexpr const char* KEY_SPEND_LIMIT   = "spend_limit";
     inline constexpr const char* KEY_WIFI_SSID     = "ssid";
     inline constexpr const char* KEY_WIFI_PASS     = "password";
     inline constexpr const char* KEY_WEATHER_CITY  = "weather_city";
     inline constexpr const char* KEY_WEATHER_LAT   = "weather_lat";
     inline constexpr const char* KEY_WEATHER_LON   = "weather_lon";
+    inline constexpr const char* KEY_WEATHER_SOURCE = "weather_src";
     inline constexpr const char* KEY_NETWORK       = "network";
 }
 
@@ -169,23 +168,6 @@ namespace API {
         "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
         "&current_weather=true&temperature_unit=celsius";
 
-    // IP Geolocation — tried in order. Plain-HTTP first on purpose:
-    // ipapi.co over HTTPS fails TLS verification on some ESP-IDF cert
-    // bundles ("No matching trusted root"), while these HTTP endpoints
-    // need no cert at all. Location data is non-sensitive.
-    // Schemas:
-    //   ip-api.com : {"status":"success","city":"..","lat":..,"lon":..}
-    //   ipapi.co   : {"city":"..","latitude":..,"longitude":..}
-    //   ipwho.is   : {"success":true,"city":"..","latitude":..,"longitude":..}
-    inline constexpr const char* GEOLOCATION_URL_PRIMARY =
-        "http://ip-api.com/json/?fields=status,message,city,lat,lon";
-    inline constexpr const char* GEOLOCATION_URL_FALLBACK1 =
-        "http://ipapi.co/json/";
-    inline constexpr const char* GEOLOCATION_URL_FALLBACK2 =
-        "https://ipapi.co/json/";
-    inline constexpr const char* GEOLOCATION_URL_FALLBACK3 =
-        "http://ipwho.is/json/";
-
     // Solana Network Endpoints & Token Mints
     inline constexpr const char* SOLANA_MAINNET_RPC =
         "https://api.mainnet-beta.solana.com";
@@ -196,6 +178,13 @@ namespace API {
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     inline constexpr const char* USDC_DEVNET_MINT =
         "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"; // Devnet USDC SPL mint
+}
+
+// ─── Fallback DNS ────────────────────────────────────────
+namespace DnsConfig {
+    // Used when the DHCP-assigned (router) DNS server is unresponsive.
+    // lwIP only consults this after the primary servers time out.
+    inline constexpr const char* FALLBACK_V4 = "1.1.1.1";  // Cloudflare
 }
 
 // ─── Crypto Constants ─────────────────────────────────────

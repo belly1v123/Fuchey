@@ -4,260 +4,224 @@
 
 #include "WalletManager.hpp"
 #include "../config/Config.hpp"
-#include "../buttons/ButtonDriver.hpp"
+#include "../crypto/Base58.hpp"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
+#include <cstdio>
 #include <cstring>
-
-// Forward-declare the global queue handle defined in main.cpp
-extern QueueHandle_t g_button_queue_ref;
 
 namespace Fuchey {
 
 static constexpr const char* TAG = "WalletManager";
 
-WalletManager::WalletManager(WalletCore& core, SpendingPolicy& policy)
-    : m_core(core), m_policy(policy) {}
+WalletManager::WalletManager(WalletCore& core)
+    : m_core(core) {}
 
 // ─── Init ─────────────────────────────────────────────────
 bool WalletManager::init() {
-    // Session timer: auto-lock after SESSION_TIMEOUT_MS
-    m_session_timer = xTimerCreate(
-        "session_timeout",
-        pdMS_TO_TICKS(Timing::SESSION_TIMEOUT_MS),
-        pdFALSE,  // one-shot
-        static_cast<void*>(this),
-        [](TimerHandle_t t) {
-            auto* self = static_cast<WalletManager*>(pvTimerGetTimerID(t));
-            self->on_session_timeout();
-        }
-    );
-
-    if (!m_session_timer) {
-        ESP_LOGE(TAG, "Failed to create session timer");
+    m_confirm_mutex = xSemaphoreCreateMutex();
+    if (!m_confirm_mutex) {
+        ESP_LOGE(TAG, "Failed to create confirmation mutex");
         return false;
     }
-
-    ESP_LOGI(TAG, "WalletManager initialized (timeout=%lu ms)", Timing::SESSION_TIMEOUT_MS);
+    ESP_LOGI(TAG, "WalletManager initialized (every signature needs a physical B1 tap)");
     return true;
 }
 
-// ─── Session timer ────────────────────────────────────────
-void WalletManager::start_session_timer() {
-    if (m_session_timer) xTimerStart(m_session_timer, 0);
-}
-
-void WalletManager::reset_session_timer() {
-    if (m_session_timer) xTimerReset(m_session_timer, 0);
-}
-
-void WalletManager::on_session_timeout() {
-    ESP_LOGI(TAG, "Session timeout — locking wallet");
-    lock();
-
-    // Notify UI
-    Events::Event evt{};
-    evt.type = Events::EventType::WALLET_LOCKED;
-    Events::post(Events::g_ui_queue, evt);
-}
-
-// ─── Wallet lifecycle ─────────────────────────────────────
-WalletResult WalletManager::create_wallet(int words, std::string& out_mnemonic) {
-    auto result = m_core.create(words, out_mnemonic);
-    if (result == WalletResult::OK) {
-        start_session_timer();
-
-        Events::Event evt{};
-        evt.type = Events::EventType::WALLET_CREATED;
-        Events::post(Events::g_ui_queue, evt);
-        ESP_LOGI(TAG, "Wallet created — session started");
+// ─── Physical confirmation ────────────────────────────────
+SignStatus WalletManager::request_confirmation(Events::TxSummary& summary,
+                                               uint32_t timeout_ms) {
+    if (!g_tx_confirm_queue || !Events::g_ui_queue || !m_confirm_mutex) {
+        return SignStatus::SIGN_FAILED;
     }
-    return result;
-}
-
-WalletResult WalletManager::import_wallet(std::string_view mnemonic) {
-    auto result = m_core.import(mnemonic);
-    if (result == WalletResult::OK) {
-        start_session_timer();
-
-        Events::Event evt{};
-        evt.type = Events::EventType::WALLET_IMPORTED;
-        Events::post(Events::g_ui_queue, evt);
-    }
-    return result;
-}
-
-void WalletManager::lock() {
-    m_core.lock();
-    if (m_session_timer) xTimerStop(m_session_timer, 0);
-
-    if (Events::g_event_group) {
-        xEventGroupSetBits(Events::g_event_group, Events::BIT_WALLET_LOCKED);
-        xEventGroupClearBits(Events::g_event_group, Events::BIT_WALLET_READY);
-    }
-}
-
-WalletResult WalletManager::unlock() {
-    auto result = m_core.unlock();
-    if (result == WalletResult::OK) {
-        reset_session_timer();
-        if (Events::g_event_group) {
-            xEventGroupSetBits(Events::g_event_group, Events::BIT_WALLET_READY);
-            xEventGroupClearBits(Events::g_event_group, Events::BIT_WALLET_LOCKED);
-        }
-    }
-    return result;
-}
-
-// ─── Request signature (CRITICAL PATH) ───────────────────
-TxResult WalletManager::request_signature(const TxRequest& req,
-                                           bool force_confirm) {
-    TxResult result{.approved = false, .signature{}, .error = WalletResult::ERR_LOCKED};
-
-    if (!m_core.is_unlocked()) {
-        ESP_LOGE(TAG, "Cannot sign — wallet locked");
-        return result;
+    if (xSemaphoreTake(m_confirm_mutex, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Confirmation already pending — refusing new request");
+        return SignStatus::BUSY;
     }
 
-    // Evaluate spending policy
-    auto decision = m_policy.evaluate(req.amount_cents);
-    bool need_confirmation = force_confirm ||
-                             (decision == PolicyDecision::REQUIRE_CONFIRMATION);
+    summary.request_id = m_next_request_id++;
+    if (m_next_request_id == 0) m_next_request_id = 1;  // 0 means "none pending"
+    m_cancel_requested.store(false);
+    m_pending_id.store(summary.request_id);
 
-    if (need_confirmation) {
-        ESP_LOGI(TAG, "Transaction requires confirmation: %s, $%.2f",
-                 req.description,
-                 static_cast<double>(req.amount_cents) / 100.0);
+    // Drop stale decisions from earlier (timed-out) requests.
+    Events::Event reply{};
+    while (xQueueReceive(g_tx_confirm_queue, &reply, 0) == pdTRUE) {}
 
-        // Post TX_REQUEST event to UI — it will display the transaction
-        Events::Event ui_evt{};
-        ui_evt.type = Events::EventType::TX_REQUEST;
-        std::memcpy(ui_evt.data.tx.tx_data, req.data,
-                    std::min<size_t>(req.data_len, sizeof(ui_evt.data.tx.tx_data)));
-        ui_evt.data.tx.tx_len        = req.data_len;
-        ui_evt.data.tx.amount_cents  = req.amount_cents;
-        Events::post(Events::g_ui_queue, ui_evt);
-
-        // Block waiting for button confirmation
-        bool confirmed = wait_for_confirmation(req);
-        if (!confirmed) {
-            ESP_LOGI(TAG, "Transaction rejected by user");
-            Events::Event rej{};
-            rej.type = Events::EventType::TX_REJECTED;
-            Events::post(Events::g_ui_queue, rej);
-            result.error = WalletResult::ERR_LOCKED; // Reuse for "rejected"
-            return result;
-        }
-    } else {
-        ESP_LOGI(TAG, "Auto-signing transaction ($%.2f <= limit %s)",
-                 static_cast<double>(req.amount_cents) / 100.0,
-                 m_policy.limit_to_string());
+    Events::Event req{};
+    req.type = Events::EventType::TX_REQUEST;
+    req.data.confirm = summary;
+    if (!Events::post(Events::g_ui_queue, req, pdMS_TO_TICKS(200))) {
+        ESP_LOGE(TAG, "UI queue full — cannot show confirmation");
+        m_pending_id.store(0);
+        xSemaphoreGive(m_confirm_mutex);
+        return SignStatus::SIGN_FAILED;
     }
 
-    // === SIGN ===
-    Crypto::Signature sig{};
-    auto sign_result = m_core.sign(
-        std::span<const uint8_t>(req.data, req.data_len),
-        sig
-    );
-
-    if (sign_result != WalletResult::OK) {
-        ESP_LOGE(TAG, "Signing failed");
-        result.error = sign_result;
-        return result;
-    }
-
-    // Reset session timer on activity
-    reset_session_timer();
-
-    // Post TX_SIGNED event
-    Events::Event signed_evt{};
-    signed_evt.type = Events::EventType::TX_SIGNED;
-    Events::post(Events::g_ui_queue, signed_evt);
-
-    result.approved  = true;
-    result.signature = sig;
-    result.error     = WalletResult::OK;
-
-    ESP_LOGI(TAG, "Transaction signed successfully");
-    return result;
-}
-
-// ─── wait_for_confirmation ────────────────────────────────
-bool WalletManager::wait_for_confirmation(const TxRequest& req,
-                                           uint32_t timeout_ms) {
-    m_waiting_confirmation = true;
-
-    // Set event group bit: UI knows we're waiting
     if (Events::g_event_group) {
         xEventGroupSetBits(Events::g_event_group, Events::BIT_TX_PENDING);
     }
 
-    ButtonState btn{};
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
-    uint32_t press_start_ms = 0;
-    bool     pending_accept = false;
-    uint32_t accept_deadline_ms = 0;
+    SignStatus status = SignStatus::TIMED_OUT;
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    while (true) {
+        TickType_t now = xTaskGetTickCount();
+        if (static_cast<int32_t>(deadline - now) <= 0) break;
+        if (xQueueReceive(g_tx_confirm_queue, &reply, deadline - now) != pdTRUE) break;
+        if (reply.data.u32 != summary.request_id) continue;  // stale / foreign
 
-    while (xTaskGetTickCount() < deadline) {
-        TickType_t remaining = deadline - xTaskGetTickCount();
-        TickType_t wait = pdMS_TO_TICKS(25);
-        if (wait > remaining) wait = remaining;
-
-        if (::g_button_queue_ref &&
-            xQueueReceive(::g_button_queue_ref, &btn, wait) == pdTRUE) {
-
-            // Only B1 authorizes or rejects (TX_CONFIRM exclusive).
-            if (btn.id != ButtonId::B1_TX_BACK) continue;
-
-            if (btn.event == ButtonEvent::PRESS) {
-                press_start_ms = btn.timestamp_ms;
-                pending_accept = false;
-            } else if (btn.event == ButtonEvent::RELEASE) {
-                // Clean single tap candidate — defer accept to rule out a
-                // fast second press (double press) or a held long press.
-                pending_accept = true;
-                accept_deadline_ms = press_start_ms + 500;
-            } else {
-                // DOUBLE_PRESS or LONG_PRESS → reject.
-                if (Events::g_event_group) {
-                    xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
-                }
-                m_waiting_confirmation = false;
-                return false;
-            }
+        if (reply.type == Events::EventType::TX_APPROVED) {
+            status = SignStatus::APPROVED;
+            break;
         }
-
-        // Deferred accept — a clean single tap was confirmed.
-        uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-        if (pending_accept && now_ms >= accept_deadline_ms) {
-            if (Events::g_event_group) {
-                xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
-            }
-            m_waiting_confirmation = false;
-            return true;
+        if (reply.type == Events::EventType::TX_REJECTED) {
+            status = m_cancel_requested.exchange(false) ? SignStatus::CANCELLED
+                                                        : SignStatus::REJECTED;
+            break;
         }
     }
 
-    // Timeout
-    ESP_LOGW(TAG, "Confirmation timeout — rejecting transaction");
+    if (status == SignStatus::TIMED_OUT) {
+        // Tell the UI to drop the confirm screen for this request.
+        ESP_LOGW(TAG, "Confirmation #%lu timed out", static_cast<unsigned long>(summary.request_id));
+        Events::Event cancel{};
+        cancel.type = Events::EventType::TX_REJECTED;
+        cancel.data.u32 = summary.request_id;
+        Events::post(Events::g_ui_queue, cancel, pdMS_TO_TICKS(200));
+    }
+
     if (Events::g_event_group) {
         xEventGroupClearBits(Events::g_event_group, Events::BIT_TX_PENDING);
     }
-    m_waiting_confirmation = false;
-    return false;
+    m_pending_id.store(0);
+    xSemaphoreGive(m_confirm_mutex);
+    return status;
 }
 
-// ─── Policy ───────────────────────────────────────────────
-bool WalletManager::set_spend_limit(SpendLimit limit) {
-    return m_policy.set_limit(limit);
+bool WalletManager::cancel_pending() {
+    const uint32_t id = m_pending_id.load();
+    if (id == 0 || !g_tx_confirm_queue) return false;
+
+    m_cancel_requested.store(true);
+    Events::Event evt{};
+    evt.type = Events::EventType::TX_REJECTED;
+    evt.data.u32 = id;
+    Events::post(g_tx_confirm_queue, evt, pdMS_TO_TICKS(50));  // unblocks the waiter
+    Events::post(Events::g_ui_queue, evt, pdMS_TO_TICKS(50));  // closes TX_CONFIRM
+    ESP_LOGW(TAG, "Confirmation #%lu cancelled by requester", static_cast<unsigned long>(id));
+    return true;
 }
 
-SpendLimit WalletManager::get_spend_limit() const {
-    return m_policy.get_limit();
+// ─── Sign transaction (CRITICAL PATH) ─────────────────────
+SignResult WalletManager::sign_transaction(std::span<const uint8_t> message,
+                                           const SignContext& ctx) {
+    SignResult result{};
+
+    auto pubkey = m_core.get_pubkey();
+    if (!pubkey) {
+        result.status = SignStatus::NO_WALLET;
+        return result;
+    }
+
+    // 1. Parse the exact bytes that will be signed.
+    result.parse_error = TxParser::parse_transfer(message, *pubkey, result.parsed);
+    if (result.parse_error != TxParser::ParseError::OK) {
+        ESP_LOGE(TAG, "Refusing to sign: %s", TxParser::error_to_string(result.parse_error));
+        result.status = SignStatus::UNSUPPORTED_TX;
+        return result;
+    }
+    const auto& p = result.parsed;
+    if (p.asset == TxParser::Asset::USDC && p.mint_is_mainnet != ctx.mainnet) {
+        ESP_LOGE(TAG, "Refusing to sign: USDC mint is for %s but device is on %s",
+                 p.mint_is_mainnet ? "mainnet" : "devnet",
+                 ctx.mainnet ? "mainnet" : "devnet");
+        result.status = SignStatus::NETWORK_MISMATCH;
+        return result;
+    }
+
+    // 2. Build the on-screen summary from the parsed message.
+    Events::TxSummary summary{};
+    summary.kind    = Events::ConfirmKind::TRANSFER;
+    summary.mainnet = ctx.mainnet;
+    snprintf(summary.asset, sizeof(summary.asset), "%s",
+             p.asset == TxParser::Asset::SOL ? "SOL" : "USDC");
+    TxParser::format_units(p.amount, p.decimals, summary.amount, sizeof(summary.amount));
+    TxParser::format_units(p.fee_lamports, 9, summary.fee, sizeof(summary.fee));
+    // With an ATA create the parser has verified destination == ATA(owner),
+    // so show the owner wallet — what the user actually typed and recognises.
+    const Crypto::PubKey& shown = p.creates_token_account ? p.owner : p.destination;
+    std::string dest = Crypto::Base58::pubkey_to_address(
+        std::span<const uint8_t, 32>(shown.data(), 32));
+    snprintf(summary.recipient, sizeof(summary.recipient), "%s", dest.c_str());
+    summary.creates_account = p.creates_token_account;
+    if (p.creates_token_account) {
+        TxParser::format_units(p.rent_lamports, 9, summary.rent, sizeof(summary.rent));
+    }
+    // Display-only USD values. 1 lamport × (USD/SOL) = rate / 1000 micro-USD.
+    if (ctx.sol_usd > 0.0f) {
+        const double rate = static_cast<double>(ctx.sol_usd);
+        summary.sol_usd_cents = static_cast<uint32_t>(rate * 100.0 + 0.5);
+        summary.fee_usd_micro = static_cast<uint64_t>(
+            static_cast<double>(p.fee_lamports) * rate / 1000.0 + 0.5);
+        if (p.asset == TxParser::Asset::SOL) {
+            summary.usd_micro = static_cast<uint64_t>(
+                static_cast<double>(p.amount) * rate / 1000.0 + 0.5);
+        }
+        summary.price_live = ctx.price_live;
+    }
+    if (p.asset == TxParser::Asset::USDC) {
+        summary.usd_micro = p.amount;  // 6 decimals == micro-dollars
+    }
+
+    ESP_LOGI(TAG, "Confirm: %s %s -> %s (fee %s SOL, %s)%s",
+             summary.amount, summary.asset, summary.recipient, summary.fee,
+             ctx.mainnet ? "MAINNET" : "devnet",
+             summary.creates_account ? " + creates USDC account" : "");
+
+    // 3. Physical confirmation.
+    SignStatus decision = request_confirmation(summary);
+    if (decision != SignStatus::APPROVED) {
+        ESP_LOGW(TAG, "Not signing: %s", status_to_string(decision));
+        result.status = decision;
+        return result;
+    }
+
+    // 4. Sign the same bytes that were parsed and shown.
+    if (!m_core.is_unlocked() && m_core.unlock() != WalletResult::OK) {
+        result.status = SignStatus::SIGN_FAILED;
+        return result;
+    }
+    if (m_core.sign(message, result.signature) != WalletResult::OK) {
+        ESP_LOGE(TAG, "Signing failed");
+        result.status = SignStatus::SIGN_FAILED;
+        return result;
+    }
+
+    Events::Event signed_evt{};
+    signed_evt.type = Events::EventType::TX_SIGNED;
+    signed_evt.data.u32 = summary.request_id;
+    Events::post(Events::g_wallet_queue, signed_evt);
+
+    ESP_LOGI(TAG, "Transaction #%lu signed", static_cast<unsigned long>(summary.request_id));
+    result.status = SignStatus::SIGNED;
+    return result;
+}
+
+const char* WalletManager::status_to_string(SignStatus s) {
+    switch (s) {
+        case SignStatus::SIGNED:           return "signed";
+        case SignStatus::APPROVED:         return "approved";
+        case SignStatus::REJECTED:         return "rejected by user";
+        case SignStatus::CANCELLED:        return "cancelled";
+        case SignStatus::TIMED_OUT:        return "confirmation timed out";
+        case SignStatus::UNSUPPORTED_TX:   return "unsupported transaction";
+        case SignStatus::NETWORK_MISMATCH: return "network mismatch";
+        case SignStatus::BUSY:             return "another request pending";
+        case SignStatus::NO_WALLET:        return "no wallet";
+        case SignStatus::SIGN_FAILED:      return "signing failed";
+    }
+    return "unknown";
 }
 
 // ─── FreeRTOS task ────────────────────────────────────────
@@ -269,27 +233,15 @@ void WalletManager::run() {
     ESP_LOGI(TAG, "WalletManager task started");
     Events::Event evt{};
     while (true) {
-        // Wait for wallet events
-        if (Events::g_wallet_queue &&
-            xQueueReceive(Events::g_wallet_queue, &evt,
-                         pdMS_TO_TICKS(1000)) == pdTRUE) {
-
-            switch (evt.type) {
-                case Events::EventType::TX_REQUEST: {
-                    // Reconstruct TxRequest from event
-                    TxRequest req{};
-                    std::memcpy(req.data, evt.data.tx.tx_data,
-                                std::min<size_t>(evt.data.tx.tx_len, sizeof(req.data)));
-                    req.data_len     = evt.data.tx.tx_len;
-                    req.amount_cents = evt.data.tx.amount_cents;
-                    request_signature(req);
-                    break;
-                }
-                default:
-                    break;
-            }
+        // Signing runs in the caller's task (sign_transaction); this loop
+        // only drains lifecycle notifications so g_wallet_queue never fills.
+        if (!Events::g_wallet_queue) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
         }
-        // Session timer runs independently via FreeRTOS timer callback
+        if (xQueueReceive(Events::g_wallet_queue, &evt, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGD(TAG, "Wallet event 0x%04lx", static_cast<unsigned long>(evt.type));
+        }
     }
 }
 

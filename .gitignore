@@ -7,6 +7,8 @@
 docs/
 Agent.md
 Memory.md
+__pycache__/
+.superstack/
 
 
 # Art sources stay local (converted copies live in firmware/ as .hpp)
