@@ -83,6 +83,32 @@ account and adds an ATA `CreateIdempotent` instruction; you pay the rent
 ATA, then shows **TO WALLET** + the wallet address and a yellow
 "+ new USDC acct" line.
 
+## Wardrobe (marketplace wearables on the Yeti)
+
+Firmware with `caps` `wardrobe_v1` gets a **Wardrobe** card in the Device tab.
+
+1. Copy `config.example.js` to `config.local.js` (gitignored) and fill in the
+   fuchey.xyz Supabase URL and anon key (both public; RLS only exposes
+   published wearables and saved looks).
+2. On connect the page reads Fuchey's wallet + linked wallets, finds the
+   Metaplex Core assets they own on the device's network
+   (`getProgramAccounts` on the Core program, owner at offset 1; an item
+   counts only if its collection is a wearable's `nft[network].collection`),
+   converts each owned, Yeti-compatible wearable's `visual` into a small
+   `FWR1` item file and installs it. Items no wallet owns any more are deleted
+   (Fuchey takes them off too). Files are compared by CRC32, so changed art
+   is re-sent.
+3. **Wear / Take off** sets `wear.<slot>`; **Use my website look** copies the
+   wallet's saved Yeti loadout (owned items only); **Add my Phantom wallet**
+   asks Phantom/Solflare to sign `Link <wallet> to Fuchey <device>` (a plain
+   message, no transaction), verifies it, then adds the address to
+   `linked_wallets`.
+
+Nothing here signs on Fuchey or touches funds: items are cosmetic data
+stored on the device's LittleFS partition (8 MB) and drawn around the home
+Yeti. The public mainnet RPC refuses `getProgramAccounts`; set your own
+mainnet RPC in Settings to sync there.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -121,13 +147,20 @@ One line per message on the USB console, mixed with log lines:
 | `{"id":15,"cmd":"wallet_create_tap","pos":3}` | confirm the asked word on the device's grid; after 3 correct the wallet is stored |
 | `{"id":16,"cmd":"wallet_create_cancel"}` | `ok` (nothing stored) |
 | `{"id":17,"cmd":"set_network","network":"mainnet"}` | event `awaiting_confirmation {network}`, then `ok, network, changed` after B1 — or `rejected` / `timeout` / `busy` |
+| `{"id":18,"cmd":"item_begin","id":"frost-scarf","size":1413,"crc":305419896}` | `ok, chunk:1024` — starts an item upload (`FWR1` file) |
+| `{"id":19,"cmd":"item_chunk","id":"frost-scarf","seq":0,"data":"<base64 ≤1024 B>"}` | `ok` — `seq` 0,1,2… in order |
+| `{"id":20,"cmd":"item_end","id":"frost-scarf"}` | `ok` once size, CRC32, format and id check out (else `bad_size` / `bad_crc` / `bad_format`) |
+| `{"id":21,"cmd":"item_list"}` | `items:[{id, slot, z, bytes, crc}], used, total` |
+| `{"id":22,"cmd":"item_delete","id":"frost-scarf"}` | `ok, existed` — also takes it off |
+| `{"id":23,"cmd":"get_settings"}` | `settings:{"wear.<slot>": id\|"none", …, linked_wallets:[…]}` |
+| `{"id":24,"cmd":"set_setting","key":"wear.hat","value":"blue-beanie"}` | `ok` (installed item of that slot, or `"none"`); `key:"linked_wallets", value:[addresses]` (≤ 8) |
 
 ### Command tiers
 
 | Tier | Commands | Rule |
 |---|---|---|
 | Read-only | `hello`, `get_pubkey`, `get_status`, `wifi_scan`, `show_address` | Always allowed. Never returns secrets (no WiFi password, no keys). |
-| Device settings | `set_wifi`, `set_location` (later: pet / wearable settings) | Allowed without a button press: they cannot move funds or touch keys. Refused while a signature is pending. Inputs are length/charset-checked. Secrets are write-only and never logged. |
+| Device settings | `set_wifi`, `set_location`, `item_*`, `set_setting` (wardrobe) | Allowed without a button press: they cannot move funds or touch keys. Refused while a signature is pending. Inputs are length/charset-checked. Secrets are write-only and never logged. |
 | Wallet creation | `wallet_create_*` | Only without a wallet. Words generated on the device and shown only on its screen (4 per page, B4/B3); the user confirms 3 random words via the grid (positions only). Stored only after confirmation; RAM wiped after. B1 or 5 min idle cancels. |
 | Phrase entry (grid) | `recovery_start`, `recovery_tap`, `recovery_cancel` | Only cell positions (0–8) travel over USB; letters/words exist only on the device screen and are reshuffled every tap. Check = compare with the stored wallet (changes nothing). Restore = only when no wallet exists. B1 on the device or 3 min idle cancels. |
 | Signing | `sign_tx`, `cancel` | Parsed by TxParser, shown on the TFT, approved only by a hardware B1 tap. |
