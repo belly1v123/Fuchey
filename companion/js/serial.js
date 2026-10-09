@@ -8,6 +8,12 @@ const PREFIX = "@@";
 const CHUNK = 256;          // bytes per write; gentle on the device RX buffer
 const CHUNK_DELAY_MS = 8;
 
+// USB vendor IDs Fuchey can appear under: the board's "COM" connector
+// (WCH CH343 bridge to UART0, where the firmware talks) and its native
+// "USB" connector (Espressif, flashing only on current firmware).
+const FUCHEY_VIDS = [0x1a86, 0x303a];
+const PORT_FILTERS = FUCHEY_VIDS.map((usbVendorId) => ({ usbVendorId }));
+
 // ── CRC32 (IEEE / zlib), identical to UsbProtocol::crc32 ──
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -54,25 +60,26 @@ export class FucheyDevice extends EventTarget {
     return this.port !== null;
   }
 
-  /** Show the browser's port picker (Espressif devices). */
+  /** Show the browser's port picker (Fuchey's COM bridge or native USB). */
   static pick() {
-    return navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    return navigator.serial.requestPort({ filters: PORT_FILTERS });
   }
 
   /** A Fuchey this site was already allowed to use (no picker), or null. */
   static async knownPort() {
     const ports = await navigator.serial.getPorts();
-    return ports.find((p) => p.getInfo().usbVendorId === 0x303a) || null;
+    return ports.find((p) => FUCHEY_VIDS.includes(p.getInfo().usbVendorId)) || null;
   }
 
   /** Open `port` (auto-reconnect) or ask the user to pick one. */
   async connect(port = null) {
-    // Espressif USB VID. The picker still lists others if absent.
-    this.port = port || await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    this.port = port || await navigator.serial.requestPort({ filters: PORT_FILTERS });
     await this.port.open({ baudRate: 115200, bufferSize: 16384 });
     try {
-      // "Run" line state: never the DTR/RTS pattern that resets into the bootloader.
-      await this.port.setSignals({ dataTerminalReady: true, requestToSend: false });
+      // Both lines released: the COM connector's auto-reset circuit pulls EN
+      // low on RTS and GPIO0 low on DTR, so either one alone would reset the
+      // board or hold it in the bootloader.
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
     } catch { /* not supported on every platform */ }
     this.port.addEventListener?.("disconnect", () => this._closed("disconnected"));
     this._readLoop();
