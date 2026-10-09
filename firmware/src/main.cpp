@@ -4,8 +4,8 @@
 // subsystem initialization, and FreeRTOS task pinning.
 // ============================================================
 
-#include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "esp_timer.h"
@@ -747,14 +747,13 @@ static void boot_screen() {
 }
 
 extern "C" void app_main(void) {
-    // Console = USB-Serial-JTAG. Install its driver so stdin reads block
-    // (fgets in the console task) and long companion frames (~2.4 KB) fit.
+    // Console = UART0 (the board's "COM" connector). Install its driver so
+    // stdin reads block (fgets in the console task) and long companion frames
+    // (~2.4 KB) fit.
     {
-        usb_serial_jtag_driver_config_t usj = {};
-        usj.tx_buffer_size = 4096;
-        usj.rx_buffer_size = 4096;
-        if (usb_serial_jtag_driver_install(&usj) == ESP_OK) {
-            usb_serial_jtag_vfs_use_driver();
+        const uart_port_t port = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
+        if (uart_driver_install(port, 4096, 4096, 0, nullptr, 0) == ESP_OK) {
+            uart_vfs_dev_use_driver(port);
         }
     }
     ESP_LOGI(TAG, "=================================================");
