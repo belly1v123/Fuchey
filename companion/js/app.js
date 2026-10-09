@@ -226,6 +226,13 @@ function renderConnected() {
   $("recovery").classList.toggle("hidden", !canRecover);
   const canCreate = Array.isArray(info.caps) && info.caps.includes("wallet_create");
   $("rec-title").textContent = info.has_wallet ? "Recovery words" : "Set up a wallet";
+  $("rec-summary").textContent = info.has_wallet
+    ? "Check your backup words against this Fuchey."
+    : "Create a new wallet or restore one from your words.";
+  fillList($("dev-summary"), [
+    ["Wallet", info.has_wallet ? shortAddr(info.pubkey) : "None yet"],
+    ["Firmware", `${info.fw} · protocol v${info.proto}`],
+  ]);
   $("btn-rec-check").classList.toggle("hidden", !info.has_wallet);
   $("btn-rec-restore").classList.toggle("hidden", info.has_wallet);
   $("btn-create").classList.toggle("hidden", info.has_wallet || !canCreate);
@@ -275,6 +282,7 @@ const rec = { active: false, purpose: null, busy: false, kind: "recovery", poll:
 
 function recShow(active) {
   rec.active = active;
+  if (active) setFold("rec-body", true);
   $("rec-idle").classList.toggle("hidden", active);
   $("rec-active").classList.toggle("hidden", !active);
 }
@@ -456,6 +464,26 @@ function buildRecGrid() {
 }
 
 // ── device setup (WiFi + weather location) ────────────────
+// <dl> from [term, value] pairs.
+function fillList(dl, pairs) {
+  dl.innerHTML = "";
+  for (const [k, v] of pairs) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+
+// Folded card bodies: the card shows a one-line summary until "Change"/"Open".
+function setFold(id, open) {
+  $(id).classList.toggle("hidden", !open);
+  const btn = document.querySelector(`[data-fold="${id}"]`);
+  if (!btn) return;
+  btn.dataset.label ??= btn.textContent;
+  btn.textContent = open ? "Close" : btn.dataset.label;
+  btn.setAttribute("aria-expanded", String(open));
+}
+
 function setMsg(id, text, ok = false) {
   const el = $(id);
   el.textContent = text;
@@ -466,20 +494,15 @@ function setMsg(id, text, ok = false) {
 async function refreshStatus() {
   try {
     const st = await device.getStatus();
-    const dl = $("setup-status");
-    dl.innerHTML = "";
     const wifi = !st.wifi.configured ? "Not set up"
       : st.wifi.online ? `Connected to "${st.wifi.ssid}"`
       : st.wifi.connected ? `Joining "${st.wifi.ssid}"…`
       : `Not connected ("${st.wifi.ssid}" saved)`;
     const loc = st.location.configured
-      ? `${st.location.city} (${st.location.lat.toFixed(3)}, ${st.location.lon.toFixed(3)})`
+      ? st.location.city
       : "Not set (using the default)";
-    for (const [k, v] of [["WiFi", wifi], ["Weather location", loc]]) {
-      const dt = document.createElement("dt"); dt.textContent = k;
-      const dd = document.createElement("dd"); dd.textContent = v;
-      dl.append(dt, dd);
-    }
+    $("wifi-summary").textContent = wifi;
+    $("loc-summary").textContent = loc;
     if (!$("wifi-ssid").value && st.wifi.ssid) $("wifi-ssid").value = st.wifi.ssid;
     return st;
   } catch (e) {
@@ -662,7 +685,7 @@ let currentTab = "wallet";
 function showTab(name) {
   currentTab = name;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
-  for (const n of ["wallet", "device", "settings"]) $(`tab-${n}`).classList.toggle("hidden", n !== name);
+  for (const n of ["wallet", "wardrobe", "device", "settings"]) $(`tab-${n}`).classList.toggle("hidden", n !== name);
   $("intro").classList.toggle("hidden", !!state.info || name !== "wallet");
 }
 
@@ -1091,6 +1114,9 @@ function init() {
     t.addEventListener("click", () => showTab(t.dataset.tab));
   }
   showTab("wallet");
+  for (const b of document.querySelectorAll("[data-fold]")) {
+    b.addEventListener("click", () => setFold(b.dataset.fold, $(b.dataset.fold).classList.contains("hidden")));
+  }
   $("send-form").addEventListener("submit", onSend);
   $("btn-status").addEventListener("click", refreshStatus);
   $("btn-net").addEventListener("click", onNetworkSwitch);
