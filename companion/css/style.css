@@ -194,7 +194,7 @@ details label { margin-top: 12px; }
 /* ── Bottom tabs ───────────────────────────────────────── */
 .tabbar {
   position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
-  width: 100%; max-width: 460px; display: grid; grid-template-columns: repeat(3, 1fr);
+  width: 100%; max-width: 460px; display: grid; grid-template-columns: repeat(4, 1fr);
   background: var(--paper); border-top: var(--line);
   padding: 0 0 env(safe-area-inset-bottom); z-index: 4;
 }
@@ -233,10 +233,6 @@ details label { margin-top: 12px; }
   font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em;
 }
 
-/* Device card spacing */
-#setup .row.wrap { margin-bottom: 14px; }
-#btn-loc-here { margin: 12px 0 4px; }
-#loc-form + #btn-loc-here { display: inline-block; }
 
 /* Connecting state (replaces steps + button while a connection is in progress) */
 .connecting {
@@ -252,15 +248,60 @@ details label { margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) { .loader i { animation: none; } }
 .empty.is-connecting .steps, .empty.is-connecting #btn-connect { display: none; }
 
+/* ── Device cards ──────────────────────────────────────── */
+.tab-panel { display: grid; gap: 16px; align-content: start; }
+.stack { display: grid; gap: 16px; }
+.card-head { display: flex; gap: 12px; align-items: center; }
+.card-head h2 { margin: 0 0 4px; }
+.summary { font-size: 14px; overflow-wrap: anywhere; }
+.fold-body { display: grid; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 2px dashed var(--paper-2); }
+.fold-body > p { margin: 0; }
+#wifi-msg, #loc-msg, #rec-msg, #net-msg { margin: 10px 0 0; }
+#btn-loc-here { justify-self: start; }
+
+/* Folded extras (collection, linked wallets) */
+details.fold { box-shadow: var(--shadow-sm); }
+details.fold summary { display: flex; justify-content: space-between; align-items: center; list-style: none; }
+details.fold summary::-webkit-details-marker { display: none; }
+details.fold summary::after { content: "+"; font-size: 16px; }
+details.fold[open] summary::after { content: "−"; }
+details.fold[open] summary { margin-bottom: 12px; }
+details.fold summary .count { margin-left: auto; margin-right: 10px; color: var(--ink-2); }
+#btn-wr-phantom { margin: 10px 0 2px; }
+
 /* ── Wardrobe ──────────────────────────────────────────── */
+.wr-hero { display: grid; gap: 12px; }
+.wr-hero h2 { margin: 0; }
+.wr-hero p { margin: 0; }
 .wr-stage { display: grid; place-items: center; background: var(--paper-2); border: var(--line); border-radius: var(--r); padding: 8px; }
 .wr-preview { width: 232px; height: 232px; image-rendering: pixelated; }
-.wr-items { display: grid; gap: 8px; margin: 8px 0 12px; }
-.wr-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: var(--line); border-radius: var(--r); background: var(--card); }
-.wr-item.wearing { background: #fff3c4; }
-.wr-thumb { width: 58px; height: 58px; flex: none; image-rendering: pixelated; background: var(--paper-2); border-radius: 3px; }
-.wr-text { flex: 1; min-width: 0; }
-.wr-name { font-weight: 700; font-size: 14px; }
+.wr-worn { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.wr-worn p { margin: 0; flex: 1; }
+.wr-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px;
+  font-size: 12px; font-weight: 600; background: #fff3c4; box-shadow: none;
+}
+.wr-chip-slot { font: 800 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); }
+.wr-filters { display: flex; gap: 6px; overflow-x: auto; padding: 2px 4px 4px 0; }
+.wr-filter { flex: none; padding: 6px 12px; font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .05em; box-shadow: none; }
+.wr-filter.active { background: var(--ink); color: var(--paper); }
+.wr-filter.active:hover { background: var(--ink); }
+.wr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 10px; }
+.wr-grid .wr-none { grid-column: 1 / -1; margin: 0; }
+.wr-tile {
+  position: relative; display: grid; justify-items: center; gap: 4px; padding: 10px 8px 10px;
+  text-align: center; font-weight: 500;
+}
+.wr-tile.wearing { background: #fff3c4; box-shadow: var(--shadow); }
+.wr-tile:disabled { opacity: .7; }
+.wr-thumb { width: 84px; height: 84px; image-rendering: pixelated; background: var(--paper-2); border-radius: 3px; }
+.wr-name { font-weight: 700; font-size: 13px; line-height: 1.25; }
+.wr-badge {
+  position: absolute; top: 6px; right: 6px; padding: 3px 5px; border-radius: 3px;
+  font: 800 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .05em;
+  background: var(--ink); color: var(--paper);
+}
+.wr-badge.err { background: var(--red); }
 .wr-wallet { padding: 4px 0; }
 .wr-wallet code { font-size: 13px; }
 .col-list { display: grid; gap: 6px; margin: 8px 0; }

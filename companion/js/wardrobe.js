@@ -31,6 +31,7 @@ const wr = {
   owned: new Map(),      // id → { wearable, assets, file, item }
   collection: null,      // every owned Fuchey NFT (fucheyCollection), null = not read yet
   installed: new Map(),  // id → { slot, crc }
+  filter: "all",         // item grid: "all" or a slot
 };
 
 // ── config (companion/config.local.js, gitignored) ────────
@@ -135,37 +136,91 @@ function wornItems() {
 }
 
 // ── render ────────────────────────────────────────────────
+const slotName = (slot) => slot[0].toUpperCase() + slot.slice(1);
+
+// What Yeti has on, one chip per slot; tapping a chip takes it off.
+function renderWorn() {
+  const box = $("wr-worn");
+  box.innerHTML = "";
+  for (const slot of SLOTS) {
+    const id = wr.worn[slot];
+    const o = id && wr.owned.get(id);
+    if (!o) continue;
+    const chip = document.createElement("button");
+    chip.className = "wr-chip";
+    chip.title = `Take off ${o.wearable.name}`;
+    chip.disabled = wr.syncing;
+    chip.innerHTML = '<span class="wr-chip-slot"></span><span></span><span aria-hidden="true">×</span>';
+    chip.children[0].textContent = slotName(slot);
+    chip.children[1].textContent = o.wearable.name;
+    chip.addEventListener("click", () => wear(slot, "none"));
+    box.append(chip);
+  }
+  if (!box.children.length) box.innerHTML = '<p class="muted small center">Nothing on. Tap an item below to wear it.</p>';
+}
+
+// "All" plus one filter per slot that has items.
+function renderFilters(items) {
+  const box = $("wr-filters");
+  box.innerHTML = "";
+  const slots = SLOTS.filter((s) => items.some((o) => SLOTS[o.item?.slot ?? 0] === s));
+  if (wr.filter !== "all" && !slots.includes(wr.filter)) wr.filter = "all";
+  box.classList.toggle("hidden", slots.length < 2);
+  for (const s of ["all", ...slots]) {
+    const b = document.createElement("button");
+    b.className = `wr-filter${wr.filter === s ? " active" : ""}`;
+    b.setAttribute("aria-pressed", String(wr.filter === s));
+    b.textContent = s === "all" ? `All ${items.length}` : slotName(s);
+    b.addEventListener("click", () => { wr.filter = s; render(); });
+    box.append(b);
+  }
+}
+
+function itemTile(o) {
+  const w = o.wearable;
+  const slot = SLOTS[o.item?.slot ?? 0];
+  const wearing = wr.worn[slot] === w.id;
+  const ready = wr.installed.has(w.id);
+  const tile = document.createElement("button");
+  tile.className = `wr-tile${wearing ? " wearing" : ""}`;
+  tile.disabled = !ready || wr.syncing;
+  tile.setAttribute("aria-pressed", String(wearing));
+  tile.title = !ready ? (o.error ? `Not on Fuchey: ${o.error}` : "Installing on Fuchey…")
+    : wearing ? `Take off ${w.name}` : `Wear ${w.name}`;
+  const cv = document.createElement("canvas");
+  cv.className = "wr-thumb";
+  if (o.item) drawLook(cv, [o.item]);
+  const name = document.createElement("div");
+  name.className = "wr-name";
+  name.textContent = w.name;
+  const tag = document.createElement("div");
+  tag.className = "muted tiny";
+  tag.textContent = slotName(slot);
+  tile.append(cv, name, tag);
+  const badge = wearing ? "On" : !ready ? (o.error ? "Not on Fuchey" : "Installing…") : "";
+  if (badge) {
+    const b = document.createElement("span");
+    b.className = `wr-badge${o.error ? " err" : ""}`;
+    b.textContent = badge;
+    tile.append(b);
+  }
+  tile.addEventListener("click", () => wear(slot, wearing ? "none" : w.id));
+  return tile;
+}
+
 function render() {
   drawLook($("wr-preview"), wornItems());
+  renderWorn();
+  const items = [...wr.owned.values()].sort((a, b) => a.item?.slot - b.item?.slot);
+  renderFilters(items);
   const list = $("wr-items");
   list.innerHTML = "";
-  if (!wr.owned.size) {
-    list.innerHTML = '<p class="muted small">No wearables yet. Items you buy on fuchey.xyz with this ' +
+  if (!items.length) {
+    list.innerHTML = '<p class="muted small wr-none">No wearables yet. Items you buy on fuchey.xyz with this ' +
       "Fuchey's wallet (or a linked wallet) show up here.</p>";
   }
-  const sorted = [...wr.owned.values()].sort((a, b) => a.item?.slot - b.item?.slot);
-  for (const o of sorted) {
-    const w = o.wearable;
-    const slot = SLOTS[o.item?.slot ?? 0];
-    const wearing = wr.worn[slot] === w.id;
-    const ready = wr.installed.has(w.id);
-    const card = document.createElement("div");
-    card.className = `wr-item${wearing ? " wearing" : ""}`;
-    const cv = document.createElement("canvas");
-    cv.className = "wr-thumb";
-    if (o.item) drawLook(cv, [o.item]);
-    const text = document.createElement("div");
-    text.className = "wr-text";
-    text.innerHTML = `<div class="wr-name"></div><div class="muted tiny"></div>`;
-    text.firstChild.textContent = w.name;
-    text.lastChild.textContent = ready ? slot : `${slot} · ${o.error ? `not installed: ${o.error}` : "installing…"}`;
-    const btn = document.createElement("button");
-    btn.className = wearing ? "ghost small" : "primary small";
-    btn.textContent = wearing ? "Take off" : "Wear";
-    btn.disabled = !ready || wr.syncing;
-    btn.addEventListener("click", () => wear(slot, wearing ? "none" : w.id));
-    card.append(cv, text, btn);
-    list.append(card);
+  for (const o of items) {
+    if (wr.filter === "all" || SLOTS[o.item?.slot ?? 0] === wr.filter) list.append(itemTile(o));
   }
 
   renderCollection();
@@ -187,6 +242,7 @@ function render() {
     wl.append(row);
   }
   if (!wr.wallets.length) wl.innerHTML = '<p class="muted tiny">None. Only this Fuchey\'s own wallet is checked.</p>';
+  $("wr-wallet-count").textContent = wr.wallets.length || "";
   for (const id of ["btn-wr-sync", "btn-wr-website", "btn-wr-phantom"]) $(id).disabled = wr.syncing;
 }
 
@@ -212,6 +268,7 @@ function renderCollection() {
   const list = $("col-list");
   list.innerHTML = "";
   const n = wr.collection.reduce((sum, e) => sum + e.assets.length, 0);
+  $("col-count").textContent = n || "";
   $("col-summary").textContent = n
     ? `${n} Fuchey NFT${n === 1 ? "" : "s"} on ${wr.network}`
     : `No Fuchey NFTs on ${wr.network} in these wallets yet.`;
@@ -502,6 +559,8 @@ export function init(c) {
 export function onConnected(info, network) {
   const can = Array.isArray(info.caps) && info.caps.includes("wardrobe_v1");
   $("wardrobe").classList.toggle("hidden", !can);
+  $("wardrobe-empty").classList.toggle("hidden", can);
+  $("wardrobe-empty").textContent = "This Fuchey's firmware has no wardrobe yet.";
   if (!can) return;
   wr.info = info;
   wr.network = network;
@@ -516,4 +575,6 @@ export function onDisconnected() {
   wr.syncing = false;
   $("wardrobe").classList.add("hidden");
   $("collection").classList.add("hidden");
+  $("wardrobe-empty").classList.remove("hidden");
+  $("wardrobe-empty").textContent = "Connect your Fuchey to dress up its Yeti.";
 }
