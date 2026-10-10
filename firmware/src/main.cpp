@@ -44,6 +44,7 @@
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
+#include "../lib/balance/IncomingWatcher.hpp"
 #include "../lib/protocol/UsbProtocol.hpp"
 #include "../lib/wearables/ItemStore.hpp"
 #include "../lib/wearables/Wardrobe.hpp"
@@ -98,6 +99,7 @@ static const char* get_usdc_mint() {
 }
 
 static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
+static Fuchey::IncomingWatcher s_incoming(s_balance_monitor, s_wifi_manager);
 
 static bool is_mainnet() { return !s_is_devnet; }
 
@@ -921,6 +923,8 @@ extern "C" void app_main(void) {
 
     // Wire BalanceMonitor to UIManager for on-demand balance fetch
     s_ui.set_balance_monitor(&s_balance_monitor);
+    // Incoming money → FUNDS_RECEIVED → happy Yeti + chirp on HOME.
+    s_incoming.start();
 
     // Wire PriceService to UIManager for cached 24h market data (no HTTP on UI task)
     s_ui.set_price_service(&s_price_service);
