@@ -1858,7 +1858,7 @@ void UIManager::render_home() {
     static constexpr Color kClock = 0xFFE0;  // yellow
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    // Mood anim: idle Yeti (96x96 drawn at 1.25x) vs DND / Happy Yeti
+    // Mood anim: idle / Happy Yeti (96x96 drawn at 1.25x) vs DND Yeti
     // (120x120); all fill the same 120x120 box at (133,111) (see draw_home_yeti).
     const Mood mood = m_behaviour.home_mood(now, m_dnd_mode);
     const SpriteAnim* want_anim = mood == Mood::Dnd   ? &DndAnim
@@ -2050,7 +2050,8 @@ void UIManager::render_home() {
 // yeti.png) drawn at 1.25× into the old 120×120 box, with every worn
 // item's back layer behind and front layer on top. The idle animation
 // bobs the upper body; kYetiIdleDy moves the items with it.
-// DND and Happy moods keep their own 120×120 art (different poses): no items.
+// DND keeps its own 120×120 art and Happy its own 96×96 frames (drawn at
+// 1.25× like idle); both are different poses, so no items.
 namespace {
 constexpr int kHomeYetiX = 133, kHomeYetiY = 111;      // same box as before
 constexpr int kHomeScaleNum = 5, kHomeScaleDen = 4;    // 96 → 120
@@ -2087,10 +2088,16 @@ void UIManager::home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) co
 void UIManager::draw_home_yeti(uint8_t frame) {
     const SpritePixel* f = m_home_yeti.frame_data(frame);
     if (f == nullptr) return;
-    if (m_home_mood != Mood::Idle) {
-        // DND / Happy: own 120x120 art in a different pose, so no items.
-        m_display.draw_sprite_transparent(kHomeYetiX, kHomeYetiY, 120, 120,
+    if (m_home_mood == Mood::Dnd) {
+        // DND: own 120x120 art in a different pose, so no items.
+        m_display.draw_sprite_transparent(kHomeYetiX, kHomeYetiY, DndAnim.w, DndAnim.h,
                                           f, kHomeTransparent);
+        return;
+    }
+    if (m_home_mood == Mood::Happy) {
+        // Happy: 96 grid like idle, drawn at the same 1.25x; arms-up pose, no items.
+        m_display.draw_sprite_scaled_transparent(kHomeYetiX, kHomeYetiY, HappyAnim.w, HappyAnim.h,
+                                                 f, kHomeTransparent, kHomeScaleNum, kHomeScaleDen);
         return;
     }
     const CharacterPose pose = home_pose(frame);
