@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include <algorithm>
 #include <climits>
+#include <cstring>
 
 namespace Fuchey {
 
@@ -19,6 +20,17 @@ constexpr const char* TAG = "WearRenderer";
 inline int scale_floor(int v, int num, int den) {
     const int n = v * num;
     return n >= 0 ? n / den : -((-n + den - 1) / den);
+}
+
+// Items that sit on the head and can follow it into any clip.
+inline bool head_slot(uint8_t slot) {
+    if (slot >= WEAR_SLOT_COUNT) return false;
+    return std::strcmp(WEAR_SLOTS[slot], "hat") == 0 ||
+           std::strcmp(WEAR_SLOTS[slot], "headwear") == 0;
+}
+
+inline bool drawn(const WearItem& it, const CharacterPose& p) {
+    return !p.head_only || head_slot(it.slot);
 }
 } // namespace
 
@@ -70,6 +82,7 @@ void WearRenderer::draw_runs(Display& d, const CharacterPose& p,
 
 void WearRenderer::draw_back(Display& d, const CharacterPose& p) const {
     for (const WearItem& it : m_items) {
+        if (!drawn(it, p)) continue;
         int dx, dy;
         offset_for(it, p, dx, dy);
         draw_runs(d, p, it.back, dx, dy);
@@ -78,6 +91,7 @@ void WearRenderer::draw_back(Display& d, const CharacterPose& p) const {
 
 void WearRenderer::draw_front(Display& d, const CharacterPose& p) const {
     for (const WearItem& it : m_items) {
+        if (!drawn(it, p)) continue;
         int dx, dy;
         offset_for(it, p, dx, dy);
         draw_runs(d, p, it.front, dx, dy);
@@ -88,6 +102,7 @@ bool WearRenderer::bounds(const CharacterPose& p, int& x, int& y, int& w, int& h
     const int num = p.scale_num, den = p.scale_den > 0 ? p.scale_den : 1;
     int x0 = INT_MAX, y0 = INT_MAX, x1 = INT_MIN, y1 = INT_MIN;
     for (const WearItem& it : m_items) {
+        if (!drawn(it, p)) continue;
         int dx, dy;
         offset_for(it, p, dx, dy);
         for (const auto* runs : {&it.back, &it.front}) {
