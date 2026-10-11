@@ -29,6 +29,9 @@ struct CharacterPose {
     // Items that start at or below this grid row (e.g. something standing
     // by the feet) stay put: the frame offset only moves the upper body.
     int still_from_y{1 << 20};
+    // Only head items (hat, headwear): for clips whose body pose differs
+    // from idle, where outfits / backpacks / held items would not line up.
+    bool head_only{false};
 };
 
 class WearRenderer {

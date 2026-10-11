@@ -9,6 +9,7 @@
 #include "YetiIdle96.hpp"
 #include "DndAnim.hpp"
 #include "HappyAnim.hpp"
+#include "HeadAnchors.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
@@ -2051,7 +2052,9 @@ void UIManager::render_home() {
 // item's back layer behind and front layer on top. The idle animation
 // bobs the upper body; kYetiIdleDy moves the items with it.
 // DND keeps its own 120×120 art and Happy its own 96×96 frames (drawn at
-// 1.25× like idle); both are different poses, so no items.
+// 1.25× like idle). Their body poses differ, so only head items (hat,
+// headwear) are worn there, shifted by the clip's measured head offset
+// (HeadAnchors.hpp, from scripts/head_anchors.py).
 namespace {
 constexpr int kHomeYetiX = 133, kHomeYetiY = 111;      // same box as before
 constexpr int kHomeScaleNum = 5, kHomeScaleDen = 4;    // 96 → 120
@@ -2073,10 +2076,21 @@ CharacterPose home_pose(uint8_t frame) {
 }
 } // namespace
 
+CharacterPose UIManager::home_item_pose(uint8_t frame) const {
+    if (m_home_mood == Mood::Idle) return home_pose(frame);
+    const HeadAnchors& a = m_home_mood == Mood::Dnd ? DndAnimHead : HappyAnimHead;
+    CharacterPose p = home_pose(0);
+    p.dx = frame < a.frames ? a.dx[frame] : 0;
+    p.dy = frame < a.frames ? a.dy[frame] : 0;
+    p.still_from_y = 1 << 20;   // head items: move with the head
+    p.head_only = true;
+    return p;
+}
+
 void UIManager::home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const {
     x = kHomeYetiX; y = kHomeYetiY; w = 120; h = 120;
     int ix, iy, iw, ih;
-    if (m_home_mood == Mood::Idle && m_wear.bounds(home_pose(frame), ix, iy, iw, ih)) {
+    if (m_wear.bounds(home_item_pose(frame), ix, iy, iw, ih)) {
         const int r = std::max(x + w, ix + iw), b = std::max(y + h, iy + ih);
         x = std::min(x, ix);
         y = std::min(y, iy);
@@ -2088,20 +2102,21 @@ void UIManager::home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) co
 void UIManager::draw_home_yeti(uint8_t frame) {
     const SpritePixel* f = m_home_yeti.frame_data(frame);
     if (f == nullptr) return;
+    const CharacterPose pose = home_item_pose(frame);
+    m_wear.draw_back(m_display, pose);
     if (m_home_mood == Mood::Dnd) {
-        // DND: own 120x120 art in a different pose, so no items.
         m_display.draw_sprite_transparent(kHomeYetiX, kHomeYetiY, DndAnim.w, DndAnim.h,
                                           f, kHomeTransparent);
+        m_wear.draw_front(m_display, pose);
         return;
     }
     if (m_home_mood == Mood::Happy) {
-        // Happy: 96 grid like idle, drawn at the same 1.25x; arms-up pose, no items.
+        // 96 grid like idle, drawn at the same 1.25x.
         m_display.draw_sprite_scaled_transparent(kHomeYetiX, kHomeYetiY, HappyAnim.w, HappyAnim.h,
                                                  f, kHomeTransparent, kHomeScaleNum, kHomeScaleDen);
+        m_wear.draw_front(m_display, pose);
         return;
     }
-    const CharacterPose pose = home_pose(frame);
-    m_wear.draw_back(m_display, pose);
     m_display.draw_sprite_scaled_transparent(kHomeYetiX, kHomeYetiY, YetiIdle96.w, YetiIdle96.h,
                                              f, kHomeTransparent, kHomeScaleNum, kHomeScaleDen);
     m_wear.draw_front(m_display, pose);

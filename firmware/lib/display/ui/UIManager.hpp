@@ -217,6 +217,7 @@ private:
     WearRenderer m_wear;
     // Screen box the home Yeti + items covered last frame (restore/flush).
     int         m_home_yx{0}, m_home_yy{0}, m_home_yw{0}, m_home_yh{0};
+    CharacterPose home_item_pose(uint8_t frame) const;   // worn items for the current mood
     void        home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const;
     void        draw_home_yeti(uint8_t frame);
     // Scrambled-grid recovery: drawn straight from the shared controller.
