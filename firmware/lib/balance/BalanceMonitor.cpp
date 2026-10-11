@@ -83,9 +83,11 @@ bool BalanceMonitor::fetch_raw(const Target& t, uint64_t& lamports, uint64_t& us
     if (t.addr.empty() || !m_wifi.has_ip()) return false;
     char req[512];
 
+    // "confirmed" (not the default "finalized") so a just-arrived payment shows
+    // up as soon as IncomingWatcher's live notification does.
     // SOL: result.value is the lamport count (exact in a double below 2^53).
     snprintf(req, sizeof(req),
-             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\"]}",
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"%s\",{\"commitment\":\"confirmed\"}]}",
              t.addr.c_str());
     auto resp = m_wifi.post_json(t.rpc.c_str(), req);
     if (!resp.success) return false;
@@ -102,7 +104,7 @@ bool BalanceMonitor::fetch_raw(const Target& t, uint64_t& lamports, uint64_t& us
     // the mint. No account at all is a valid zero.
     snprintf(req, sizeof(req),
              "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\","
-             "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\"}]}",
+             "\"params\":[\"%s\",{\"mint\":\"%s\"},{\"encoding\":\"jsonParsed\",\"commitment\":\"confirmed\"}]}",
              t.addr.c_str(), t.mint.c_str());
     resp = m_wifi.post_json(t.rpc.c_str(), req);
     if (!resp.success) return false;
