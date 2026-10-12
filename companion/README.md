@@ -83,7 +83,7 @@ account and adds an ATA `CreateIdempotent` instruction; you pay the rent
 ATA, then shows **TO WALLET** + the wallet address and a yellow
 "+ new USDC acct" line.
 
-## Wardrobe (marketplace wearables on the Yeti)
+## Wardrobe (marketplace characters and wearables)
 
 Firmware with `caps` `wardrobe_v1` gets a **Wardrobe** card in the Device tab.
 
@@ -103,6 +103,31 @@ Firmware with `caps` `wardrobe_v1` gets a **Wardrobe** card in the Device tab.
    asks Phantom or Solflare (your choice when both are installed) to sign `Link <wallet> to Fuchey <device>` (a plain
    message, no transaction), verifies it, then adds the address to
    `linked_wallets`.
+
+### Characters (firmware cap `characters_v1`)
+
+The Wardrobe tab starts with a character picker: the built-in **Yeti** (always
+there) plus every character the wallets own (a Core asset in the character's
+`nft[network].collection`). Picking one:
+
+1. sends its **character pack** if Fuchey doesn't have this version
+   (`char_list` CRC; `char_begin` / `char_chunk` / `char_end`, ~280 KB for
+   the Rhino, about half a minute);
+2. sets `character` on Fuchey, whose home screen then shows it (idle, the
+   happy cheer and DND) with its own look;
+3. installs the owned wearables whose `compatible_characters` include it,
+   resolved with its `visual.perCharacter` override (`item_begin` /
+   `item_list` / `item_delete` take `character`; items live per character).
+
+Each character keeps its own `wear.<slot>` look on Fuchey, so switching back
+to the Yeti brings its outfit back. `wear.*` in `get_settings` /
+`set_setting` always means the character on screen.
+
+Packs live in `packs/` (listed in `packs/index.json`) and are built from the
+local art in `Assets/` with `scripts/make_character_pack.py` (format in
+firmware `lib/wearables/CharacterPack.hpp`). A character without a pack shows
+greyed out ("No Fuchey art yet"). **Settings → Developer → Show every
+character** also offers characters you don't own, for testing.
 
 Nothing here signs on Fuchey or touches funds: items are cosmetic data
 stored on the device's LittleFS partition (8 MB) and drawn around the home

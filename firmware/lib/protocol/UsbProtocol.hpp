@@ -151,10 +151,14 @@ private:
     void cmd_wallet_create_cancel(uint32_t id);
     void create_reply_state(uint32_t id);
     void cmd_item_begin(uint32_t id, cJSON* req);
-    void cmd_item_chunk(uint32_t id, cJSON* req);
-    void cmd_item_end(uint32_t id, cJSON* req);
-    void cmd_item_list(uint32_t id);
+    // item_chunk / item_end, and char_chunk / char_end with field "char".
+    void cmd_item_chunk(uint32_t id, cJSON* req, const char* field = "item");
+    void cmd_item_end(uint32_t id, cJSON* req, const char* field = "item");
+    void cmd_item_list(uint32_t id, cJSON* req);
     void cmd_item_delete(uint32_t id, cJSON* req);
+    void cmd_char_begin(uint32_t id, cJSON* req);
+    void cmd_char_list(uint32_t id);
+    void cmd_char_delete(uint32_t id, cJSON* req);
     void cmd_get_settings(uint32_t id);
     void cmd_set_setting(uint32_t id, cJSON* req);
 

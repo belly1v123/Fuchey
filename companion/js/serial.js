@@ -294,29 +294,53 @@ export class FucheyDevice extends EventTarget {
   }
 
   // ── Wardrobe (cap "wardrobe_v1") — cosmetic data only ──
+  // Items are resolved for one character; `character` picks whose items
+  // (omitted = the built-in Yeti, the only one before cap "characters_v1").
   /** → { items: [{id, slot, z, bytes, crc}], used, total } */
-  itemList() {
-    return this.request("item_list", {}, { timeoutMs: 8000 });
+  itemList(character) {
+    return this.request("item_list", charField(character), { timeoutMs: 8000 });
   }
 
   /** Upload one FWR1 item file (Uint8Array). Fuchey checks size, CRC and format before saving. */
-  async itemInstall(id, bytes, onProgress) {
-    const begin = await this.request("item_begin", { item: id, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
+  itemInstall(id, bytes, onProgress, character) {
+    return this.#upload("item", { item: id, ...charField(character) }, bytes, onProgress);
+  }
+
+  /** Deletes the item and takes it off that character's slots. */
+  itemDelete(id, character) {
+    return this.request("item_delete", { item: id, ...charField(character) }, { timeoutMs: 5000 });
+  }
+
+  // ── Character packs (cap "characters_v1") ──
+  /** → { active, chars: [{id, bytes, crc}] } */
+  charList() {
+    return this.request("char_list", {}, { timeoutMs: 15000 });
+  }
+
+  /** Upload a character pack (FCP1, Uint8Array); onProgress(sent, total). */
+  charInstall(id, bytes, onProgress) {
+    return this.#upload("char", { char: id }, bytes, onProgress);
+  }
+
+  /** Deletes a pack (Fuchey goes back to the Yeti if it was on screen). */
+  charDelete(id) {
+    return this.request("char_delete", { char: id }, { timeoutMs: 5000 });
+  }
+
+  // <kind>_begin / _chunk / _end; `name` is { item } or { char } (+ character).
+  async #upload(kind, name, bytes, onProgress) {
+    const key = kind === "char" ? { char: name.char } : { item: name.item };
+    const begin = await this.request(`${kind}_begin`, { ...name, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
     const step = Math.min(begin.chunk || 1024, 1024);
     let seq = 0;
     for (let off = 0; off < bytes.length; off += step, seq++) {
-      await this.request("item_chunk", { item: id, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
+      await this.request(`${kind}_chunk`, { ...key, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
       onProgress?.(Math.min(off + step, bytes.length), bytes.length);
     }
-    return this.request("item_end", { item: id }, { timeoutMs: 8000 });
+    return this.request(`${kind}_end`, key, { timeoutMs: 15000 });
   }
 
-  /** Deletes the item and takes it off any slot. */
-  itemDelete(id) {
-    return this.request("item_delete", { item: id }, { timeoutMs: 5000 });
-  }
-
-  /** → { "wear.<slot>": id|"none", …, linked_wallets: [address] } */
+  /** → { character, "wear.<slot>": id|"none" (that character's look), …, linked_wallets: [address] } */
   async getSettings() {
     return (await this.request("get_settings", {}, { timeoutMs: 3000 })).settings || {};
   }
@@ -325,6 +349,9 @@ export class FucheyDevice extends EventTarget {
     return this.request("set_setting", { key, value }, { timeoutMs: 5000 });
   }
 }
+
+// The Yeti is the default on Fuchey, so it is never sent (older firmware has no "character").
+const charField = (character) => (character && character !== "yeti" ? { character } : {});
 
 export function bytesToBase64(bytes) {
   let s = "";
