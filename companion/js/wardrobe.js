@@ -1,37 +1,56 @@
-// Fuchey companion — Wardrobe card: marketplace wearables on the device's Yeti.
+// Fuchey companion — Wardrobe card: the character on Fuchey and what it wears.
 //
-// On connect: read the device's wallet + linked wallets, find the wearables
-// they own on-chain, install the missing ones on Fuchey as item files, and
-// delete items that are no longer owned. The user picks what Yeti wears.
+// On connect: read the device's wallet + linked wallets, find the characters
+// and wearables they own on-chain, install the missing wearables (resolved for
+// the character on Fuchey) as item files, and delete items that are no longer
+// owned. The user picks the character (the built-in Yeti, or any owned
+// character Fuchey has art for: its "character pack" is sent first) and what
+// it wears; each character keeps its own look on the device.
 // Everything here is cosmetic: no signing on Fuchey, no transactions.
 
 import {
-  SLOTS, CHARACTER, Catalog, siteNetwork, walletAssets, ownedWearablesFrom, fucheyCollection,
-  resolveVisual, slotOf,
+  SLOTS, CHARACTER, Catalog, siteNetwork, walletAssets, ownedWearablesFrom, ownedCharacters,
+  fucheyCollection, resolveVisual, slotOf,
   runsSide, pixelsToRuns, encodeItem,
 } from "./wearables.js";
 import { verifySignature, isAddress } from "./solana.js";
+import { crc32 } from "./serial.js";
 
 const $ = (id) => document.getElementById(id);
 
-// The Yeti's base art (same file as the website), 4 screen px per grid px.
+// The Yeti's base art (same file as the website); other characters' art
+// comes from the marketplace (characters.art.image).
 const YETI_URL = "img/yeti.png";
-// Preview box on the 96×96 grid, with headroom for hats (the website's CHARACTER_VIEW).
+// Character packs (Fuchey's home-screen art for characters other than the
+// Yeti), built by scripts/make_character_pack.py: packs/index.json lists them.
+const PACKS_URL = "packs/";
+// Preview box on the 96×96 grid, with headroom for hats (the website's CHARACTER_VIEW),
+// drawn at K canvas px per grid px so 120 px character art stays crisp.
 const VIEW = { x: -14, y: -19, w: 116, h: 116 };
+const K = 5;
+// Developer switch (Settings): offer every published character, owned or not.
+const DEV_ALL_KEY = "fuchey.dev.allCharacters";
 
 let ctx = null;          // { device, rpc, log, describe }
 let catalog = null;      // Catalog, once config.local.js is loaded
-let yetiImg = null;
 const wr = {
   info: null,            // hello reply
   network: null,
+  canSwitch: false,      // firmware has cap "characters_v1"
   syncing: false,
+  busyText: "",          // e.g. "Sending Rhino to Fuchey… 40%"
   wallets: [],           // linked wallets (device setting)
-  worn: {},              // slot → id
-  owned: new Map(),      // id → { wearable, assets, file, item }
+  character: CHARACTER,  // the character on Fuchey (device setting)
+  worn: {},              // slot → id, for wr.character
+  owned: new Map(),      // id → { wearable, assets, file, item }, for wr.character
   collection: null,      // every owned Fuchey NFT (fucheyCollection), null = not read yet
-  installed: new Map(),  // id → { slot, crc }
+  installed: new Map(),  // id → { slot, crc }, wr.character's items on Fuchey
   filter: "all",         // item grid: "all" or a slot
+  chain: null,           // { wearables, characters, assets } from the last chain read
+  ownedChars: new Set([CHARACTER]),
+  packs: {},             // id → { file } that this page can send (packs/index.json)
+  devPacks: new Map(),   // id → { crc } installed on Fuchey (char_list)
+  art: new Map(),        // character id → loaded base Image (or null while loading / failed)
 };
 
 // ── config (companion/config.local.js, gitignored) ────────
@@ -46,6 +65,17 @@ async function loadConfig() {
   return catalog;
 }
 
+async function loadPackIndex() {
+  try {
+    const res = await fetch(`${PACKS_URL}index.json`, { cache: "no-cache" });
+    if (res.ok) wr.packs = await res.json();
+  } catch {
+    wr.packs = {};
+  }
+}
+
+const devAll = () => { try { return localStorage.getItem(DEV_ALL_KEY) === "1"; } catch { return false; } };
+
 function setMsg(text, ok = false) {
   const el = $("wr-msg");
   el.textContent = text;
@@ -55,6 +85,42 @@ function setMsg(text, ok = false) {
 
 function setStatus(text) {
   $("wr-status").textContent = text;
+}
+
+// ── characters ────────────────────────────────────────────
+function charInfo(id) {
+  return wr.chain?.characters.find((c) => c.id === id) ?? { id, name: id === CHARACTER ? "Yeti" : id };
+}
+const charName = (id) => charInfo(id).name || id;
+
+// Characters to offer: the Yeti, every owned one (greyed out until Fuchey has
+// art for it), whatever Fuchey shows now and, with the developer switch,
+// every published one Fuchey has art for.
+function pickable() {
+  const all = wr.chain?.characters ?? [];
+  const ids = new Set([CHARACTER, wr.character]);
+  for (const c of all) if (wr.ownedChars.has(c.id) || (devAll() && hasArt(c.id))) ids.add(c.id);
+  const order = (id) => { const i = all.findIndex((c) => c.id === id); return id === CHARACTER ? -1 : i < 0 ? 1e6 : i; };
+  return [...ids].sort((a, b) => order(a) - order(b));
+}
+
+// Fuchey can show the Yeti, or a character this page has a pack for.
+const hasArt = (id) => id === CHARACTER || Boolean(wr.packs[id]);
+
+function artUrl(id) {
+  if (id === CHARACTER) return YETI_URL;
+  const c = charInfo(id);
+  const img = c.art?.image;
+  return img && img !== "yeti" ? img : c.image_url || null;
+}
+
+// Base art of a character, loaded once; render() runs again when it arrives.
+function baseArt(id) {
+  if (wr.art.has(id)) return wr.art.get(id);
+  wr.art.set(id, null);
+  const url = artUrl(id);
+  if (url) loadImage(url).then((img) => { wr.art.set(id, img); if (wr.info) render(); }).catch(() => {});
+  return null;
 }
 
 // ── item files ────────────────────────────────────────────
@@ -86,9 +152,9 @@ async function imageRuns(url, visual) {
   return pixelsToRuns(px, w, h, Math.round(visual.x ?? 0), Math.round(visual.y ?? 0));
 }
 
-/** wearable → { item: {id, slot, z, front, back}, file: Uint8Array } for the Yeti. */
-async function buildItem(wearable) {
-  const visual = resolveVisual(wearable, CHARACTER);
+/** wearable → { item: {id, slot, z, front, back}, file: Uint8Array } for `character`. */
+async function buildItem(wearable, character) {
+  const visual = resolveVisual(wearable, character);
   if (!visual) throw new Error(`${wearable.id} has no visual`);
   let front, back;
   if (visual.kind === "image") {
@@ -102,26 +168,28 @@ async function buildItem(wearable) {
   return { item, file: encodeItem(item) };
 }
 
-// ── preview (canvas over yeti.png) ────────────────────────
+// ── preview (canvas: back layers, character art, front layers) ──
 function drawRuns(g, runs) {
   for (const r of runs) {
     const c = r.c;
     const R = ((c >> 11) & 0x1f) * 255 / 31, G = ((c >> 5) & 0x3f) * 255 / 63, B = (c & 0x1f) * 255 / 31;
     g.fillStyle = `rgb(${R | 0},${G | 0},${B | 0})`;
-    g.fillRect(r.x - VIEW.x, r.y - VIEW.y, r.w, 1);
+    g.fillRect((r.x - VIEW.x) * K, (r.y - VIEW.y) * K, r.w * K, K);
   }
 }
 
-// Same order as Fuchey: every back layer, the Yeti, every front layer.
-function drawLook(canvas, items) {
+// Same order as Fuchey: every back layer, the character, every front layer.
+// `base` false = the item alone (grid thumbnails).
+function drawLook(canvas, items, base = true) {
   const g = canvas.getContext("2d");
-  canvas.width = VIEW.w;
-  canvas.height = VIEW.h;
+  canvas.width = VIEW.w * K;
+  canvas.height = VIEW.h * K;
   g.imageSmoothingEnabled = false;
-  g.clearRect(0, 0, VIEW.w, VIEW.h);
+  g.clearRect(0, 0, canvas.width, canvas.height);
   const sorted = [...items].sort((a, b) => a.slot * 1000 + a.z - (b.slot * 1000 + b.z));
   for (const it of sorted) drawRuns(g, it.back);
-  if (yetiImg) g.drawImage(yetiImg, -VIEW.x, -VIEW.y, 96, 96);
+  const art = base && baseArt(wr.character);
+  if (art) g.drawImage(art, -VIEW.x * K, -VIEW.y * K, 96 * K, 96 * K);
   for (const it of sorted) drawRuns(g, it.front);
 }
 
@@ -138,7 +206,41 @@ function wornItems() {
 // ── render ────────────────────────────────────────────────
 const slotName = (slot) => slot[0].toUpperCase() + slot.slice(1);
 
-// What Yeti has on, one chip per slot; tapping a chip takes it off.
+// One button per character Fuchey can show; the active one is pressed.
+function renderCharacters() {
+  const box = $("wr-chars");
+  const ids = wr.canSwitch ? pickable() : [];
+  box.classList.toggle("hidden", ids.length < 2);
+  box.innerHTML = "";
+  for (const id of ids) {
+    const active = id === wr.character;
+    const b = document.createElement("button");
+    b.className = `wr-char${active ? " active" : ""}`;
+    b.setAttribute("aria-pressed", String(active));
+    b.disabled = wr.syncing || (!active && !hasArt(id));
+    const owned = wr.ownedChars.has(id);
+    b.title = active ? `${charName(id)} is on Fuchey`
+      : !hasArt(id) ? `No Fuchey art for ${charName(id)} yet`
+      : `Show ${charName(id)} on Fuchey${owned ? "" : " (developer: not owned)"}`;
+    const img = document.createElement("img");
+    img.alt = "";
+    const url = artUrl(id);
+    if (url) img.src = url;
+    const name = document.createElement("span");
+    name.textContent = charName(id);
+    b.append(img, name);
+    if (!owned && id !== wr.character) {
+      const tag = document.createElement("span");
+      tag.className = "wr-char-tag";
+      tag.textContent = "dev";
+      b.append(tag);
+    }
+    b.addEventListener("click", () => { if (!active) switchCharacter(id); });
+    box.append(b);
+  }
+}
+
+// What the character has on, one chip per slot; tapping a chip takes it off.
 function renderWorn() {
   const box = $("wr-worn");
   box.innerHTML = "";
@@ -209,6 +311,10 @@ function itemTile(o) {
 }
 
 function render() {
+  const name = charName(wr.character);
+  $("wr-title").textContent = name;
+  $("wr-preview").setAttribute("aria-label", `What ${name} is wearing`);
+  renderCharacters();
   drawLook($("wr-preview"), wornItems());
   renderWorn();
   const items = [...wr.owned.values()].sort((a, b) => a.item?.slot - b.item?.slot);
@@ -216,8 +322,11 @@ function render() {
   const list = $("wr-items");
   list.innerHTML = "";
   if (!items.length) {
-    list.innerHTML = '<p class="muted small wr-none">No wearables yet. Items you buy on fuchey.xyz with this ' +
-      "Fuchey's wallet (or a linked wallet) show up here.</p>";
+    const p = document.createElement("p");
+    p.className = "muted small wr-none";
+    p.textContent = `No wearables for the ${name} yet. Items you buy on fuchey.xyz with this ` +
+      "Fuchey's wallet (or a linked wallet) that fit it show up here.";
+    list.append(p);
   }
   for (const o of items) {
     if (wr.filter === "all" || SLOTS[o.item?.slot ?? 0] === wr.filter) list.append(itemTile(o));
@@ -251,9 +360,12 @@ const walletLabel = (a) => (a === wr.info?.pubkey ? "this Fuchey" : `${a.slice(0
 
 function collectionStatus(e) {
   if (e.kind === "character") {
-    return e.fits ? "Character · Fuchey's Yeti" : "Character · coming to Fuchey soon";
+    if (e.id === wr.character) return "Character · on Fuchey now";
+    if (!hasArt(e.id)) return "Character · coming to Fuchey soon";
+    return wr.canSwitch ? "Character · pick it above to show it on Fuchey" : "Character · needs a Fuchey firmware update";
   }
-  if (!e.fits) return `${e.type} · doesn't fit the Yeti`;
+  const name = charName(wr.character);
+  if (!e.fits) return `${e.type} · doesn't fit the ${name}`;
   if (wr.installed.has(e.id)) {
     return wr.worn[e.type] === e.id ? `${e.type} · on Fuchey, wearing` : `${e.type} · on Fuchey, tap Wear`;
   }
@@ -291,17 +403,24 @@ function renderCollection() {
 async function readDevice() {
   const s = await ctx.device.getSettings();
   wr.wallets = Array.isArray(s.linked_wallets) ? s.linked_wallets : [];
+  wr.character = (wr.canSwitch && s.character) || CHARACTER;
   wr.worn = {};
   for (const slot of SLOTS) {
     const v = s[`wear.${slot}`];
     if (v && v !== "none") wr.worn[slot] = v;
   }
-  const list = await ctx.device.itemList();
+  const list = await ctx.device.itemList(wr.character);
   wr.installed = new Map((list.items || []).map((i) => [i.id, i]));
+  if (wr.canSwitch) {
+    const packs = await ctx.device.charList();
+    wr.devPacks = new Map((packs.chars || []).map((c) => [c.id, c]));
+  }
   return list;
 }
 
-export async function sync() {
+// Reads the chain again unless `chain` is false and an earlier read is cached
+// (switching character only re-installs that character's items).
+export async function sync({ chain = true } = {}) {
   if (wr.syncing || !wr.info) return;
   wr.syncing = true;
   setMsg("");
@@ -320,19 +439,25 @@ export async function sync() {
       setStatus("This Fuchey has no wallet yet.");
       return;
     }
-    setStatus("Loading the marketplace…");
-    const wearables = await catalog.wearables();
-    setStatus(`Checking what ${wallets.length > 1 ? `${wallets.length} wallets own` : "this wallet owns"} on ${wr.network}…`);
-    // A failed chain read throws here, before anything is deleted.
     const network = siteNetwork(wr.network);
-    const characters = await catalog.characters().catch(() => []);
-    const assets = await walletAssets(ctx.rpc(), wallets);
-    const owned = ownedWearablesFrom(assets, wearables, network);
-    wr.collection = fucheyCollection(assets, { wearables, characters }, network);
+    if (chain || !wr.chain) {
+      setStatus("Loading the marketplace…");
+      const wearables = await catalog.wearables();
+      const characters = await catalog.characters().catch(() => []);
+      setStatus(`Checking what ${wallets.length > 1 ? `${wallets.length} wallets own` : "this wallet owns"} on ${wr.network}…`);
+      // A failed chain read throws here, before anything is deleted.
+      const assets = await walletAssets(ctx.rpc(), wallets);
+      wr.chain = { wearables, characters, assets };
+      wr.ownedChars = ownedCharacters(assets, characters, network);
+    }
+    const { wearables, characters, assets } = wr.chain;
+    const character = wr.character;
+    const owned = ownedWearablesFrom(assets, wearables, network, character);
+    wr.collection = fucheyCollection(assets, { wearables, characters }, network, character);
 
     for (const [id, o] of owned) {
       try {
-        Object.assign(o, await buildItem(o.wearable));
+        Object.assign(o, await buildItem(o.wearable, character));
       } catch (e) {
         o.error = e.message;
         ctx.log(`wardrobe: ${id}: ${e.message}`);
@@ -341,8 +466,7 @@ export async function sync() {
     wr.owned = owned;
     render();
 
-    // Install new or changed items.
-    const { crc32 } = await import("./serial.js");
+    // Install new or changed items (for the character on Fuchey).
     let installed = 0, removed = 0, failed = 0;
     for (const [id, o] of owned) {
       if (!o.file) continue;
@@ -350,7 +474,7 @@ export async function sync() {
       if (have && have.crc === crc32(o.file)) continue;
       setStatus(`Installing ${o.wearable.name} on Fuchey…`);
       try {
-        await ctx.device.itemInstall(id, o.file);
+        await ctx.device.itemInstall(id, o.file, null, character);
         installed++;
         // A new item goes straight on when nothing is worn in its slot.
         const slot = SLOTS[o.item.slot];
@@ -368,13 +492,13 @@ export async function sync() {
     for (const id of wr.installed.keys()) {
       if (owned.has(id)) continue;
       setStatus(`Removing ${id}…`);
-      await ctx.device.itemDelete(id);
+      await ctx.device.itemDelete(id, character);
       removed++;
     }
     await readDevice();
     const n = owned.size;
     const notOnFuchey = [...owned.keys()].filter((id) => !wr.installed.has(id)).length;
-    setStatus(`${n} wearable${n === 1 ? "" : "s"} owned` +
+    setStatus(`${charName(character)} · ${n} wearable${n === 1 ? "" : "s"} owned` +
       (installed || removed ? ` · ${installed} installed, ${removed} removed` : "") +
       (notOnFuchey ? ` · ${notOnFuchey} not on Fuchey yet` : (installed || removed ? "" : " · Fuchey is up to date")));
     if (failed) setMsg(`${failed} item${failed === 1 ? "" : "s"} couldn't be installed — see the list below. Press Sync to retry.`);
@@ -388,6 +512,44 @@ export async function sync() {
 }
 
 // ── actions ───────────────────────────────────────────────
+// Puts `id` on Fuchey's home screen: sends its pack first if Fuchey doesn't
+// have this version, then installs the items that fit it.
+async function switchCharacter(id) {
+  if (wr.syncing || !wr.canSwitch || id === wr.character) return;
+  const name = charName(id);
+  wr.syncing = true;
+  setMsg("");
+  render();
+  try {
+    if (id !== CHARACTER) {
+      const entry = wr.packs[id];
+      if (!entry) throw new Error(`no Fuchey art for ${name} yet`);
+      setStatus(`Loading ${name}…`);
+      const res = await fetch(`${PACKS_URL}${entry.file}`, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`couldn't load ${name}'s pack (HTTP ${res.status})`);
+      const pack = new Uint8Array(await res.arrayBuffer());
+      if (wr.devPacks.get(id)?.crc !== crc32(pack)) {
+        await ctx.device.charInstall(id, pack, (sent, total) =>
+          setStatus(`Sending ${name} to Fuchey… ${Math.floor((sent * 100) / total)}%`));
+      }
+    }
+    setStatus(`Switching to ${name}…`);
+    await ctx.device.setSetting("character", id);
+    wr.character = id;
+    wr.owned = new Map();
+    wr.installed = new Map();
+    wr.worn = {};
+  } catch (e) {
+    setStatus("");
+    setMsg(`Couldn't switch to ${name}: ${ctx.describe(e)}`);
+    return;
+  } finally {
+    wr.syncing = false;
+    render();
+  }
+  await sync({ chain: false });
+}
+
 async function wear(slot, id) {
   try {
     await ctx.device.setSetting(`wear.${slot}`, id);
@@ -401,16 +563,17 @@ async function wear(slot, id) {
 
 async function useWebsiteLook() {
   setMsg("");
+  const name = charName(wr.character);
   try {
     await loadConfig();
     if (!catalog.configured) throw new Error("marketplace not configured (config.local.js)");
     const wallets = [...new Set([wr.info.pubkey, ...wr.wallets].filter(Boolean))];
     let slots = null;
     for (const w of wallets) {
-      slots = await catalog.loadout(w, CHARACTER);
+      slots = await catalog.loadout(w, wr.character);
       if (slots) break;
     }
-    if (!slots) { setMsg("No saved Yeti look on fuchey.xyz for these wallets."); return; }
+    if (!slots) { setMsg(`No saved ${name} look on fuchey.xyz for these wallets.`); return; }
     const skipped = [];
     for (const slot of SLOTS) {
       const id = slots[slot];
@@ -422,7 +585,7 @@ async function useWebsiteLook() {
       await ctx.device.setSetting(`wear.${slot}`, want);
       if (want === "none") delete wr.worn[slot]; else wr.worn[slot] = want;
     }
-    setMsg(skipped.length ? `Applied. Skipped (not owned here): ${skipped.join(", ")}` : "Your website look is on Fuchey.", !skipped.length);
+    setMsg(skipped.length ? `Applied. Skipped (not owned here): ${skipped.join(", ")}` : `Your website look is on Fuchey's ${name}.`, !skipped.length);
   } catch (e) {
     setMsg(ctx.describe(e));
   }
@@ -549,11 +712,18 @@ async function removeWallet(addr) {
 // ── lifecycle ─────────────────────────────────────────────
 export function init(c) {
   ctx = c;
-  loadImage(YETI_URL).then((img) => { yetiImg = img; if (wr.info) render(); }).catch(() => {});
-  $("btn-wr-sync").addEventListener("click", sync);
+  baseArt(CHARACTER);
+  loadPackIndex();
+  $("btn-wr-sync").addEventListener("click", () => sync());
   $("btn-wr-website").addEventListener("click", useWebsiteLook);
   listenForStandardWallets();
   $("btn-wr-phantom").addEventListener("click", addWallet);
+  const dev = $("dev-all-chars");
+  dev.checked = devAll();
+  dev.addEventListener("change", () => {
+    try { dev.checked ? localStorage.setItem(DEV_ALL_KEY, "1") : localStorage.removeItem(DEV_ALL_KEY); } catch {}
+    if (wr.info) render();
+  });
 }
 
 export function onConnected(info, network) {
@@ -564,6 +734,11 @@ export function onConnected(info, network) {
   if (!can) return;
   wr.info = info;
   wr.network = network;
+  wr.canSwitch = info.caps.includes("characters_v1");
+  wr.character = CHARACTER;
+  wr.chain = null;
+  wr.ownedChars = new Set([CHARACTER]);
+  wr.devPacks = new Map();
   wr.owned = new Map();
   wr.collection = null;
   render();
@@ -576,5 +751,5 @@ export function onDisconnected() {
   $("wardrobe").classList.add("hidden");
   $("collection").classList.add("hidden");
   $("wardrobe-empty").classList.remove("hidden");
-  $("wardrobe-empty").textContent = "Connect your Fuchey to dress up its Yeti.";
+  $("wardrobe-empty").textContent = "Connect your Fuchey to dress up its character.";
 }

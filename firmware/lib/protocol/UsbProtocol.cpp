@@ -156,9 +156,19 @@ bool UsbProtocol::handle_line(const char* line) {
     } else if (strcmp(cmd, "item_end") == 0) {
         cmd_item_end(id, req);
     } else if (strcmp(cmd, "item_list") == 0) {
-        cmd_item_list(id);
+        cmd_item_list(id, req);
     } else if (strcmp(cmd, "item_delete") == 0) {
         cmd_item_delete(id, req);
+    } else if (strcmp(cmd, "char_begin") == 0) {
+        cmd_char_begin(id, req);
+    } else if (strcmp(cmd, "char_chunk") == 0) {
+        cmd_item_chunk(id, req, "char");
+    } else if (strcmp(cmd, "char_end") == 0) {
+        cmd_item_end(id, req, "char");
+    } else if (strcmp(cmd, "char_list") == 0) {
+        cmd_char_list(id);
+    } else if (strcmp(cmd, "char_delete") == 0) {
+        cmd_char_delete(id, req);
     } else if (strcmp(cmd, "get_settings") == 0) {
         cmd_get_settings(id);
     } else if (strcmp(cmd, "set_setting") == 0) {
@@ -192,7 +202,10 @@ void UsbProtocol::cmd_hello(uint32_t id) {
     if (m_rc) cJSON_AddItemToArray(caps, cJSON_CreateString("recovery_grid"));
     if (m_create) cJSON_AddItemToArray(caps, cJSON_CreateString("wallet_create"));
     if (m_settings) cJSON_AddItemToArray(caps, cJSON_CreateString("network_switch"));
-    if (item_store().mounted()) cJSON_AddItemToArray(caps, cJSON_CreateString("wardrobe_v1"));
+    if (item_store().mounted()) {
+        cJSON_AddItemToArray(caps, cJSON_CreateString("wardrobe_v1"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("characters_v1"));
+    }
     send(obj);
 }
 
@@ -849,6 +862,7 @@ constexpr size_t MAX_ITEM_CHUNK = 1024;   // base64 1368 chars: well inside a li
 void UsbProtocol::cmd_item_begin(uint32_t id, cJSON* req) {
     if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
     const char* item = str_field(req, "item");
+    const char* character = str_field(req, "character");   // optional: default the Yeti
     cJSON* size = cJSON_GetObjectItem(req, "size");
     cJSON* crc  = cJSON_GetObjectItem(req, "crc");
     if (!item || !cJSON_IsNumber(size) || !cJSON_IsNumber(crc) || size->valuedouble < 1 ||
@@ -857,21 +871,21 @@ void UsbProtocol::cmd_item_begin(uint32_t id, cJSON* req) {
         return;
     }
     const auto e = item_store().begin(item, static_cast<size_t>(size->valuedouble),
-                                      static_cast<uint32_t>(crc->valuedouble));
+                                      static_cast<uint32_t>(crc->valuedouble), character);
     if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
     cJSON* obj = reply(id, true);
     cJSON_AddNumberToObject(obj, "chunk", MAX_ITEM_CHUNK);
     send(obj);
 }
 
-void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req) {
-    const char* item = str_field(req, "item");
+void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req, const char* field) {
+    const char* item = str_field(req, field);
     const char* data = str_field(req, "data");
     cJSON* seq = cJSON_GetObjectItem(req, "seq");
     std::vector<uint8_t> bytes;
     if (!item || !data || !cJSON_IsNumber(seq) || seq->valuedouble < 0 ||
         !Crypto::Base64::decode(data, bytes) || bytes.empty() || bytes.size() > MAX_ITEM_CHUNK) {
-        send_error(id, "bad_request", "need item, seq, data (base64, 1..1024 bytes)");
+        send_error(id, "bad_request", "need item/char, seq, data (base64, 1..1024 bytes)");
         return;
     }
     const auto e = item_store().chunk(item, static_cast<uint32_t>(seq->valuedouble),
@@ -880,19 +894,24 @@ void UsbProtocol::cmd_item_chunk(uint32_t id, cJSON* req) {
     send(reply(id, true));
 }
 
-void UsbProtocol::cmd_item_end(uint32_t id, cJSON* req) {
-    const char* item = str_field(req, "item");
-    if (!item) { send_error(id, "bad_request", "need item"); return; }
+void UsbProtocol::cmd_item_end(uint32_t id, cJSON* req, const char* field) {
+    const char* item = str_field(req, field);
+    if (!item) { send_error(id, "bad_request", "need item/char"); return; }
     const auto e = item_store().end(item);
     if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
     cJSON* obj = reply(id, true);
-    cJSON_AddStringToObject(obj, "item", item);
+    cJSON_AddStringToObject(obj, field, item);
     send(obj);
 }
 
-void UsbProtocol::cmd_item_list(uint32_t id) {
+void UsbProtocol::cmd_item_list(uint32_t id, cJSON* req) {
+    const char* character = str_field(req, "character");   // optional: default the Yeti
+    if (!ItemStore::valid_character(character)) { send_error(id, "bad_id", "character"); return; }
     std::vector<ItemStore::Info> items;
-    if (!item_store().list(items)) { send_error(id, ItemStore::err_name(ItemStore::Err::NOT_MOUNTED)); return; }
+    if (!item_store().list(items, character)) {
+        send_error(id, ItemStore::err_name(ItemStore::Err::NOT_MOUNTED));
+        return;
+    }
     size_t used = 0, total = 0;
     item_store().usage(used, total);
     cJSON* obj = reply(id, true);
@@ -914,9 +933,62 @@ void UsbProtocol::cmd_item_list(uint32_t id) {
 void UsbProtocol::cmd_item_delete(uint32_t id, cJSON* req) {
     if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
     const char* item = str_field(req, "item");
+    const char* character = str_field(req, "character");   // optional: default the Yeti
     if (!item) { send_error(id, "bad_request", "need item"); return; }
-    wardrobe().unequip_item(item);           // never draw a deleted item
-    const auto e = item_store().remove(item);
+    if (!ItemStore::valid_character(character)) { send_error(id, "bad_id", "character"); return; }
+    wardrobe().unequip_item(item, character);   // never draw a deleted item
+    const auto e = item_store().remove(item, character);
+    if (e != ItemStore::Err::OK && e != ItemStore::Err::NOT_FOUND) { send_error(id, ItemStore::err_name(e)); return; }
+    cJSON* obj = reply(id, true);
+    cJSON_AddBoolToObject(obj, "existed", e == ItemStore::Err::OK);
+    send(obj);
+}
+
+// ─── Character packs (FCP1: home-screen art for a character other than
+// the built-in Yeti). Same chunked upload as items, just bigger files.
+void UsbProtocol::cmd_char_begin(uint32_t id, cJSON* req) {
+    if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
+    const char* ch = str_field(req, "char");
+    cJSON* size = cJSON_GetObjectItem(req, "size");
+    cJSON* crc  = cJSON_GetObjectItem(req, "crc");
+    if (!ch || !cJSON_IsNumber(size) || !cJSON_IsNumber(crc) || size->valuedouble < 1 ||
+        crc->valuedouble < 0 || crc->valuedouble > 4294967295.0) {
+        send_error(id, "bad_request", "need char, size, crc (u32)");
+        return;
+    }
+    const auto e = item_store().begin_pack(ch, static_cast<size_t>(size->valuedouble),
+                                           static_cast<uint32_t>(crc->valuedouble));
+    if (e != ItemStore::Err::OK) { send_error(id, ItemStore::err_name(e)); return; }
+    cJSON* obj = reply(id, true);
+    cJSON_AddNumberToObject(obj, "chunk", MAX_ITEM_CHUNK);
+    send(obj);
+}
+
+void UsbProtocol::cmd_char_list(uint32_t id) {
+    std::vector<ItemStore::Info> packs;
+    if (!item_store().list_packs(packs)) {
+        send_error(id, ItemStore::err_name(ItemStore::Err::NOT_MOUNTED));
+        return;
+    }
+    cJSON* obj = reply(id, true);
+    cJSON_AddStringToObject(obj, "active", wardrobe().character().c_str());
+    cJSON* arr = cJSON_AddArrayToObject(obj, "chars");
+    for (const auto& p : packs) {
+        cJSON* e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "id", p.id.c_str());
+        cJSON_AddNumberToObject(e, "bytes", p.bytes);
+        cJSON_AddNumberToObject(e, "crc", p.crc);
+        cJSON_AddItemToArray(arr, e);
+    }
+    send(obj);
+}
+
+void UsbProtocol::cmd_char_delete(uint32_t id, cJSON* req) {
+    if (m_busy.load()) { send_error(id, "busy", "a signature request is pending"); return; }
+    const char* ch = str_field(req, "char");
+    if (!ch) { send_error(id, "bad_request", "need char"); return; }
+    if (wardrobe().character() == ch) wardrobe().set_character(ItemStore::BUILTIN);   // back to the Yeti
+    const auto e = item_store().remove_pack(ch);
     if (e != ItemStore::Err::OK && e != ItemStore::Err::NOT_FOUND) { send_error(id, ItemStore::err_name(e)); return; }
     cJSON* obj = reply(id, true);
     cJSON_AddBoolToObject(obj, "existed", e == ItemStore::Err::OK);
@@ -926,6 +998,8 @@ void UsbProtocol::cmd_item_delete(uint32_t id, cJSON* req) {
 void UsbProtocol::cmd_get_settings(uint32_t id) {
     cJSON* obj = reply(id, true);
     cJSON* set = cJSON_AddObjectToObject(obj, "settings");
+    // The character on screen; the wear.* keys below are its look.
+    cJSON_AddStringToObject(set, "character", wardrobe().character().c_str());
     for (int i = 0; i < WEAR_SLOT_COUNT; ++i) {
         char key[24];
         snprintf(key, sizeof(key), "wear.%s", WEAR_SLOTS[i]);
@@ -952,11 +1026,28 @@ void UsbProtocol::cmd_set_setting(uint32_t id, cJSON* req) {
         const bool off = v[0] == '\0' || strcmp(v, "none") == 0;
         if (!off) {
             // Only installed items whose own slot matches can be worn there.
+            // (installed for the character on screen: wear.* is always its look)
             WearItem item;
-            if (!item_store().load(v, item)) { send_error(id, "not_installed", v); return; }
+            if (!item_store().load(v, item, wardrobe().character().c_str())) {
+                send_error(id, "not_installed", v);
+                return;
+            }
             if (item.slot != slot) { send_error(id, "wrong_slot", WEAR_SLOTS[item.slot]); return; }
         }
         if (!wardrobe().set_worn(slot, off ? "none" : v)) { send_error(id, "failed", "could not save"); return; }
+        send(reply(id, true));
+        return;
+    }
+
+    if (strcmp(key, "character") == 0) {
+        const char* v = cJSON_IsString(value) ? value->valuestring : nullptr;
+        if (!v || !WearItem::valid_id(v)) { send_error(id, "bad_request", "character = yeti | pack id"); return; }
+        if (!ItemStore::is_builtin(v)) {
+            // Only a pack that is installed and loads cleanly goes on screen.
+            CharacterPack pack;
+            if (!item_store().load_pack(v, pack)) { send_error(id, "not_installed", v); return; }
+        }
+        if (!wardrobe().set_character(v)) { send_error(id, "failed", "could not save"); return; }
         send(reply(id, true));
         return;
     }

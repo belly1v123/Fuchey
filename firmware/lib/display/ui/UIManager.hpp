@@ -16,9 +16,11 @@
 #include "../../wallet/RecoveryController.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
 #include "../../wearables/WearRenderer.hpp"
+#include "../../wearables/CharacterPack.hpp"
 #include "../../behaviour/Behaviour.hpp"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Fuchey {
@@ -217,6 +219,15 @@ private:
     WearRenderer m_wear;
     // Screen box the home Yeti + items covered last frame (restore/flush).
     int         m_home_yx{0}, m_home_yy{0}, m_home_yw{0}, m_home_yh{0};
+    // The home character when it isn't the built-in Yeti (companion app
+    // setting "character"): its pack, loaded from flash, and one timing
+    // clip per mood for m_home_yeti. nullptr = the Yeti.
+    std::unique_ptr<CharacterPack> m_pack;
+    SpriteAnim  m_pack_anims[CharacterPack::MOOD_COUNT]{};
+    std::string m_home_char{"yeti"};
+    uint32_t    m_home_pack_gen{0};
+    bool        refresh_character();   // true when the home character changed
+    const CharacterPack::Clip& pack_clip() const;
     CharacterPose home_item_pose(uint8_t frame) const;   // worn items for the current mood
     void        home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const;
     void        draw_home_yeti(uint8_t frame);

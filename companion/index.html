@@ -119,13 +119,14 @@
         <section id="wardrobe" class="stack hidden">
           <div class="card wr-hero">
             <div class="row between">
-              <h2>Yeti</h2>
+              <h2 id="wr-title">Yeti</h2>
               <div class="row">
                 <button id="btn-wr-website" class="ghost small" title="Wear the look saved on fuchey.xyz">Website look</button>
                 <button id="btn-wr-sync" class="ghost small">Sync</button>
               </div>
             </div>
-            <div class="wr-stage"><canvas id="wr-preview" class="wr-preview" width="116" height="116"
+            <div id="wr-chars" class="wr-chars hidden" role="group" aria-label="Character on Fuchey"></div>
+            <div class="wr-stage"><canvas id="wr-preview" class="wr-preview" width="580" height="580"
               aria-label="What Yeti is wearing"></canvas></div>
             <div id="wr-worn" class="wr-worn" aria-label="Worn now"></div>
             <p id="wr-status" class="muted small center"></p>
@@ -152,7 +153,7 @@
               drawn on Fuchey; the NFTs never leave your wallet.</p>
           </details>
         </section>
-        <p id="wardrobe-empty" class="muted small center">Connect your Fuchey to dress up its Yeti.</p>
+        <p id="wardrobe-empty" class="muted small center">Connect your Fuchey to dress up its character.</p>
       </div>
 
       <!-- ── Device tab ───────────────────────────────────── -->
@@ -256,6 +257,12 @@
             Fuchey). Mainnet defaults to a free public RPC (the official one blocks web pages);
             for reliable mainnet use, paste your own RPC URL (e.g. a free Helius key). Public RPCs are rate-limited.</p>
           <button id="btn-save-settings" class="ghost small">Save</button>
+        </section>
+        <section class="card">
+          <h2>Developer</h2>
+          <label class="check"><input type="checkbox" id="dev-all-chars"> Show every character</label>
+          <p class="muted small">For testing: the Wardrobe offers every marketplace character Fuchey has art
+            for, even ones your wallets don't own (marked "dev").</p>
         </section>
         <details class="card log">
           <summary>Device log</summary>

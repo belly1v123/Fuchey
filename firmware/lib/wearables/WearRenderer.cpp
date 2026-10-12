@@ -42,12 +42,14 @@ bool WearRenderer::refresh() {
     m_wardrobe_gen = wg;
 
     m_items.clear();
+    const std::string character = wardrobe().character();   // items are per character
     for (int slot = 0; slot < WEAR_SLOT_COUNT; ++slot) {
         const std::string id = wardrobe().worn(slot);
         if (id.empty()) continue;
         WearItem item;
-        if (!item_store().load(id.c_str(), item)) {
-            ESP_LOGW(TAG, "%s worn in %s but not installed", id.c_str(), WEAR_SLOTS[slot]);
+        if (!item_store().load(id.c_str(), item, character.c_str())) {
+            ESP_LOGW(TAG, "%s worn by %s in %s but not installed", id.c_str(), character.c_str(),
+                     WEAR_SLOTS[slot]);
             continue;
         }
         m_items.push_back(std::move(item));

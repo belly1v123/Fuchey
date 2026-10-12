@@ -33,6 +33,8 @@
 #include "PoppinsRegular9pt7b.h"
 #include "PoppinsBold9pt7b.h"
 #include "../../config/Config.hpp"
+#include "../../wearables/ItemStore.hpp"
+#include "../../wearables/Wardrobe.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
 #include "../../price/PriceService.hpp"
@@ -1862,7 +1864,10 @@ void UIManager::render_home() {
     // Mood anim: idle / Happy Yeti (96x96 drawn at 1.25x) vs DND Yeti
     // (120x120); all fill the same 120x120 box at (133,111) (see draw_home_yeti).
     const Mood mood = m_behaviour.home_mood(now, m_dnd_mode);
-    const SpriteAnim* want_anim = mood == Mood::Dnd   ? &DndAnim
+    // Character switched or its pack replaced (companion app): restart the clip.
+    if (refresh_character()) m_home_started = false;
+    const SpriteAnim* want_anim = m_pack                ? &m_pack_anims[static_cast<uint8_t>(mood)]
+                                : mood == Mood::Dnd   ? &DndAnim
                                 : mood == Mood::Happy ? &kHappyClip
                                                       : &YetiIdle96;
     // Wardrobe or item files changed (companion app): rebuild the screen.
@@ -2076,7 +2081,53 @@ CharacterPose home_pose(uint8_t frame) {
 }
 } // namespace
 
+// A marketplace character other than the Yeti: its pack (FCP1) is drawn
+// 1:1 into the same 120×120 box, which is the item grid at 1.25×, and
+// every frame carries its head offset. Idle moves every item with that
+// offset (legs and below stay put); happy / DND wear head items only,
+// like the Yeti.
+bool UIManager::refresh_character() {
+    const std::string want = wardrobe().character();
+    const uint32_t gen = item_store().pack_generation();
+    if (want == m_home_char && gen == m_home_pack_gen) return false;
+    const bool was_pack = m_pack != nullptr;
+    m_home_char = want;
+    m_home_pack_gen = gen;
+    m_pack.reset();
+    if (!ItemStore::is_builtin(want.c_str())) {
+        auto pack = std::make_unique<CharacterPack>();
+        if (item_store().load_pack(want.c_str(), *pack)) {
+            for (uint8_t m = 0; m < CharacterPack::MOOD_COUNT; ++m) {
+                const auto& c = pack->clip(static_cast<CharacterPack::Mood>(m));
+                m_pack_anims[m] = {nullptr, c.w, c.h, static_cast<uint8_t>(c.frames.size()), c.fps, true};
+            }
+            m_pack = std::move(pack);
+            ESP_LOGI(TAG, "Home character: %s", want.c_str());
+        } else {
+            ESP_LOGW(TAG, "Home character %s has no usable pack: showing the Yeti", want.c_str());
+        }
+    }
+    return was_pack || m_pack != nullptr;
+}
+
+const CharacterPack::Clip& UIManager::pack_clip() const {
+    const auto m = m_home_mood == Mood::Dnd   ? CharacterPack::DND
+                 : m_home_mood == Mood::Happy ? CharacterPack::HAPPY
+                                              : CharacterPack::IDLE;
+    return m_pack->clip(m);
+}
+
 CharacterPose UIManager::home_item_pose(uint8_t frame) const {
+    if (m_pack) {
+        const auto& clip = pack_clip();
+        CharacterPose p = home_pose(0);
+        p.dx = frame < clip.frames.size() ? clip.frames[frame].dx : 0;
+        p.dy = frame < clip.frames.size() ? clip.frames[frame].dy : 0;
+        const bool idle = m_home_mood == Mood::Idle;
+        p.still_from_y = idle ? m_pack->legs_y() : 1 << 20;
+        p.head_only = !idle;
+        return p;
+    }
     if (m_home_mood == Mood::Idle) return home_pose(frame);
     const HeadAnchors& a = m_home_mood == Mood::Dnd ? DndAnimHead : HappyAnimHead;
     CharacterPose p = home_pose(0);
@@ -2100,6 +2151,13 @@ void UIManager::home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) co
 }
 
 void UIManager::draw_home_yeti(uint8_t frame) {
+    if (m_pack) {
+        const CharacterPose pose = home_item_pose(frame);
+        m_wear.draw_back(m_display, pose);
+        m_pack->draw(m_display, pack_clip(), frame, kHomeYetiX, kHomeYetiY);
+        m_wear.draw_front(m_display, pose);
+        return;
+    }
     const SpritePixel* f = m_home_yeti.frame_data(frame);
     if (f == nullptr) return;
     const CharacterPose pose = home_item_pose(frame);
