@@ -7,7 +7,13 @@ device.** The private key never leaves Fuchey.
 
 No build step and no third-party JavaScript: `index.html`, `css/`, `js/`.
 
-## Run
+## Live
+
+<https://belly1v123.github.io/Fuchey/> is published from the `companion-app`
+branch by `.github/workflows/pages.yml` (only this folder goes online).
+Every push that changes `companion/` updates it within a few minutes.
+
+## Run locally
 
 Web Serial needs desktop **Chrome or Edge** and a secure origin
 (`http://localhost` counts).
@@ -87,9 +93,10 @@ ATA, then shows **TO WALLET** + the wallet address and a yellow
 
 Firmware with `caps` `wardrobe_v1` gets a **Wardrobe** card in the Device tab.
 
-1. Copy `config.example.js` to `config.local.js` (gitignored) and fill in the
-   fuchey.xyz Supabase URL and anon key (both public; RLS only exposes
-   published wearables and saved looks).
+1. `config.js` holds the fuchey.xyz Supabase URL and publishable key (both
+   public; RLS only exposes published wearables and saved looks). To point a
+   local copy elsewhere, copy `config.example.js` to `config.local.js`
+   (gitignored), which wins over `config.js`.
 2. On connect the page reads Fuchey's wallet + linked wallets, finds the
    Metaplex Core assets they own on the device's network
    (`getProgramAccounts` on the Core program, owner at offset 1; an item

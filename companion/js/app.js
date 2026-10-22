@@ -62,7 +62,7 @@ function describeBrowserError(err) {
     return "The USB port is busy. Close anything else using Fuchey (pio monitor, fuchey_usb.py, another tab with this page), then press Connect again.";
   }
   if (name === "InvalidStateError") return "The USB port is already open. Reload this page and connect again.";
-  if (name === "SecurityError") return "The browser blocked USB access. Open this page on http://localhost (or HTTPS) in Chrome or Edge.";
+  if (name === "SecurityError") return "The browser blocked USB access. Open this page over HTTPS (or http://localhost) in Chrome or Edge.";
   if (/failed to fetch|networkerror when attempting/i.test(msg)) {
     return "Can't reach the Solana RPC. Check your internet connection, or the RPC URL in Settings.";
   }
