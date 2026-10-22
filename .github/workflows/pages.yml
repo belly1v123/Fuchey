@@ -1,4 +1,5 @@
 # Publishes companion/ (and only companion/) to GitHub Pages.
+# Site: https://belly1v123.github.io/Fuchey/
 name: Companion on GitHub Pages
 
 on:
