@@ -32,7 +32,7 @@ const K = 5;
 const DEV_ALL_KEY = "fuchey.dev.allCharacters";
 
 let ctx = null;          // { device, rpc, log, describe }
-let catalog = null;      // Catalog, once config.local.js is loaded
+let catalog = null;      // Catalog, once the config is loaded
 const wr = {
   info: null,            // hello reply
   network: null,
@@ -53,15 +53,17 @@ const wr = {
   art: new Map(),        // character id → loaded base Image (or null while loading / failed)
 };
 
-// ── config (companion/config.local.js, gitignored) ────────
+// ── config: config.local.js (gitignored override), else config.js ──
 async function loadConfig() {
   if (catalog) return catalog;
-  try {
-    const mod = await import("../config.local.js");
-    catalog = new Catalog(mod.default ?? mod);
-  } catch {
-    catalog = new Catalog({});
+  for (const file of ["../config.local.js", "../config.js"]) {
+    try {
+      const mod = await import(file);
+      catalog = new Catalog(mod.default ?? mod);
+      if (catalog.configured) return catalog;
+    } catch {}
   }
+  catalog = new Catalog({});
   return catalog;
 }
 
