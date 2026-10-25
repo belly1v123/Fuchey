@@ -41,6 +41,7 @@ enum class EventType : uint32_t {
     WEATHER_UPDATED      = 0x0040,
     PRICE_UPDATED        = 0x0041,
     BALANCE_UPDATED      = 0x0042,
+    FUNDS_RECEIVED       = 0x0043,  // IncomingWatcher: SOL/USDC balance went up
 
     // UI
     UI_BUTTON_CONFIRM    = 0x0050,
@@ -124,6 +125,12 @@ struct Event {
             double   usdc;
             bool     ok;
         } balance;
+
+        // FUNDS_RECEIVED (amounts that arrived since the previous check)
+        struct {
+            double   sol;
+            double   usdc;
+        } funds;
 
         // UI
         struct {

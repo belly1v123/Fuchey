@@ -1,5 +1,6 @@
-# Name,   Type, SubType, Offset,  Size,     Flags
-nvs,      data, nvs,     0x9000,  0x4000,
-otadata,  data, ota,     0xD000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x600000,
-spiffs,   data, spiffs,  0x610000,0x9F0000,
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x4000,
+otadata,  data, ota,      0xD000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x600000,
+# Wearable items (LittleFS, mounted at /fs). 0xE10000..0xFFFFFF is spare.
+items,    data, littlefs, 0x610000, 0x800000,

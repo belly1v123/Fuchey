@@ -4,8 +4,8 @@
 // subsystem initialization, and FreeRTOS task pinning.
 // ============================================================
 
-#include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "esp_timer.h"
@@ -44,7 +44,10 @@
 #include "../lib/weather/WeatherService.hpp"
 #include "../lib/price/PriceService.hpp"
 #include "../lib/balance/BalanceMonitor.hpp"
+#include "../lib/balance/IncomingWatcher.hpp"
 #include "../lib/protocol/UsbProtocol.hpp"
+#include "../lib/wearables/ItemStore.hpp"
+#include "../lib/wearables/Wardrobe.hpp"
 
 namespace Fuchey {
 namespace Events {
@@ -96,6 +99,7 @@ static const char* get_usdc_mint() {
 }
 
 static Fuchey::BalanceMonitor s_balance_monitor(s_wifi_manager, "", get_usdc_mint(), get_rpc_url());
+static Fuchey::IncomingWatcher s_incoming(s_balance_monitor, s_wifi_manager);
 
 static bool is_mainnet() { return !s_is_devnet; }
 
@@ -745,14 +749,13 @@ static void boot_screen() {
 }
 
 extern "C" void app_main(void) {
-    // Console = USB-Serial-JTAG. Install its driver so stdin reads block
-    // (fgets in the console task) and long companion frames (~2.4 KB) fit.
+    // Console = UART0 (the board's "COM" connector). Install its driver so
+    // stdin reads block (fgets in the console task) and long companion frames
+    // (~2.4 KB) fit.
     {
-        usb_serial_jtag_driver_config_t usj = {};
-        usj.tx_buffer_size = 4096;
-        usj.rx_buffer_size = 4096;
-        if (usb_serial_jtag_driver_install(&usj) == ESP_OK) {
-            usb_serial_jtag_vfs_use_driver();
+        const uart_port_t port = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
+        if (uart_driver_install(port, 4096, 4096, 0, nullptr, 0) == ESP_OK) {
+            uart_vfs_dev_use_driver(port);
         }
     }
     ESP_LOGI(TAG, "=================================================");
@@ -772,6 +775,15 @@ extern "C" void app_main(void) {
     // 2. Initialize System Layer (NVS, Storage, Drivers)
     ESP_ERROR_CHECK(Fuchey::Storage::init());
     ESP_LOGI(TAG, "[OK] Storage (NVS) initialized");
+
+    // Wearables: item files on LittleFS + what Yeti wears (NVS). A failed
+    // mount only disables the wardrobe; the wallet never depends on it.
+    if (Fuchey::item_store().mount()) {
+        ESP_LOGI(TAG, "[OK] Item storage mounted");
+    } else {
+        ESP_LOGW(TAG, "[!!] Item storage unavailable — wardrobe disabled");
+    }
+    Fuchey::wardrobe().load();
 
     // Legacy cleanup: the AI assistant was removed. Wipe any LLM API key /
     // endpoint an older build left in NVS. Delete this block once every
@@ -911,6 +923,8 @@ extern "C" void app_main(void) {
 
     // Wire BalanceMonitor to UIManager for on-demand balance fetch
     s_ui.set_balance_monitor(&s_balance_monitor);
+    // Incoming money → FUNDS_RECEIVED → happy Yeti + chirp on HOME.
+    s_incoming.start();
 
     // Wire PriceService to UIManager for cached 24h market data (no HTTP on UI task)
     s_ui.set_price_service(&s_price_service);

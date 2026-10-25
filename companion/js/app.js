@@ -7,6 +7,7 @@ import {
   buildTokenTransferCheckedWithCreate, findAssociatedTokenAddress, TOKEN_ACCOUNT_RENT_LAMPORTS,
 } from "./solana.js";
 import { qrSvg } from "./qr.js";
+import * as wardrobe from "./wardrobe.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -61,7 +62,7 @@ function describeBrowserError(err) {
     return "The USB port is busy. Close anything else using Fuchey (pio monitor, fuchey_usb.py, another tab with this page), then press Connect again.";
   }
   if (name === "InvalidStateError") return "The USB port is already open. Reload this page and connect again.";
-  if (name === "SecurityError") return "The browser blocked USB access. Open this page on http://localhost (or HTTPS) in Chrome or Edge.";
+  if (name === "SecurityError") return "The browser blocked USB access. Open this page over HTTPS (or http://localhost) in Chrome or Edge.";
   if (/failed to fetch|networkerror when attempting/i.test(msg)) {
     return "Can't reach the Solana RPC. Check your internet connection, or the RPC URL in Settings.";
   }
@@ -225,6 +226,13 @@ function renderConnected() {
   $("recovery").classList.toggle("hidden", !canRecover);
   const canCreate = Array.isArray(info.caps) && info.caps.includes("wallet_create");
   $("rec-title").textContent = info.has_wallet ? "Recovery words" : "Set up a wallet";
+  $("rec-summary").textContent = info.has_wallet
+    ? "Check your backup words against this Fuchey."
+    : "Create a new wallet or restore one from your words.";
+  fillList($("dev-summary"), [
+    ["Wallet", info.has_wallet ? shortAddr(info.pubkey) : "None yet"],
+    ["Firmware", `${info.fw} · protocol v${info.proto}`],
+  ]);
   $("btn-rec-check").classList.toggle("hidden", !info.has_wallet);
   $("btn-rec-restore").classList.toggle("hidden", info.has_wallet);
   $("btn-create").classList.toggle("hidden", info.has_wallet || !canCreate);
@@ -237,6 +245,7 @@ function renderConnected() {
   const canSetup = Array.isArray(info.caps) && info.caps.includes("settings_v1");
   $("setup").classList.toggle("hidden", !canSetup);
   if (canSetup) refreshStatus();
+  wardrobe.onConnected(info, network);
   if (info.has_wallet) {
     $("address").textContent = shortAddr(info.pubkey);
     $("recv-address").textContent = info.pubkey;
@@ -259,6 +268,7 @@ function renderDisconnected() {
   $("send").classList.add("hidden");
   $("setup").classList.add("hidden");
   $("recovery").classList.add("hidden");
+  wardrobe.onDisconnected();
   $("device-empty").classList.remove("hidden");
   closeSheet("sheet-send");
   closeSheet("sheet-receive");
@@ -272,6 +282,7 @@ const rec = { active: false, purpose: null, busy: false, kind: "recovery", poll:
 
 function recShow(active) {
   rec.active = active;
+  if (active) setFold("rec-body", true);
   $("rec-idle").classList.toggle("hidden", active);
   $("rec-active").classList.toggle("hidden", !active);
 }
@@ -453,6 +464,26 @@ function buildRecGrid() {
 }
 
 // ── device setup (WiFi + weather location) ────────────────
+// <dl> from [term, value] pairs.
+function fillList(dl, pairs) {
+  dl.innerHTML = "";
+  for (const [k, v] of pairs) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+
+// Folded card bodies: the card shows a one-line summary until "Change"/"Open".
+function setFold(id, open) {
+  $(id).classList.toggle("hidden", !open);
+  const btn = document.querySelector(`[data-fold="${id}"]`);
+  if (!btn) return;
+  btn.dataset.label ??= btn.textContent;
+  btn.textContent = open ? "Close" : btn.dataset.label;
+  btn.setAttribute("aria-expanded", String(open));
+}
+
 function setMsg(id, text, ok = false) {
   const el = $(id);
   el.textContent = text;
@@ -463,20 +494,15 @@ function setMsg(id, text, ok = false) {
 async function refreshStatus() {
   try {
     const st = await device.getStatus();
-    const dl = $("setup-status");
-    dl.innerHTML = "";
     const wifi = !st.wifi.configured ? "Not set up"
       : st.wifi.online ? `Connected to "${st.wifi.ssid}"`
       : st.wifi.connected ? `Joining "${st.wifi.ssid}"…`
       : `Not connected ("${st.wifi.ssid}" saved)`;
     const loc = st.location.configured
-      ? `${st.location.city} (${st.location.lat.toFixed(3)}, ${st.location.lon.toFixed(3)})`
+      ? st.location.city
       : "Not set (using the default)";
-    for (const [k, v] of [["WiFi", wifi], ["Weather location", loc]]) {
-      const dt = document.createElement("dt"); dt.textContent = k;
-      const dd = document.createElement("dd"); dd.textContent = v;
-      dl.append(dt, dd);
-    }
+    $("wifi-summary").textContent = wifi;
+    $("loc-summary").textContent = loc;
     if (!$("wifi-ssid").value && st.wifi.ssid) $("wifi-ssid").value = st.wifi.ssid;
     return st;
   } catch (e) {
@@ -659,7 +685,7 @@ let currentTab = "wallet";
 function showTab(name) {
   currentTab = name;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
-  for (const n of ["wallet", "device", "settings"]) $(`tab-${n}`).classList.toggle("hidden", n !== name);
+  for (const n of ["wallet", "wardrobe", "device", "settings"]) $(`tab-${n}`).classList.toggle("hidden", n !== name);
   $("intro").classList.toggle("hidden", !!state.info || name !== "wallet");
 }
 
@@ -1031,6 +1057,7 @@ function init() {
     $("unsupported").classList.remove("hidden");
     $("btn-connect").disabled = true;
   }
+  wardrobe.init({ device, rpc, log, describe });
   $("btn-connect").addEventListener("click", () => connect());
   $("btn-connect-cancel").addEventListener("click", async () => {
     connectCancelled = true;
@@ -1087,6 +1114,9 @@ function init() {
     t.addEventListener("click", () => showTab(t.dataset.tab));
   }
   showTab("wallet");
+  for (const b of document.querySelectorAll("[data-fold]")) {
+    b.addEventListener("click", () => setFold(b.dataset.fold, $(b.dataset.fold).classList.contains("hidden")));
+  }
   $("send-form").addEventListener("submit", onSend);
   $("btn-status").addEventListener("click", refreshStatus);
   $("btn-net").addEventListener("click", onNetworkSwitch);

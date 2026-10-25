@@ -13,7 +13,9 @@ namespace Fuchey {
 using SpritePixel = uint16_t;  // RGB565, CPU order
 
 struct SpriteAnim {
-    const SpritePixel* data;   // frames packed back-to-back, w*h each
+    // Frames packed back-to-back, w*h each; nullptr when the caller draws
+    // the frames itself (character packs) and only uses the timing.
+    const SpritePixel* data;
     uint16_t w = 0;
     uint16_t h = 0;
     uint8_t frames = 0;
@@ -34,7 +36,7 @@ public:
 
     void clear() { m_anim = nullptr; m_done = false; m_last_frame = 255; }
 
-    bool has_anim() const { return m_anim != nullptr && m_anim->data != nullptr && m_anim->frames > 0; }
+    bool has_anim() const { return m_anim != nullptr && m_anim->frames > 0; }
     bool done() const { return m_done; }
 
     uint8_t frame_at(uint32_t now_ms) const {
@@ -60,7 +62,7 @@ public:
     }
 
     const SpritePixel* frame_data(uint8_t f) const {
-        if (!has_anim() || f >= m_anim->frames) return nullptr;
+        if (!has_anim() || m_anim->data == nullptr || f >= m_anim->frames) return nullptr;
         return m_anim->data + static_cast<size_t>(f) * static_cast<size_t>(m_anim->w) * m_anim->h;
     }
 

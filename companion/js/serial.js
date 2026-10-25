@@ -8,6 +8,12 @@ const PREFIX = "@@";
 const CHUNK = 256;          // bytes per write; gentle on the device RX buffer
 const CHUNK_DELAY_MS = 8;
 
+// USB vendor IDs Fuchey can appear under: the board's "COM" connector
+// (WCH CH343 bridge to UART0, where the firmware talks) and its native
+// "USB" connector (Espressif, flashing only on current firmware).
+const FUCHEY_VIDS = [0x1a86, 0x303a];
+const PORT_FILTERS = FUCHEY_VIDS.map((usbVendorId) => ({ usbVendorId }));
+
 // ── CRC32 (IEEE / zlib), identical to UsbProtocol::crc32 ──
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -54,25 +60,26 @@ export class FucheyDevice extends EventTarget {
     return this.port !== null;
   }
 
-  /** Show the browser's port picker (Espressif devices). */
+  /** Show the browser's port picker (Fuchey's COM bridge or native USB). */
   static pick() {
-    return navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    return navigator.serial.requestPort({ filters: PORT_FILTERS });
   }
 
   /** A Fuchey this site was already allowed to use (no picker), or null. */
   static async knownPort() {
     const ports = await navigator.serial.getPorts();
-    return ports.find((p) => p.getInfo().usbVendorId === 0x303a) || null;
+    return ports.find((p) => FUCHEY_VIDS.includes(p.getInfo().usbVendorId)) || null;
   }
 
   /** Open `port` (auto-reconnect) or ask the user to pick one. */
   async connect(port = null) {
-    // Espressif USB VID. The picker still lists others if absent.
-    this.port = port || await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    this.port = port || await navigator.serial.requestPort({ filters: PORT_FILTERS });
     await this.port.open({ baudRate: 115200, bufferSize: 16384 });
     try {
-      // "Run" line state: never the DTR/RTS pattern that resets into the bootloader.
-      await this.port.setSignals({ dataTerminalReady: true, requestToSend: false });
+      // Both lines released: the COM connector's auto-reset circuit pulls EN
+      // low on RTS and GPIO0 low on DTR, so either one alone would reset the
+      // board or hold it in the bootloader.
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
     } catch { /* not supported on every platform */ }
     this.port.addEventListener?.("disconnect", () => this._closed("disconnected"));
     this._readLoop();
@@ -174,6 +181,9 @@ export class FucheyDevice extends EventTarget {
    */
   request(cmd, params = {}, { timeoutMs = 5000, onEvent } = {}) {
     if (!this.port) return Promise.reject(new DeviceError("disconnected"));
+    // "id" and "cmd" belong to the frame; a param with either name would
+    // overwrite them and the reply could never be matched.
+    if ("id" in params || "cmd" in params) return Promise.reject(new Error(`${cmd}: params must not use "id"/"cmd"`));
     const id = this.nextId++;
     const body = JSON.stringify({ id, cmd, ...params });
     const line = `${PREFIX}${body}*${hex8(crc32(this.encoder.encode(body)))}\n`;
@@ -282,7 +292,66 @@ export class FucheyDevice extends EventTarget {
   cancel() {
     return this.request("cancel", {}, { timeoutMs: 3000 });
   }
+
+  // ── Wardrobe (cap "wardrobe_v1") — cosmetic data only ──
+  // Items are resolved for one character; `character` picks whose items
+  // (omitted = the built-in Yeti, the only one before cap "characters_v1").
+  /** → { items: [{id, slot, z, bytes, crc}], used, total } */
+  itemList(character) {
+    return this.request("item_list", charField(character), { timeoutMs: 8000 });
+  }
+
+  /** Upload one FWR1 item file (Uint8Array). Fuchey checks size, CRC and format before saving. */
+  itemInstall(id, bytes, onProgress, character) {
+    return this.#upload("item", { item: id, ...charField(character) }, bytes, onProgress);
+  }
+
+  /** Deletes the item and takes it off that character's slots. */
+  itemDelete(id, character) {
+    return this.request("item_delete", { item: id, ...charField(character) }, { timeoutMs: 5000 });
+  }
+
+  // ── Character packs (cap "characters_v1") ──
+  /** → { active, chars: [{id, bytes, crc}] } */
+  charList() {
+    return this.request("char_list", {}, { timeoutMs: 15000 });
+  }
+
+  /** Upload a character pack (FCP1, Uint8Array); onProgress(sent, total). */
+  charInstall(id, bytes, onProgress) {
+    return this.#upload("char", { char: id }, bytes, onProgress);
+  }
+
+  /** Deletes a pack (Fuchey goes back to the Yeti if it was on screen). */
+  charDelete(id) {
+    return this.request("char_delete", { char: id }, { timeoutMs: 5000 });
+  }
+
+  // <kind>_begin / _chunk / _end; `name` is { item } or { char } (+ character).
+  async #upload(kind, name, bytes, onProgress) {
+    const key = kind === "char" ? { char: name.char } : { item: name.item };
+    const begin = await this.request(`${kind}_begin`, { ...name, size: bytes.length, crc: crc32(bytes) }, { timeoutMs: 5000 });
+    const step = Math.min(begin.chunk || 1024, 1024);
+    let seq = 0;
+    for (let off = 0; off < bytes.length; off += step, seq++) {
+      await this.request(`${kind}_chunk`, { ...key, seq, data: bytesToBase64(bytes.subarray(off, off + step)) }, { timeoutMs: 5000 });
+      onProgress?.(Math.min(off + step, bytes.length), bytes.length);
+    }
+    return this.request(`${kind}_end`, key, { timeoutMs: 15000 });
+  }
+
+  /** → { character, "wear.<slot>": id|"none" (that character's look), …, linked_wallets: [address] } */
+  async getSettings() {
+    return (await this.request("get_settings", {}, { timeoutMs: 3000 })).settings || {};
+  }
+
+  setSetting(key, value) {
+    return this.request("set_setting", { key, value }, { timeoutMs: 5000 });
+  }
 }
+
+// The Yeti is the default on Fuchey, so it is never sent (older firmware has no "character").
+const charField = (character) => (character && character !== "yeti" ? { character } : {});
 
 export function bytesToBase64(bytes) {
   let s = "";

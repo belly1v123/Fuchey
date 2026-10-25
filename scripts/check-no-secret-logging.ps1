@@ -18,7 +18,10 @@ $ErrorActionPreference = 'Stop'
 $repo    = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $fwRoot  = Join-Path $repo 'firmware'
 $ext     = @('*.c','*.cc','*.cpp','*.h','*.hpp')
-$sources = Get-ChildItem -LiteralPath $fwRoot -Recurse -File -Include $ext
+# Vendored components' examples/ and test/ trees are never built into the
+# firmware (e.g. esp_websocket_client's example hex-dumps received frames).
+$sources = Get-ChildItem -LiteralPath $fwRoot -Recurse -File -Include $ext |
+    Where-Object { $_.FullName -notmatch '[\\/]managed_components[\\/][^\\/]+[\\/](examples|test|tests)[\\/]' }
 
 $blocked = @()
 

@@ -6,8 +6,10 @@
 #include "UIManager.hpp"
 #include "Animations.hpp"
 #include "SpritePlayer.hpp"
-#include "YetiAnim.hpp"
+#include "YetiIdle96.hpp"
 #include "DndAnim.hpp"
+#include "HappyAnim.hpp"
+#include "HeadAnchors.hpp"
 #include "FairPass.hpp"
 #include "PassDesign.hpp"
 #include "PassBlurTop.hpp"
@@ -31,6 +33,8 @@
 #include "PoppinsRegular9pt7b.h"
 #include "PoppinsBold9pt7b.h"
 #include "../../config/Config.hpp"
+#include "../../wearables/ItemStore.hpp"
+#include "../../wearables/Wardrobe.hpp"
 #include "../../buttons/ButtonDriver.hpp"
 #include "../../led_indicator/LedIndicator.hpp"
 #include "../../price/PriceService.hpp"
@@ -49,6 +53,12 @@ extern "C" {
 namespace Fuchey {
 
 static constexpr const char* TAG = "UIManager";
+
+// Happy mood (money received): the generated frames at 8 fps, looping
+// for as long as Behaviour keeps the mood (Behaviour::kHappyMs).
+static const SpriteAnim kHappyClip = {
+    HappyAnim_data, HappyAnim.w, HappyAnim.h, HappyAnim.frames, 8, true,
+};
 
 // Extended palette (RGB565) for a richer TFT look — the built-in set only
 // has white/black/red/green/yellow/blue.
@@ -264,6 +274,19 @@ void UIManager::process_event(const Events::Event& evt) {
             ESP_LOGI(TAG, "Balance updated: %.4f SOL ($%.2f USDC) ok=%d",
                      m_bal_sol, m_bal_usdc, m_bal_ok);
             break;
+
+        case Events::EventType::FUNDS_RECEIVED: {
+            const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            ESP_LOGI(TAG, "Funds received: +%.9f SOL, +%.6f USDC",
+                     evt.data.funds.sol, evt.data.funds.usdc);
+            m_behaviour.on_funds_received(now);
+            m_bal_fetched = false;   // cached balance is stale now
+            // Two short chirps, unless DND is on or Pomodoro owns the buzzer.
+            if (m_buzzer && !m_dnd_mode && !m_buzz.is_active()) {
+                m_buzz.start(now, *m_buzzer, 2, 90, 90);
+            }
+            break;
+        }
 
         case Events::EventType::TX_REQUEST:
             m_confirm = evt.data.confirm;
@@ -1831,29 +1854,35 @@ void UIManager::render_home() {
     // Exact lopaka placement: time (5,4) size 3, date (5,53) size 2,
     // temp (5,88) size 2, icon 30x32 at (88,88), yeti 120x120 at (133,111).
     // Frosted pill hugs the glyphs (pad 1), not a filled band.
-    static constexpr int kYetiX = 133, kYetiY = 111;
     static constexpr int kTimeX = 5,   kTimeY = 4, kTimeScale = 3;
     static constexpr int kDateX = 5,   kDateY = 53, kDateSize = 2;
     static constexpr int kWx = 5,      kWy = 88, kWSize = 2;
     static constexpr int kIx = 88,     kIy = 88;
-    static constexpr Color kTransparent = 0xF81F;
     static constexpr Color kClock = 0xFFE0;  // yellow
 
     uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    // Mood anim: idle Yeti vs DND Yeti (same 120x120 geometry, so all crop/
-    // flush rect math below stays valid for both).
-    const SpriteAnim* want_anim = m_dnd_mode ? &DndAnim : &YetiAnim;
+    // Mood anim: idle / Happy Yeti (96x96 drawn at 1.25x) vs DND Yeti
+    // (120x120); all fill the same 120x120 box at (133,111) (see draw_home_yeti).
+    const Mood mood = m_behaviour.home_mood(now, m_dnd_mode);
+    // Character switched or its pack replaced (companion app): restart the clip.
+    if (refresh_character()) m_home_started = false;
+    const SpriteAnim* want_anim = m_pack                ? &m_pack_anims[static_cast<uint8_t>(mood)]
+                                : mood == Mood::Dnd   ? &DndAnim
+                                : mood == Mood::Happy ? &kHappyClip
+                                                      : &YetiIdle96;
+    // Wardrobe or item files changed (companion app): rebuild the screen.
+    if (m_wear.refresh()) m_home_chrome = false;
     if (!m_home_started) {
         m_home_yeti.set_anim(want_anim, now);
         m_home_started = true;
-        m_home_dnd = m_dnd_mode;
+        m_home_mood = mood;
         m_home_chrome = false;
     }
-    if (m_home_dnd != m_dnd_mode) {
+    if (m_home_mood != mood) {
         // Mood flipped while home was live: swap anim + force full chrome
         // rebuild (bg/crop state is wiped by the chrome path below).
         m_home_yeti.set_anim(want_anim, now);
-        m_home_dnd = m_dnd_mode;
+        m_home_mood = mood;
         m_home_chrome = false;
     }
 
@@ -1962,14 +1991,11 @@ void UIManager::render_home() {
         m_display.draw_sprite(0, 0, PassDesign.w, PassDesign.h, PassDesign.data);
         frost_rows();
         draw_texts();
-        const SpritePixel* f0 = m_home_yeti.current_frame_data();
-        if (f0 != nullptr) {
-            m_display.draw_sprite_transparent(kYetiX, kYetiY,
-                YetiAnim.w, YetiAnim.h, f0, kTransparent);
-        }
+        draw_home_yeti(m_home_yeti.current_frame());
         m_display.flush();
         m_home_chrome = true;
         m_home_last_frame = m_home_yeti.current_frame();
+        home_yeti_rect(m_home_last_frame, m_home_yx, m_home_yy, m_home_yw, m_home_yh);
         m_home_last_minute = minute;
         m_home_tx = px; m_home_ty = py; m_home_tw = pw; m_home_th = ph;
         snprintf(m_home_wbuf, sizeof(m_home_wbuf), "%s", wbuf);
@@ -2003,13 +2029,155 @@ void UIManager::render_home() {
     if (fr == m_home_last_frame) return;
     m_home_last_frame = fr;
 
-    const SpritePixel* f = m_home_yeti.current_frame_data();
+    // Restore the photo under last frame's Yeti + items and this frame's,
+    // then redraw. Items can reach past the Yeti box (hats, held items), so
+    // if that box touches the frosted text rows, those are redrawn too.
+    int nx, ny, nw, nh;
+    home_yeti_rect(fr, nx, ny, nw, nh);
+    const int rx = std::max(0, std::min(nx, m_home_yx));
+    const int ry = std::max(0, std::min(ny, m_home_yy));
+    const int rr = std::min(Display::WIDTH, std::max(nx + nw, m_home_yx + m_home_yw));
+    const int rb = std::min(Display::HEIGHT, std::max(ny + nh, m_home_yy + m_home_yh));
+    if (rr <= rx || rb <= ry) return;
+    m_display.draw_sprite_crop(rx, ry, PassDesign.w, rx, ry, rr - rx, rb - ry, PassDesign.data);
+    const bool touches_text = rx < m_home_tx + m_home_tw && m_home_tx < rr &&
+                              ry < m_home_ty + m_home_th && m_home_ty < rb;
+    if (touches_text) {
+        frost_rows();
+        draw_texts();
+    }
+    draw_home_yeti(fr);
+    m_display.flush_window(rx, ry, rr - rx, rb - ry);
+    m_home_yx = nx; m_home_yy = ny; m_home_yw = nw; m_home_yh = nh;
+}
+
+// ─── Home Yeti + worn items ────────────────────────────────
+// Idle mood: the original 96×96 frames (same grid as the website's
+// yeti.png) drawn at 1.25× into the old 120×120 box, with every worn
+// item's back layer behind and front layer on top. The idle animation
+// bobs the upper body; kYetiIdleDy moves the items with it.
+// DND keeps its own 120×120 art and Happy its own 96×96 frames (drawn at
+// 1.25× like idle). Their body poses differ, so only head items (hat,
+// headwear) are worn there, shifted by the clip's measured head offset
+// (HeadAnchors.hpp, from scripts/head_anchors.py).
+namespace {
+constexpr int kHomeYetiX = 133, kHomeYetiY = 111;      // same box as before
+constexpr int kHomeScaleNum = 5, kHomeScaleDen = 4;    // 96 → 120
+constexpr Color kHomeTransparent = 0xF81F;
+// Upper-body offset (grid px) of each idle frame vs yeti.png, measured
+// from the frames: 0 = same pose as the website's art.
+constexpr int8_t kYetiIdleDy[12] = {0, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 0};
+constexpr int    kYetiLegsY = 70;     // rows from here down (legs, feet) never move
+
+CharacterPose home_pose(uint8_t frame) {
+    CharacterPose p;
+    p.origin_x  = kHomeYetiX;
+    p.origin_y  = kHomeYetiY;
+    p.scale_num = kHomeScaleNum;
+    p.scale_den = kHomeScaleDen;
+    p.dy        = frame < sizeof(kYetiIdleDy) ? kYetiIdleDy[frame] : 0;
+    p.still_from_y = kYetiLegsY;
+    return p;
+}
+} // namespace
+
+// A marketplace character other than the Yeti: its pack (FCP1) is drawn
+// 1:1 into the same 120×120 box, which is the item grid at 1.25×, and
+// every frame carries its head offset. Idle moves every item with that
+// offset (legs and below stay put); happy / DND wear head items only,
+// like the Yeti.
+bool UIManager::refresh_character() {
+    const std::string want = wardrobe().character();
+    const uint32_t gen = item_store().pack_generation();
+    if (want == m_home_char && gen == m_home_pack_gen) return false;
+    const bool was_pack = m_pack != nullptr;
+    m_home_char = want;
+    m_home_pack_gen = gen;
+    m_pack.reset();
+    if (!ItemStore::is_builtin(want.c_str())) {
+        auto pack = std::make_unique<CharacterPack>();
+        if (item_store().load_pack(want.c_str(), *pack)) {
+            for (uint8_t m = 0; m < CharacterPack::MOOD_COUNT; ++m) {
+                const auto& c = pack->clip(static_cast<CharacterPack::Mood>(m));
+                m_pack_anims[m] = {nullptr, c.w, c.h, static_cast<uint8_t>(c.frames.size()), c.fps, true};
+            }
+            m_pack = std::move(pack);
+            ESP_LOGI(TAG, "Home character: %s", want.c_str());
+        } else {
+            ESP_LOGW(TAG, "Home character %s has no usable pack: showing the Yeti", want.c_str());
+        }
+    }
+    return was_pack || m_pack != nullptr;
+}
+
+const CharacterPack::Clip& UIManager::pack_clip() const {
+    const auto m = m_home_mood == Mood::Dnd   ? CharacterPack::DND
+                 : m_home_mood == Mood::Happy ? CharacterPack::HAPPY
+                                              : CharacterPack::IDLE;
+    return m_pack->clip(m);
+}
+
+CharacterPose UIManager::home_item_pose(uint8_t frame) const {
+    if (m_pack) {
+        const auto& clip = pack_clip();
+        CharacterPose p = home_pose(0);
+        p.dx = frame < clip.frames.size() ? clip.frames[frame].dx : 0;
+        p.dy = frame < clip.frames.size() ? clip.frames[frame].dy : 0;
+        const bool idle = m_home_mood == Mood::Idle;
+        p.still_from_y = idle ? m_pack->legs_y() : 1 << 20;
+        p.head_only = !idle;
+        return p;
+    }
+    if (m_home_mood == Mood::Idle) return home_pose(frame);
+    const HeadAnchors& a = m_home_mood == Mood::Dnd ? DndAnimHead : HappyAnimHead;
+    CharacterPose p = home_pose(0);
+    p.dx = frame < a.frames ? a.dx[frame] : 0;
+    p.dy = frame < a.frames ? a.dy[frame] : 0;
+    p.still_from_y = 1 << 20;   // head items: move with the head
+    p.head_only = true;
+    return p;
+}
+
+void UIManager::home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const {
+    x = kHomeYetiX; y = kHomeYetiY; w = 120; h = 120;
+    int ix, iy, iw, ih;
+    if (m_wear.bounds(home_item_pose(frame), ix, iy, iw, ih)) {
+        const int r = std::max(x + w, ix + iw), b = std::max(y + h, iy + ih);
+        x = std::min(x, ix);
+        y = std::min(y, iy);
+        w = r - x;
+        h = b - y;
+    }
+}
+
+void UIManager::draw_home_yeti(uint8_t frame) {
+    if (m_pack) {
+        const CharacterPose pose = home_item_pose(frame);
+        m_wear.draw_back(m_display, pose);
+        m_pack->draw(m_display, pack_clip(), frame, kHomeYetiX, kHomeYetiY);
+        m_wear.draw_front(m_display, pose);
+        return;
+    }
+    const SpritePixel* f = m_home_yeti.frame_data(frame);
     if (f == nullptr) return;
-    m_display.draw_sprite_crop(kYetiX, kYetiY, PassDesign.w,
-        kYetiX, kYetiY, YetiAnim.w, YetiAnim.h, PassDesign.data);
-    m_display.draw_sprite_transparent(kYetiX, kYetiY,
-        YetiAnim.w, YetiAnim.h, f, kTransparent);
-    m_display.flush_window(kYetiX, kYetiY, YetiAnim.w, YetiAnim.h);
+    const CharacterPose pose = home_item_pose(frame);
+    m_wear.draw_back(m_display, pose);
+    if (m_home_mood == Mood::Dnd) {
+        m_display.draw_sprite_transparent(kHomeYetiX, kHomeYetiY, DndAnim.w, DndAnim.h,
+                                          f, kHomeTransparent);
+        m_wear.draw_front(m_display, pose);
+        return;
+    }
+    if (m_home_mood == Mood::Happy) {
+        // 96 grid like idle, drawn at the same 1.25x.
+        m_display.draw_sprite_scaled_transparent(kHomeYetiX, kHomeYetiY, HappyAnim.w, HappyAnim.h,
+                                                 f, kHomeTransparent, kHomeScaleNum, kHomeScaleDen);
+        m_wear.draw_front(m_display, pose);
+        return;
+    }
+    m_display.draw_sprite_scaled_transparent(kHomeYetiX, kHomeYetiY, YetiIdle96.w, YetiIdle96.h,
+                                             f, kHomeTransparent, kHomeScaleNum, kHomeScaleDen);
+    m_wear.draw_front(m_display, pose);
 }
 
 // ─── Setup wizard renderer (Poppins mix, all FreeSans-free) ───

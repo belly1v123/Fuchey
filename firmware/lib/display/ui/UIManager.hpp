@@ -15,8 +15,12 @@
 #include "../../wallet/WalletCreateSession.hpp"
 #include "../../wallet/RecoveryController.hpp"
 #include "../../pomodoro/PomodoroTimer.hpp"
+#include "../../wearables/WearRenderer.hpp"
+#include "../../wearables/CharacterPack.hpp"
+#include "../../behaviour/Behaviour.hpp"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Fuchey {
@@ -195,7 +199,9 @@ private:
     SpritePlayer m_home_yeti;
     // DND mood: when true the home overlay plays the DND Yeti instead of idle.
     bool        m_dnd_mode{false};
-    bool        m_home_dnd{false}; // which anim the player currently holds
+    // Picks the home clip from events (money received → Happy) and DND.
+    Behaviour   m_behaviour;
+    Mood        m_home_mood{Mood::Idle}; // which anim the player currently holds
     bool        m_home_started{false};
     bool        m_home_chrome{false};
     uint8_t     m_home_last_frame{255};
@@ -209,6 +215,22 @@ private:
     // "No WiFi" instead of empty time/weather while it is down.
     bool        m_wifi_up{false};
     uint8_t     m_home_wcode{255};
+    // Worn marketplace items, drawn around the home Yeti (idle mood only).
+    WearRenderer m_wear;
+    // Screen box the home Yeti + items covered last frame (restore/flush).
+    int         m_home_yx{0}, m_home_yy{0}, m_home_yw{0}, m_home_yh{0};
+    // The home character when it isn't the built-in Yeti (companion app
+    // setting "character"): its pack, loaded from flash, and one timing
+    // clip per mood for m_home_yeti. nullptr = the Yeti.
+    std::unique_ptr<CharacterPack> m_pack;
+    SpriteAnim  m_pack_anims[CharacterPack::MOOD_COUNT]{};
+    std::string m_home_char{"yeti"};
+    uint32_t    m_home_pack_gen{0};
+    bool        refresh_character();   // true when the home character changed
+    const CharacterPack::Clip& pack_clip() const;
+    CharacterPose home_item_pose(uint8_t frame) const;   // worn items for the current mood
+    void        home_yeti_rect(uint8_t frame, int& x, int& y, int& w, int& h) const;
+    void        draw_home_yeti(uint8_t frame);
     // Scrambled-grid recovery: drawn straight from the shared controller.
     RecoveryController* m_rc{nullptr};
     uint32_t    m_recovery_ms{0};          // result timer

@@ -83,6 +83,9 @@ public:
     void draw_sprite(int x, int y, int w, int h, const Color* data);
     void draw_sprite_transparent(int x, int y, int w, int h, const Color* data,
                                  Color transparent);
+    // Transparent blit scaled by num/den (nearest-neighbour, for pixel art).
+    void draw_sprite_scaled_transparent(int x, int y, int w, int h, const Color* data,
+                                        Color transparent, int num, int den);
     // Blits a w*h crop taken at (sx,sy) out of a srcW-wide source image.
     void draw_sprite_crop(int x, int y, int srcW, int sx, int sy,
                           int w, int h, const Color* data);
