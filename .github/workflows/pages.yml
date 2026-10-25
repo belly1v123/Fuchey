@@ -1,11 +1,11 @@
 # Publishes companion/ (and only companion/) to GitHub Pages.
 # Site: https://belly1v123.github.io/Fuchey/
-# Settings → Environments → github-pages must allow the companion-app branch.
+# Settings → Environments → github-pages must allow the main branch.
 name: Companion on GitHub Pages
 
 on:
   push:
-    branches: [companion-app]
+    branches: [main]
     paths: ["companion/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
