@@ -117,7 +117,7 @@ function waitingForAnswer() {
     const s = Math.round((Date.now() - t0) / 1000);
     $("connecting-status").textContent = s < 3
       ? "Waiting for Fuchey to answer…"
-      : `Waiting for Fuchey to answer… ${s} s — it may be restarting, give it a moment.`;
+      : `Waiting for Fuchey to answer… ${s} s — Fuchey restarts when the app connects; give it up to 30 s.`;
   };
   tick();
   clearInterval(connectingTimer);

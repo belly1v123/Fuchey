@@ -202,18 +202,20 @@ export class FucheyDevice extends EventTarget {
   }
 
   /** hello with retries (the device may still be booting after connect). */
-  // Opening the port can restart Fuchey; it needs ~7 s to boot, so keep
-  // asking for up to ~12 s before giving up.
-  async hello(attempts = 8) {
+  // Opening the COM port restarts Fuchey. Current firmware answers ~2 s into
+  // boot; older builds only after their WiFi wait (up to ~18 s without
+  // WiFi), so keep asking for up to 30 s before giving up.
+  async hello(totalMs = 30000) {
+    const deadline = Date.now() + totalMs;
     let last;
-    for (let i = 0; i < attempts; i++) {
+    do {
       try {
         return await this.request("hello", {}, { timeoutMs: 1500 });
       } catch (e) {
         last = e;
         if (e.code !== "no_reply") throw e;
       }
-    }
+    } while (Date.now() < deadline);
     throw last;
   }
 

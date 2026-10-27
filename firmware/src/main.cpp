@@ -883,57 +883,9 @@ extern "C" void app_main(void) {
                              Fuchey::Tasks::PRICE_STACK, &s_price_service,
                              Fuchey::Tasks::PRICE_PRIORITY, nullptr, Fuchey::Tasks::PRICE_CORE);
 
-    // Boot screen: wait for WiFi, time and weather (in parallel) so HOME
-    // opens complete.
-    boot_screen();
-
-    // 5. Detect first-boot state for UIManager setup screen
-    {
-        bool wifi_missing    = !s_wifi_manager.has_credentials();
-        bool wallet_missing  = !s_wallet_core.has_wallet();
-        bool location_missing = !s_weather_service.has_configured_location();
-        s_ui.set_setup_needed(wifi_missing, wallet_missing, location_missing);
-        s_ui.set_wifi_up(s_wifi_manager.has_ip());
-
-        ESP_LOGI(TAG, "-------------------------------------------------");
-        ESP_LOGI(TAG, "  Boot State:");
-        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing     ? "MISSING" : "SAVED");
-        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing   ? "MISSING" : "FOUND");
-        ESP_LOGI(TAG, "    Weather location : %s", location_missing ? "MISSING" : "SAVED");
-        ESP_LOGI(TAG, "-------------------------------------------------");
-    }
-
-    // 6. Spawn FreeRTOS Tasks with Strict CPU Core Pinning & Priorities
-    ESP_LOGI(TAG, "Spawning FreeRTOS tasks...");
-
-    // UI Task (Core 0)
-    xTaskCreatePinnedToCore(Fuchey::UIManager::task_entry, "ui_task",
-                            Fuchey::Tasks::UI_STACK, &s_ui,
-                            Fuchey::Tasks::UI_PRIORITY, nullptr, Fuchey::Tasks::UI_CORE);
-
-    // Wallet Manager Task (Core 1 — Security Critical)
-    xTaskCreatePinnedToCore(Fuchey::WalletManager::task_entry, "wallet_mgr_task",
-                            Fuchey::Tasks::WALLET_STACK, &s_wallet_manager,
-                            Fuchey::Tasks::WALLET_PRIORITY, nullptr, Fuchey::Tasks::WALLET_CORE);
-
-    // RGB LED Indicator Task (Core 0 — idle until a TX result arrives)
-    xTaskCreatePinnedToCore(Fuchey::LedIndicator::task_entry, "led_task",
-                            Fuchey::Tasks::LED_STACK, &s_led_indicator,
-                            Fuchey::Tasks::LED_PRIORITY, nullptr, Fuchey::Tasks::LED_CORE);
-
-    // Wire BalanceMonitor to UIManager for on-demand balance fetch
-    s_ui.set_balance_monitor(&s_balance_monitor);
-    // Incoming money → FUNDS_RECEIVED → happy Yeti + chirp on HOME.
-    s_incoming.start();
-
-    // Wire PriceService to UIManager for cached 24h market data (no HTTP on UI task)
-    s_ui.set_price_service(&s_price_service);
-
-    // Wire RGB LED indicator to UIManager for TX result feedback
-    s_ui.set_led_indicator(&s_led_indicator);
-
-    // Wire buzzer to UIManager for Pomodoro finish alerts (non-blocking pattern)
-    s_ui.set_buzzer(&s_buzzer);
+    // The companion app and serial console start before the boot screen:
+    // opening the COM port restarts Fuchey, and the app must get its hello
+    // answered within seconds, not after the WiFi wait (up to ~18 s).
 
     // App-driven wallet creation: UI draws the words, protocol confirms.
     s_ui.set_create_session(&s_wallet_create);
@@ -1641,6 +1593,58 @@ extern "C" void app_main(void) {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }, "console_task", 12288, nullptr, 4, nullptr, 0);
+
+    // Boot screen: wait for WiFi, time and weather (in parallel) so HOME
+    // opens complete.
+    boot_screen();
+
+    // 5. Detect first-boot state for UIManager setup screen
+    {
+        bool wifi_missing    = !s_wifi_manager.has_credentials();
+        bool wallet_missing  = !s_wallet_core.has_wallet();
+        bool location_missing = !s_weather_service.has_configured_location();
+        s_ui.set_setup_needed(wifi_missing, wallet_missing, location_missing);
+        s_ui.set_wifi_up(s_wifi_manager.has_ip());
+
+        ESP_LOGI(TAG, "-------------------------------------------------");
+        ESP_LOGI(TAG, "  Boot State:");
+        ESP_LOGI(TAG, "    WiFi credentials : %s", wifi_missing     ? "MISSING" : "SAVED");
+        ESP_LOGI(TAG, "    Wallet           : %s", wallet_missing   ? "MISSING" : "FOUND");
+        ESP_LOGI(TAG, "    Weather location : %s", location_missing ? "MISSING" : "SAVED");
+        ESP_LOGI(TAG, "-------------------------------------------------");
+    }
+
+    // 6. Spawn FreeRTOS Tasks with Strict CPU Core Pinning & Priorities
+    ESP_LOGI(TAG, "Spawning FreeRTOS tasks...");
+
+    // UI Task (Core 0)
+    xTaskCreatePinnedToCore(Fuchey::UIManager::task_entry, "ui_task",
+                            Fuchey::Tasks::UI_STACK, &s_ui,
+                            Fuchey::Tasks::UI_PRIORITY, nullptr, Fuchey::Tasks::UI_CORE);
+
+    // Wallet Manager Task (Core 1 — Security Critical)
+    xTaskCreatePinnedToCore(Fuchey::WalletManager::task_entry, "wallet_mgr_task",
+                            Fuchey::Tasks::WALLET_STACK, &s_wallet_manager,
+                            Fuchey::Tasks::WALLET_PRIORITY, nullptr, Fuchey::Tasks::WALLET_CORE);
+
+    // RGB LED Indicator Task (Core 0 — idle until a TX result arrives)
+    xTaskCreatePinnedToCore(Fuchey::LedIndicator::task_entry, "led_task",
+                            Fuchey::Tasks::LED_STACK, &s_led_indicator,
+                            Fuchey::Tasks::LED_PRIORITY, nullptr, Fuchey::Tasks::LED_CORE);
+
+    // Wire BalanceMonitor to UIManager for on-demand balance fetch
+    s_ui.set_balance_monitor(&s_balance_monitor);
+    // Incoming money → FUNDS_RECEIVED → happy Yeti + chirp on HOME.
+    s_incoming.start();
+
+    // Wire PriceService to UIManager for cached 24h market data (no HTTP on UI task)
+    s_ui.set_price_service(&s_price_service);
+
+    // Wire RGB LED indicator to UIManager for TX result feedback
+    s_ui.set_led_indicator(&s_led_indicator);
+
+    // Wire buzzer to UIManager for Pomodoro finish alerts (non-blocking pattern)
+    s_ui.set_buzzer(&s_buzzer);
 
     ESP_LOGI(TAG, "=================================================");
     ESP_LOGI(TAG, "  Boot complete. Fuchey is running.");
